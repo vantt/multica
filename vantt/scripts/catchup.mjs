@@ -137,8 +137,6 @@ function main() {
     applyFrom(s, patches); finish(s, patches); return;
   }
 
-  if (tryGit(['diff', '--quiet']).status !== 0 || tryGit(['diff', '--cached', '--quiet']).status !== 0) die(EXIT.usage, 'working tree is dirty');
-  if (loadState()) die(EXIT.usage, 'a catchup is in progress: --continue or --abort');
   const patches = loadSeries();
   const tag = o.ref || readFileSync(path.join(ROOT, 'vantt/upstream.pin'), 'utf8').trim();
   if (!/^v\d+\.\d+\.\d+$/.test(tag)) die(EXIT.usage, `not a stable upstream tag: ${tag}`);
@@ -147,6 +145,8 @@ function main() {
     console.log(JSON.stringify({ tag, hash, branch: `vantt/${tag}`, patches: patches.map((p) => ({ id: p.id, status: p.upstream_status || 'unsubmitted' })) }, null, 2));
     return;
   }
+  if (tryGit(['diff', '--quiet']).status !== 0 || tryGit(['diff', '--cached', '--quiet']).status !== 0) die(EXIT.usage, 'working tree is dirty');
+  if (loadState()) die(EXIT.usage, 'a catchup is in progress: --continue or --abort');
   ensureUpstream();
   if (tryGit(['rev-parse', '--verify', `refs/tags/${tag}`]).status !== 0) die(EXIT.usage, `upstream tag ${tag} not found`);
   if (tryGit(['merge-base', '--is-ancestor', tag, 'upstream/main']).status !== 0) die(EXIT.usage, `${tag} is not on upstream main`);
@@ -163,7 +163,7 @@ function main() {
   // Upstream workflows never run on the fork's release branch; only vantt-* ones.
   for (const f of git(['ls-files', '.github/workflows']).split('\n').filter(Boolean)) git(['rm', '--quiet', f]);
   for (const f of forkFiles) { mkdirSync(path.dirname(path.join(ROOT, f)), { recursive: true }); cpSync(path.join(tmp, f), path.join(ROOT, f)); }
-  if (forkFiles.length) git(['add', '--', ...forkFiles]);
+  if (forkFiles.length) git(['add', '-f', '--', ...forkFiles]);
   git(['commit', '--quiet', '--allow-empty', '-m', 'chore(vantt): fork maintenance files; drop upstream workflows']);
   rmSync(tmp, { recursive: true, force: true });
 
