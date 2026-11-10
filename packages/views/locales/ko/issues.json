@@ -1735,5 +1735,8 @@
   },
   "hover_card": {
     "created_updated": "{{created}} 생성 · {{updated}} 수정됨"
+  },
+  "parent_chip": {
+    "title": "{{identifier}}의 하위 이슈 · {{title}}"
   }
 }
