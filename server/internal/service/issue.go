@@ -858,7 +858,12 @@ func (s *IssueService) createWorkflow(ctx context.Context, qtx *db.Queries, p Is
 		}
 		projectID = parent.ProjectID
 	}
-	def, _, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID)
+	props := make(map[string]json.RawMessage, len(p.Properties))
+	for id, v := range p.Properties {
+		props[util.UUIDToString(id)] = v
+	}
+	bag, _ := json.Marshal(props)
+	def, _, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, projectID, bag)
 	return def, err
 }
 
