@@ -1,4 +1,4 @@
-import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { useWorkspaceId } from "../hooks";
 
@@ -17,13 +17,45 @@ export const workflowRuleKeys = {
   project: (wsId: string, projectId: string) => ["workflow-rules", wsId, projectId] as const,
 };
 
+// A plain options object (not queryOptions) so surfaces whose tests mock
+// react-query with only useQuery can still read rules.
 export function workflowRulesOptions(wsId: string, projectId: string) {
-  return queryOptions({
+  return {
     queryKey: workflowRuleKeys.project(wsId, projectId),
     queryFn: () => api.listProjectWorkflowRules(projectId),
-    select: (data) => data.rules,
+    select: (data: { rules: WorkflowRule[] }) => data.rules,
     staleTime: 60_000,
-  });
+  };
+}
+
+/**
+ * A project's columns when rules send some Types to other workflows (vantt
+ * board-columns, design D3d "Automatic"): the project workflow's steps, then
+ * each rule workflow's middle steps it does not have yet, before the closing
+ * steps (blocked, done, cancelled). Without rules: the project workflow.
+ */
+export function mergeRuleWorkflows<W extends { steps: { status_key: string }[] }>(
+  project: W | null,
+  rules: readonly WorkflowRule[],
+  workflows: readonly (W & { id: string })[],
+  tail: readonly string[] = ["blocked", "done", "cancelled"],
+): W | null {
+  if (!project || rules.length === 0) return project;
+  const steps = [...project.steps];
+  const has = new Set(steps.map((s) => s.status_key));
+  const tailAt = () => {
+    const i = steps.findIndex((s) => tail.includes(s.status_key));
+    return i < 0 ? steps.length : i;
+  };
+  for (const rule of rules) {
+    const wf = workflows.find((w) => w.id === rule.workflow_id);
+    for (const step of wf?.steps ?? []) {
+      if (has.has(step.status_key) || tail.includes(step.status_key)) continue;
+      steps.splice(tailAt(), 0, step);
+      has.add(step.status_key);
+    }
+  }
+  return { ...project, steps };
 }
 
 export function useSetWorkflowRules(projectId: string) {
