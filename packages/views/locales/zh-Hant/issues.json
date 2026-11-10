@@ -1706,6 +1706,9 @@
       }
     },
     "approval": {
+      "prs_label": "拉取請求",
+      "approve_on_github": "在 GitHub 上核准",
+      "pr_then_approve": "先用你的帳號在 GitHub 上核准 PR，再在這裡核准。",
       "title": "等待你的審批",
       "gate_note": "智慧代理無法將此事項移出此步驟。",
       "approve": "批准",
