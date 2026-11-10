@@ -245,6 +245,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	if err != nil {
 		return IssueCreateResult{}, err
 	}
+	// vantt derived-property: e.g. Domain from Type.
+	if properties, err = ApplyDerivedProperties(ctx, qtx, p.WorkspaceID, properties); err != nil {
+		return IssueCreateResult{}, err
+	}
 
 	if p.SourceContext != nil {
 		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
