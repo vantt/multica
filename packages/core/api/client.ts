@@ -4112,6 +4112,24 @@ export class ApiClient {
   }
 
   // Project resources
+  // vantt workflow-by-type (patch workflow-by-type-ui, F3).
+  async listProjectWorkflowRules(projectId: string): Promise<{ rules: { property_id: string; option_id: string; workflow_id: string }[] }> {
+    const raw = await this.fetch<{ rules?: unknown }>(`/api/projects/${projectId}/workflow-rules`);
+    const rules = Array.isArray(raw?.rules)
+      ? (raw.rules as Record<string, unknown>[]).filter(
+          (r) => typeof r.property_id === "string" && typeof r.option_id === "string" && typeof r.workflow_id === "string",
+        )
+      : [];
+    return { rules: rules as { property_id: string; option_id: string; workflow_id: string }[] };
+  }
+
+  async setProjectWorkflowRules(
+    projectId: string,
+    rules: { property_id: string; option_id: string; workflow_id: string }[],
+  ): Promise<void> {
+    await this.fetch(`/api/projects/${projectId}/workflow-rules`, { method: "PUT", body: JSON.stringify({ rules }) });
+  }
+
   // vantt goals (patch goals-ui, F2).
   async listGoals(): Promise<{ goals: Goal[] }> {
     const raw = await this.fetch<unknown>("/api/goals");
