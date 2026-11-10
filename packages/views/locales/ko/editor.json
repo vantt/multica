@@ -178,5 +178,9 @@
     "clear_filter": "필터 지우기",
     "no_matches": "일치하는 행이 없습니다",
     "close": "닫기"
+  },
+  "reader": {
+    "outline": "이 페이지의 목차",
+    "progress": "읽기 진행률"
   }
 }
