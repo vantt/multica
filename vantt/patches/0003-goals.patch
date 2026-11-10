@@ -1,0 +1,1925 @@
+From 65d1542f759359951ef164ca6971d0d217d3b38c Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:22:47 +0700
+Subject: [PATCH 03/15] feat(goals): goals with a number, a deadline, history
+ and linked work
+
+Tables goal, goal_value, goal_link (add-only, no foreign keys). API under
+/api/goals: list, get with history, create/update/delete (owner/admin),
+POST values (also agents for script-measured goals), PUT links (projects,
+issues). Health computed server-side: on_track / at_risk / off_track from
+progress against the share of time used, update_due for stale manual
+numbers, needed and actual pace per week.
+
+Patch-Id: goals
+---
+ server/cmd/server/router.go                   |  14 +
+ server/internal/handler/vantt_goal.go         | 737 ++++++++++++++++++
+ server/internal/handler/vantt_goal_test.go    | 269 +++++++
+ .../handler/workspace_delete_manifest_test.go |   3 +
+ server/migrations/9001_vantt_goal.down.sql    |   3 +
+ server/migrations/9001_vantt_goal.up.sql      |  49 ++
+ .../9002_vantt_goal_workspace_index.down.sql  |   1 +
+ .../9002_vantt_goal_workspace_index.up.sql    |   1 +
+ .../9003_vantt_goal_value_goal_index.down.sql |   1 +
+ .../9003_vantt_goal_value_goal_index.up.sql   |   1 +
+ ...9004_vantt_goal_link_target_index.down.sql |   1 +
+ .../9004_vantt_goal_link_target_index.up.sql  |   1 +
+ server/pkg/db/generated/goal.sql.go           | 522 +++++++++++++
+ server/pkg/db/generated/models.go             |  44 ++
+ .../pkg/db/generated/workspace_delete.sql.go  |   9 +
+ server/pkg/db/queries/goal.sql                |  84 ++
+ server/pkg/db/queries/workspace_delete.sql    |   9 +
+ 17 files changed, 1749 insertions(+)
+ create mode 100644 server/internal/handler/vantt_goal.go
+ create mode 100644 server/internal/handler/vantt_goal_test.go
+ create mode 100644 server/migrations/9001_vantt_goal.down.sql
+ create mode 100644 server/migrations/9001_vantt_goal.up.sql
+ create mode 100644 server/migrations/9002_vantt_goal_workspace_index.down.sql
+ create mode 100644 server/migrations/9002_vantt_goal_workspace_index.up.sql
+ create mode 100644 server/migrations/9003_vantt_goal_value_goal_index.down.sql
+ create mode 100644 server/migrations/9003_vantt_goal_value_goal_index.up.sql
+ create mode 100644 server/migrations/9004_vantt_goal_link_target_index.down.sql
+ create mode 100644 server/migrations/9004_vantt_goal_link_target_index.up.sql
+ create mode 100644 server/pkg/db/generated/goal.sql.go
+ create mode 100644 server/pkg/db/queries/goal.sql
+
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 8b9bd7896..49a0f656b 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -2239,6 +2239,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 			// Saved issue views (MUL-4796).
+ 			r.Get("/api/issue-view-preferences", h.GetIssueViewPreference)
+ 			r.Put("/api/issue-view-preferences", h.PutIssueViewPreference)
++			// vantt goals (patch goals, F2).
++			r.Route("/api/goals", func(r chi.Router) {
++				r.Get("/", h.ListGoals)
++				r.Post("/", h.CreateGoal)
++				r.Route("/{id}", func(r chi.Router) {
++					r.Get("/", h.GetGoal)
++					r.Patch("/", h.UpdateGoal)
++					r.Delete("/", h.DeleteGoal)
++					r.Post("/values", h.AddGoalValue)
++					r.Post("/values/synced", h.MarkGoalValuesSynced)
++					r.Put("/links", h.SetGoalLinks)
++				})
++			})
++
+ 			r.Route("/api/issue-views", func(r chi.Router) {
+ 				r.Get("/", h.ListIssueViews)
+ 				r.Post("/", h.CreateIssueView)
+diff --git a/server/internal/handler/vantt_goal.go b/server/internal/handler/vantt_goal.go
+new file mode 100644
+index 000000000..b769b18cb
+--- /dev/null
++++ b/server/internal/handler/vantt_goal.go
+@@ -0,0 +1,737 @@
++package handler
++
++// vantt goals (patch goals, F2): results with a number and a deadline that work
++// moves. Reference: Atlassian Goals (On track / At risk / Off track), Linear
++// initiatives. Health and pace are computed here so every client (the web,
++// the morning brief) reads the same numbers.
++
++import (
++	"encoding/json"
++	"io"
++	"math"
++	"net/http"
++	"strings"
++	"time"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/util"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++const goalUpdateDueAfter = 7 * 24 * time.Hour
++
++type GoalLinkJSON struct {
++	TargetType string `json:"target_type"`
++	TargetID   string `json:"target_id"`
++}
++
++type GoalResponse struct {
++	ID               string         `json:"id"`
++	WorkspaceID      string         `json:"workspace_id"`
++	ParentID         *string        `json:"parent_id"`
++	Title            string         `json:"title"`
++	Description      string         `json:"description"`
++	Unit             string         `json:"unit"`
++	Direction        string         `json:"direction"`
++	StartValue       float64        `json:"start_value"`
++	TargetValue      float64        `json:"target_value"`
++	CurrentValue     float64        `json:"current_value"`
++	DueDate          *string        `json:"due_date"`
++	Status           string         `json:"status"`
++	MeasuredBy       string         `json:"measured_by"`
++	OwnerType        *string        `json:"owner_type"`
++	OwnerID          *string        `json:"owner_id"`
++	Position         float64        `json:"position"`
++	CurrentUpdatedAt string         `json:"current_updated_at"`
++	CreatedAt        string         `json:"created_at"`
++	UpdatedAt        string         `json:"updated_at"`
++	Links            []GoalLinkJSON `json:"links"`
++	// Repo is the source of truth (vantt): where the goal lives, and whether the
++	// UI changed it since the last write-back.
++	SourceRef *string `json:"source_ref"`
++	Pending   bool    `json:"pending"`
++	// Computed.
++	Progress      float64  `json:"progress"`
++	Expected      *float64 `json:"expected"`
++	Health        string   `json:"health"`
++	UpdateDue     bool     `json:"update_due"`
++	NeededPerWeek *float64 `json:"needed_per_week"`
++	ActualPerWeek *float64 `json:"actual_per_week"`
++}
++
++type GoalValueResponse struct {
++	ID        string  `json:"id"`
++	Value     float64 `json:"value"`
++	Note      string  `json:"note"`
++	ActorType string  `json:"actor_type"`
++	ActorID   *string `json:"actor_id"`
++	Synced    bool    `json:"synced"`
++	CreatedAt string  `json:"created_at"`
++}
++
++// goalHealth computes progress, the share of time used, and the health label.
++func goalHealth(g db.Goal, now time.Time) (progress float64, expected *float64, health string, neededPerWeek, actualPerWeek *float64) {
++	span := g.TargetValue - g.StartValue
++	done := g.CurrentValue - g.StartValue
++	if span != 0 {
++		progress = math.Max(0, math.Min(1, done/span))
++	} else if g.CurrentValue == g.TargetValue {
++		progress = 1
++	}
++	switch g.Status {
++	case "achieved", "missed", "cancelled", "planned":
++		health = g.Status
++	}
++	created := g.CreatedAt.Time
++	weeksElapsed := now.Sub(created).Hours() / (24 * 7)
++	if weeksElapsed >= 1.0/7 {
++		a := done / weeksElapsed
++		actualPerWeek = &a
++	}
++	if !g.DueDate.Valid {
++		if health == "" {
++			health = "no_target_date"
++		}
++		return
++	}
++	due := g.DueDate.Time.Add(24 * time.Hour) // end of the due day
++	total := due.Sub(created)
++	if total > 0 {
++		e := math.Max(0, math.Min(1, now.Sub(created).Seconds()/total.Seconds()))
++		expected = &e
++	}
++	weeksLeft := due.Sub(now).Hours() / (24 * 7)
++	if weeksLeft > 0 {
++		n := (g.TargetValue - g.CurrentValue) / weeksLeft
++		neededPerWeek = &n
++	}
++	if health != "" {
++		return
++	}
++	if progress >= 1 {
++		health = "on_track"
++		return
++	}
++	if expected == nil {
++		health = "on_track"
++		return
++	}
++	// Progress against the share of time used: early on everything is on track.
++	if *expected < 0.05 {
++		health = "on_track"
++		return
++	}
++	switch ratio := progress / *expected; {
++	case ratio >= 0.9:
++		health = "on_track"
++	case ratio >= 0.6:
++		health = "at_risk"
++	default:
++		health = "off_track"
++	}
++	return
++}
++
++func goalToResponse(g db.Goal, links []GoalLinkJSON, now time.Time) GoalResponse {
++	progress, expected, health, needed, actual := goalHealth(g, now)
++	if links == nil {
++		links = []GoalLinkJSON{}
++	}
++	return GoalResponse{
++		ID:               uuidToString(g.ID),
++		WorkspaceID:      uuidToString(g.WorkspaceID),
++		ParentID:         uuidToPtr(g.ParentID),
++		Title:            g.Title,
++		Description:      g.Description,
++		Unit:             g.Unit,
++		Direction:        g.Direction,
++		StartValue:       g.StartValue,
++		TargetValue:      g.TargetValue,
++		CurrentValue:     g.CurrentValue,
++		DueDate:          dateToPtr(g.DueDate),
++		Status:           g.Status,
++		MeasuredBy:       g.MeasuredBy,
++		OwnerType:        textToPtr(g.OwnerType),
++		OwnerID:          uuidToPtr(g.OwnerID),
++		Position:         g.Position,
++		CurrentUpdatedAt: timestampToString(g.CurrentUpdatedAt),
++		CreatedAt:        timestampToString(g.CreatedAt),
++		UpdatedAt:        timestampToString(g.UpdatedAt),
++		Links:            links,
++		SourceRef:        textToPtr(g.SourceRef),
++		Pending:          g.Pending,
++		Progress:         progress,
++		Expected:         expected,
++		Health:           health,
++		UpdateDue:        g.MeasuredBy == "manual" && isOpenGoal(g.Status) && now.Sub(g.CurrentUpdatedAt.Time) > goalUpdateDueAfter,
++		NeededPerWeek:    needed,
++		ActualPerWeek:    actual,
++	}
++}
++
++func isOpenGoal(status string) bool { return status == "active" || status == "planned" }
++
++func (h *Handler) goalLinksByGoal(r *http.Request, wsUUID pgtype.UUID) (map[string][]GoalLinkJSON, error) {
++	rows, err := h.Queries.ListGoalLinks(r.Context(), wsUUID)
++	if err != nil {
++		return nil, err
++	}
++	out := map[string][]GoalLinkJSON{}
++	for _, l := range rows {
++		k := uuidToString(l.GoalID)
++		out[k] = append(out[k], GoalLinkJSON{TargetType: l.TargetType, TargetID: uuidToString(l.TargetID)})
++	}
++	return out, nil
++}
++
++func (h *Handler) ListGoals(w http.ResponseWriter, r *http.Request) {
++	wsID := h.resolveWorkspaceID(r)
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
++		return
++	}
++	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
++	if !ok {
++		return
++	}
++	goals, err := h.Queries.ListGoals(r.Context(), wsUUID)
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list goals")
++		return
++	}
++	links, err := h.goalLinksByGoal(r, wsUUID)
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list goal links")
++		return
++	}
++	now := time.Now()
++	resp := make([]GoalResponse, 0, len(goals))
++	for _, g := range goals {
++		resp = append(resp, goalToResponse(g, links[uuidToString(g.ID)], now))
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"goals": resp, "total": len(resp)})
++}
++
++func (h *Handler) loadGoal(w http.ResponseWriter, r *http.Request) (db.Goal, pgtype.UUID, bool) {
++	wsID := h.resolveWorkspaceID(r)
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
++		return db.Goal{}, pgtype.UUID{}, false
++	}
++	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
++	if !ok {
++		return db.Goal{}, pgtype.UUID{}, false
++	}
++	id, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "goal id")
++	if !ok {
++		return db.Goal{}, pgtype.UUID{}, false
++	}
++	g, err := h.Queries.GetGoalInWorkspace(r.Context(), db.GetGoalInWorkspaceParams{ID: id, WorkspaceID: wsUUID})
++	if err != nil {
++		writeError(w, http.StatusNotFound, "goal not found")
++		return db.Goal{}, pgtype.UUID{}, false
++	}
++	return g, wsUUID, true
++}
++
++func (h *Handler) GetGoal(w http.ResponseWriter, r *http.Request) {
++	g, wsUUID, ok := h.loadGoal(w, r)
++	if !ok {
++		return
++	}
++	links, err := h.goalLinksByGoal(r, wsUUID)
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list goal links")
++		return
++	}
++	values, err := h.Queries.ListGoalValues(r.Context(), db.ListGoalValuesParams{GoalID: g.ID, WorkspaceID: wsUUID})
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list goal values")
++		return
++	}
++	history := make([]GoalValueResponse, 0, len(values))
++	for _, v := range values {
++		history = append(history, GoalValueResponse{
++			ID: uuidToString(v.ID), Value: v.Value, Note: v.Note, ActorType: v.ActorType,
++			ActorID: uuidToPtr(v.ActorID), Synced: v.Synced, CreatedAt: timestampToString(v.CreatedAt),
++		})
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"goal": goalToResponse(g, links[uuidToString(g.ID)], time.Now()), "history": history})
++}
++
++// GoalWriteRequest is the body of create and update; every field is optional on update.
++type GoalWriteRequest struct {
++	ParentID    *string  `json:"parent_id"`
++	Title       *string  `json:"title"`
++	Description *string  `json:"description"`
++	Unit        *string  `json:"unit"`
++	Direction   *string  `json:"direction"`
++	StartValue  *float64 `json:"start_value"`
++	TargetValue *float64 `json:"target_value"`
++	DueDate     *string  `json:"due_date"`
++	Status      *string  `json:"status"`
++	MeasuredBy  *string  `json:"measured_by"`
++	OwnerType   *string  `json:"owner_type"`
++	OwnerID     *string  `json:"owner_id"`
++	Position    *float64 `json:"position"`
++	SourceRef   *string  `json:"source_ref"`
++	Pending     *bool    `json:"pending"`
++}
++
++func validGoalEnum(v string, allowed ...string) bool {
++	for _, a := range allowed {
++		if v == a {
++			return true
++		}
++	}
++	return false
++}
++
++// applyGoalWrite merges req into g and validates it. raw tells which nullable
++// fields (parent_id, due_date, owner) were sent explicitly as null.
++func (h *Handler) applyGoalWrite(r *http.Request, wsUUID pgtype.UUID, g *db.Goal, req GoalWriteRequest, raw map[string]json.RawMessage) (int, string) {
++	if req.Title != nil {
++		g.Title = strings.TrimSpace(*req.Title)
++	}
++	if g.Title == "" {
++		return http.StatusBadRequest, "title is required"
++	}
++	if req.Description != nil {
++		g.Description = *req.Description
++	}
++	if req.Unit != nil {
++		g.Unit = strings.TrimSpace(*req.Unit)
++	}
++	if req.Direction != nil {
++		g.Direction = *req.Direction
++	}
++	if !validGoalEnum(g.Direction, "increase", "decrease") {
++		return http.StatusBadRequest, "direction must be increase or decrease"
++	}
++	if req.StartValue != nil {
++		g.StartValue = *req.StartValue
++	}
++	if req.TargetValue != nil {
++		g.TargetValue = *req.TargetValue
++	}
++	if req.Status != nil {
++		g.Status = *req.Status
++	}
++	if !validGoalEnum(g.Status, "planned", "active", "achieved", "missed", "cancelled") {
++		return http.StatusBadRequest, "invalid status"
++	}
++	if req.MeasuredBy != nil {
++		g.MeasuredBy = *req.MeasuredBy
++	}
++	if !validGoalEnum(g.MeasuredBy, "manual", "script") {
++		return http.StatusBadRequest, "measured_by must be manual or script"
++	}
++	if req.Position != nil {
++		g.Position = *req.Position
++	}
++	if _, sent := raw["source_ref"]; sent {
++		g.SourceRef = pgtype.Text{}
++		if req.SourceRef != nil && strings.TrimSpace(*req.SourceRef) != "" {
++			g.SourceRef = pgtype.Text{String: strings.TrimSpace(*req.SourceRef), Valid: true}
++		}
++	}
++	if _, sent := raw["due_date"]; sent {
++		g.DueDate = pgtype.Date{}
++		if req.DueDate != nil && *req.DueDate != "" {
++			d, err := time.Parse("2006-01-02", *req.DueDate)
++			if err != nil {
++				return http.StatusBadRequest, "due_date must be YYYY-MM-DD"
++			}
++			g.DueDate = pgtype.Date{Time: d, Valid: true}
++		}
++	}
++	if _, sent := raw["parent_id"]; sent {
++		g.ParentID = pgtype.UUID{}
++		if req.ParentID != nil && *req.ParentID != "" {
++			pid, err := util.ParseUUID(*req.ParentID)
++			if err != nil {
++				return http.StatusBadRequest, "invalid parent_id"
++			}
++			if g.ID.Valid && pid == g.ID {
++				return http.StatusBadRequest, "a goal cannot be its own parent"
++			}
++			if _, err := h.Queries.GetGoalInWorkspace(r.Context(), db.GetGoalInWorkspaceParams{ID: pid, WorkspaceID: wsUUID}); err != nil {
++				return http.StatusBadRequest, "parent goal not found"
++			}
++			g.ParentID = pid
++		}
++	}
++	_, ownerTypeSent := raw["owner_type"]
++	_, ownerIDSent := raw["owner_id"]
++	if ownerTypeSent || ownerIDSent {
++		g.OwnerType, g.OwnerID = pgtype.Text{}, pgtype.UUID{}
++		if req.OwnerType != nil && req.OwnerID != nil && *req.OwnerID != "" {
++			if !validGoalEnum(*req.OwnerType, "member", "agent") || !h.isWorkspaceEntity(r.Context(), *req.OwnerType, *req.OwnerID, uuidToString(wsUUID)) {
++				return http.StatusBadRequest, "owner not found in this workspace"
++			}
++			oid, _ := util.ParseUUID(*req.OwnerID)
++			g.OwnerType = pgtype.Text{String: *req.OwnerType, Valid: true}
++			g.OwnerID = oid
++		}
++	}
++	return 0, ""
++}
++
++// goalWriter checks who may write a goal and reports whether the caller is an
++// agent. Owners/admins always; an agent (the PM mirroring the repo) when the
++// goal comes from the repo (source_ref).
++// goalRepoHome: a goal lives in a project repo when it came from one (source_ref) or
++// its linked projects all use one GitHub repo (several projects may share a repo,
++// e.g. a product, its architecture and its PM project). The PM agent may then write
++// it there. Company goals, goals of projects without a repo, or of several repos,
++// live in Multica only and stay with people.
++func (h *Handler) goalRepoHome(r *http.Request, wsUUID pgtype.UUID, g db.Goal) bool {
++	if g.SourceRef.Valid {
++		return true
++	}
++	links, err := h.goalLinksByGoal(r, wsUUID)
++	if err != nil {
++		return false
++	}
++	repos := map[string]bool{}
++	for _, l := range links[uuidToString(g.ID)] {
++		if l.TargetType != "project" {
++			continue
++		}
++		id, err := util.ParseUUID(l.TargetID)
++		if err != nil {
++			return false
++		}
++		res, err := h.Queries.ListProjectResources(r.Context(), id)
++		if err != nil {
++			return false
++		}
++		found := false
++		for _, pr := range res {
++			if pr.ResourceType != "github_repo" {
++				continue
++			}
++			var ref struct {
++				URL string `json:"url"`
++			}
++			if json.Unmarshal(pr.ResourceRef, &ref) == nil && ref.URL != "" {
++				repos[strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(ref.URL), "/"), ".git")] = true
++				found = true
++			}
++		}
++		if !found {
++			return false
++		}
++	}
++	return len(repos) == 1
++}
++
++func (h *Handler) goalWriter(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, fromRepo bool) (agent bool, ok bool) {
++	userID, ok := requireUserID(w, r)
++	if !ok {
++		return false, false
++	}
++	actorType, _ := h.resolveActor(r, userID, uuidToString(wsUUID))
++	if actorType == "agent" {
++		if !fromRepo {
++			writeError(w, http.StatusForbidden, "agents only write goals that live in a project repo (source_ref, or linked to one project)")
++			return true, false
++		}
++		return true, true
++	}
++	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "workspace not found", "owner", "admin"); !ok {
++		return false, false
++	}
++	return false, true
++}
++
++func decodeGoalWrite(w http.ResponseWriter, r *http.Request) (GoalWriteRequest, map[string]json.RawMessage, bool) {
++	var raw map[string]json.RawMessage
++	var req GoalWriteRequest
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &raw) != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return req, nil, false
++	}
++	return req, raw, true
++}
++
++func (h *Handler) CreateGoal(w http.ResponseWriter, r *http.Request) {
++	wsID := h.resolveWorkspaceID(r)
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
++		return
++	}
++	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
++	if !ok {
++		return
++	}
++	req, raw, ok := decodeGoalWrite(w, r)
++	if !ok {
++		return
++	}
++	agent, ok := h.goalWriter(w, r, wsUUID, req.SourceRef != nil && strings.TrimSpace(*req.SourceRef) != "")
++	if !ok {
++		return
++	}
++	if req.TargetValue == nil {
++		writeError(w, http.StatusBadRequest, "target_value is required")
++		return
++	}
++	g := db.Goal{Direction: "increase", Status: "active", MeasuredBy: "manual"}
++	if code, msg := h.applyGoalWrite(r, wsUUID, &g, req, raw); code != 0 {
++		writeError(w, code, msg)
++		return
++	}
++	created, err := h.Queries.CreateGoal(r.Context(), db.CreateGoalParams{
++		WorkspaceID: wsUUID, ParentID: g.ParentID, Title: g.Title, Description: g.Description, Unit: g.Unit,
++		Direction: g.Direction, StartValue: g.StartValue, TargetValue: g.TargetValue, CurrentValue: g.StartValue,
++		DueDate: g.DueDate, Status: g.Status, MeasuredBy: g.MeasuredBy, OwnerType: g.OwnerType, OwnerID: g.OwnerID,
++		Position: g.Position, SourceRef: g.SourceRef,
++	})
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to create goal")
++		return
++	}
++	// A goal made in the UI is a proposal until the PM writes it into the repo;
++	// a mirror from the repo says pending=false.
++	if !agent && (req.Pending == nil || *req.Pending) {
++		created, _ = h.Queries.UpdateGoal(r.Context(), updateParams(created, true))
++	}
++	writeJSON(w, http.StatusCreated, goalToResponse(created, nil, time.Now()))
++}
++
++func (h *Handler) UpdateGoal(w http.ResponseWriter, r *http.Request) {
++	g, wsUUID, ok := h.loadGoal(w, r)
++	if !ok {
++		return
++	}
++	agent, ok := h.goalWriter(w, r, wsUUID, h.goalRepoHome(r, wsUUID, g))
++	if !ok {
++		return
++	}
++	req, raw, ok := decodeGoalWrite(w, r)
++	if !ok {
++		return
++	}
++	if code, msg := h.applyGoalWrite(r, wsUUID, &g, req, raw); code != 0 {
++		writeError(w, code, msg)
++		return
++	}
++	// A person's edit waits to be written back to the repo; the PM's mirror
++	// clears it by sending pending=false.
++	pending := g.Pending || !agent
++	if req.Pending != nil {
++		pending = *req.Pending
++	}
++	updated, err := h.Queries.UpdateGoal(r.Context(), updateParams(g, pending))
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to update goal")
++		return
++	}
++	links, _ := h.goalLinksByGoal(r, wsUUID)
++	writeJSON(w, http.StatusOK, goalToResponse(updated, links[uuidToString(updated.ID)], time.Now()))
++}
++
++func updateParams(g db.Goal, pending bool) db.UpdateGoalParams {
++	return db.UpdateGoalParams{
++		ID: g.ID, WorkspaceID: g.WorkspaceID, ParentID: g.ParentID, Title: g.Title, Description: g.Description,
++		Unit: g.Unit, Direction: g.Direction, StartValue: g.StartValue, TargetValue: g.TargetValue,
++		DueDate: g.DueDate, Status: g.Status, MeasuredBy: g.MeasuredBy, OwnerType: g.OwnerType,
++		OwnerID: g.OwnerID, Position: g.Position, SourceRef: g.SourceRef, Pending: pending,
++	}
++}
++
++func (h *Handler) DeleteGoal(w http.ResponseWriter, r *http.Request) {
++	g, wsUUID, ok := h.loadGoal(w, r)
++	if !ok {
++		return
++	}
++	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "workspace not found", "owner", "admin"); !ok {
++		return
++	}
++	children, err := h.Queries.CountGoalChildren(r.Context(), db.CountGoalChildrenParams{ParentID: g.ID, WorkspaceID: wsUUID})
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to delete goal")
++		return
++	}
++	if children > 0 {
++		writeError(w, http.StatusConflict, "goal has child goals; move or delete them first")
++		return
++	}
++	ctx := r.Context()
++	if err := h.Queries.DeleteGoalLinks(ctx, db.DeleteGoalLinksParams{GoalID: g.ID, WorkspaceID: wsUUID}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to delete goal")
++		return
++	}
++	if err := h.Queries.DeleteGoalValues(ctx, db.DeleteGoalValuesParams{GoalID: g.ID, WorkspaceID: wsUUID}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to delete goal")
++		return
++	}
++	if err := h.Queries.DeleteGoal(ctx, db.DeleteGoalParams{ID: g.ID, WorkspaceID: wsUUID}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to delete goal")
++		return
++	}
++	w.WriteHeader(http.StatusNoContent)
++}
++
++type GoalValueRequest struct {
++	Value *float64 `json:"value"`
++	Note  string   `json:"note"`
++	// RecordedAt (agents only): the date the repo's progress row carries.
++	RecordedAt *string `json:"recorded_at"`
++}
++
++// AddGoalValue records a new current value. Owners and admins may always;
++// any workspace member, or an agent with a task token, may when the goal is
++// measured by script (the PM's daily run).
++func (h *Handler) AddGoalValue(w http.ResponseWriter, r *http.Request) {
++	g, wsUUID, ok := h.loadGoal(w, r)
++	if !ok {
++		return
++	}
++	userID, ok := requireUserID(w, r)
++	if !ok {
++		return
++	}
++	actorType, actorID := h.resolveActor(r, userID, uuidToString(wsUUID))
++	if actorType == "agent" {
++		if g.MeasuredBy != "script" && !g.SourceRef.Valid {
++			writeError(w, http.StatusForbidden, "agents only record values of script or repo goals")
++			return
++		}
++	} else if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "workspace not found", "owner", "admin"); !ok {
++		return
++	}
++	var req GoalValueRequest
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &req) != nil || req.Value == nil || math.IsNaN(*req.Value) || math.IsInf(*req.Value, 0) {
++		writeError(w, http.StatusBadRequest, "value is required")
++		return
++	}
++	actor, _ := util.ParseUUID(actorID)
++	var recorded pgtype.Timestamptz
++	// recorded_at marks a mirror of a repo progress row: it keeps the row's date
++	// and is already in the repo (synced).
++	if req.RecordedAt != nil && *req.RecordedAt != "" {
++		ts, err := time.Parse(time.RFC3339, *req.RecordedAt)
++		if err != nil {
++			d, derr := time.Parse("2006-01-02", *req.RecordedAt)
++			if derr != nil {
++				writeError(w, http.StatusBadRequest, "recorded_at must be RFC3339 or YYYY-MM-DD")
++				return
++			}
++			ts = d
++		}
++		recorded = pgtype.Timestamptz{Time: ts, Valid: true}
++	}
++	// A number a person enters on a repo goal waits to be written back.
++	synced := actorType == "agent" || !g.SourceRef.Valid || recorded.Valid
++	if _, err := h.Queries.CreateGoalValue(r.Context(), db.CreateGoalValueParams{
++		GoalID: g.ID, WorkspaceID: wsUUID, Value: *req.Value, Note: req.Note, ActorType: actorType, ActorID: actor,
++		Synced: synced, RecordedAt: recorded,
++	}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to record value")
++		return
++	}
++	updated, err := h.Queries.SetGoalCurrent(r.Context(), db.SetGoalCurrentParams{ID: g.ID, WorkspaceID: wsUUID, CurrentValue: *req.Value})
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to record value")
++		return
++	}
++	links, _ := h.goalLinksByGoal(r, wsUUID)
++	writeJSON(w, http.StatusOK, goalToResponse(updated, links[uuidToString(updated.ID)], time.Now()))
++}
++
++// MarkGoalValuesSynced records that values entered in the UI are now in the repo.
++func (h *Handler) MarkGoalValuesSynced(w http.ResponseWriter, r *http.Request) {
++	g, wsUUID, ok := h.loadGoal(w, r)
++	if !ok {
++		return
++	}
++	if _, ok := h.goalWriter(w, r, wsUUID, true); !ok {
++		return
++	}
++	var req struct {
++		IDs []string `json:"ids"`
++	}
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	ids := make([]pgtype.UUID, 0, len(req.IDs))
++	for _, s := range req.IDs {
++		id, err := util.ParseUUID(s)
++		if err != nil {
++			writeError(w, http.StatusBadRequest, "invalid id")
++			return
++		}
++		ids = append(ids, id)
++	}
++	if err := h.Queries.MarkGoalValuesSynced(r.Context(), db.MarkGoalValuesSyncedParams{GoalID: g.ID, WorkspaceID: wsUUID, Ids: ids}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to mark values")
++		return
++	}
++	w.WriteHeader(http.StatusNoContent)
++}
++
++type GoalLinksRequest struct {
++	Links []GoalLinkJSON `json:"links"`
++}
++
++// SetGoalLinks replaces the work linked to a goal (projects, epic issues).
++func (h *Handler) SetGoalLinks(w http.ResponseWriter, r *http.Request) {
++	g, wsUUID, ok := h.loadGoal(w, r)
++	if !ok {
++		return
++	}
++	if _, ok := h.goalWriter(w, r, wsUUID, h.goalRepoHome(r, wsUUID, g)); !ok {
++		return
++	}
++	var req GoalLinksRequest
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	ctx := r.Context()
++	type link struct {
++		kind string
++		id   pgtype.UUID
++	}
++	var links []link
++	for _, l := range req.Links {
++		id, err := util.ParseUUID(l.TargetID)
++		if err != nil {
++			writeError(w, http.StatusBadRequest, "invalid target_id")
++			return
++		}
++		switch l.TargetType {
++		case "project":
++			if _, err := h.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: id, WorkspaceID: wsUUID}); err != nil {
++				writeError(w, http.StatusBadRequest, "project not found")
++				return
++			}
++		case "issue":
++			if _, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: id, WorkspaceID: wsUUID}); err != nil {
++				writeError(w, http.StatusBadRequest, "issue not found")
++				return
++			}
++		default:
++			writeError(w, http.StatusBadRequest, "target_type must be project or issue")
++			return
++		}
++		links = append(links, link{l.TargetType, id})
++	}
++	if err := h.Queries.DeleteGoalLinks(ctx, db.DeleteGoalLinksParams{GoalID: g.ID, WorkspaceID: wsUUID}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to set links")
++		return
++	}
++	for _, l := range links {
++		if err := h.Queries.CreateGoalLink(ctx, db.CreateGoalLinkParams{GoalID: g.ID, WorkspaceID: wsUUID, TargetType: l.kind, TargetID: l.id}); err != nil {
++			writeError(w, http.StatusInternalServerError, "failed to set links")
++			return
++		}
++	}
++	all, _ := h.goalLinksByGoal(r, wsUUID)
++	writeJSON(w, http.StatusOK, goalToResponse(g, all[uuidToString(g.ID)], time.Now()))
++}
+diff --git a/server/internal/handler/vantt_goal_test.go b/server/internal/handler/vantt_goal_test.go
+new file mode 100644
+index 000000000..8df11e3d4
+--- /dev/null
++++ b/server/internal/handler/vantt_goal_test.go
+@@ -0,0 +1,269 @@
++package handler
++
++import (
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/testutil"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++func goalRequest(method, path string, body any) *http.Request {
++	return newRequest(method, path+"?workspace_id="+testWorkspaceID, body)
++}
++
++func createGoalForTest(t *testing.T, body map[string]any) GoalResponse {
++	t.Helper()
++	var g GoalResponse
++	testutil.Call(t, testHandler.CreateGoal, goalRequest("POST", "/api/goals", body)).Want(http.StatusCreated).JSON(&g)
++	t.Cleanup(func() {
++		dbfx.Exec(t, `DELETE FROM goal_link WHERE goal_id = $1`, g.ID)
++		dbfx.Exec(t, `DELETE FROM goal_value WHERE goal_id = $1`, g.ID)
++		dbfx.Exec(t, `DELETE FROM goal WHERE id = $1`, g.ID)
++	})
++	return g
++}
++
++func TestGoalHealth(t *testing.T) {
++	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
++	created := pgtype.Timestamptz{Time: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), Valid: true}
++	due := pgtype.Date{Time: time.Date(2026, 12, 19, 0, 0, 0, 0, time.UTC), Valid: true} // 40 days
++	base := db.Goal{TargetValue: 40, Status: "active", CreatedAt: created, DueDate: due}
++
++	cases := []struct {
++		current float64
++		want    string
++	}{
++		{10, "on_track"}, // 25% done, 25% of time used
++		{6, "at_risk"},   // 15% done, 25% of time: ratio 0.6
++		{0, "off_track"}, // nothing done
++		{40, "on_track"}, // reached
++	}
++	for _, c := range cases {
++		g := base
++		g.CurrentValue = c.current
++		if _, _, health, _, _ := goalHealth(g, now); health != c.want {
++			t.Errorf("current %v: health = %s, want %s", c.current, health, c.want)
++		}
++	}
++
++	// Lower is better: start 0.031, target 0.020.
++	cost := db.Goal{Direction: "decrease", StartValue: 0.031, TargetValue: 0.020, CurrentValue: 0.031, Status: "active", CreatedAt: created, DueDate: due}
++	if progress, _, health, _, _ := goalHealth(cost, now); progress != 0 || health != "off_track" {
++		t.Errorf("flat cost goal = %v %s, want 0 off_track", progress, health)
++	}
++	cost.CurrentValue = 0.025
++	if progress, _, _, _, _ := goalHealth(cost, now); progress < 0.5 || progress > 0.6 {
++		t.Errorf("cost progress = %v, want about 0.55", progress)
++	}
++
++	noDue := base
++	noDue.DueDate = pgtype.Date{}
++	if _, _, health, _, _ := goalHealth(noDue, now); health != "no_target_date" {
++		t.Errorf("no due date health = %s", health)
++	}
++	closed := base
++	closed.Status = "achieved"
++	if _, _, health, _, _ := goalHealth(closed, now); health != "achieved" {
++		t.Errorf("closed health = %s", health)
++	}
++}
++
++func TestGoalCreateValueLinkDelete(t *testing.T) {
++	parent := createGoalForTest(t, map[string]any{"title": "Revenue", "unit": "USD", "target_value": 5000, "due_date": "2026-12-31"})
++	child := createGoalForTest(t, map[string]any{
++		"title": "Paying customers", "target_value": 50, "due_date": "2026-12-31",
++		"parent_id": parent.ID, "measured_by": "script",
++	})
++	if child.ParentID == nil || *child.ParentID != parent.ID || child.CurrentValue != 0 || child.Health == "" {
++		t.Fatalf("child = %+v", child)
++	}
++
++	// A new value updates current and history.
++	req := withURLParam(goalRequest("POST", "/api/goals/"+child.ID+"/values", map[string]any{"value": 6, "note": "checkout export"}), "id", child.ID)
++	var updated GoalResponse
++	testutil.Call(t, testHandler.AddGoalValue, req).Want(http.StatusOK).JSON(&updated)
++	if updated.CurrentValue != 6 {
++		t.Fatalf("current = %v, want 6", updated.CurrentValue)
++	}
++	var detail struct {
++		Goal    GoalResponse        `json:"goal"`
++		History []GoalValueResponse `json:"history"`
++	}
++	testutil.Call(t, testHandler.GetGoal, withURLParam(goalRequest("GET", "/api/goals/"+child.ID, nil), "id", child.ID)).
++		Want(http.StatusOK).JSON(&detail)
++	if len(detail.History) != 1 || detail.History[0].Value != 6 || detail.History[0].Note != "checkout export" {
++		t.Fatalf("history = %+v", detail.History)
++	}
++
++	// Links to an issue; unknown targets are refused.
++	issueID := dbfx.Issue(t, "goal work", testutil.Cols{"status": "todo"})
++	links := withURLParam(goalRequest("PUT", "/api/goals/"+child.ID+"/links", map[string]any{
++		"links": []map[string]any{{"target_type": "issue", "target_id": issueID}},
++	}), "id", child.ID)
++	var linked GoalResponse
++	testutil.Call(t, testHandler.SetGoalLinks, links).Want(http.StatusOK).JSON(&linked)
++	if len(linked.Links) != 1 || linked.Links[0].TargetID != issueID {
++		t.Fatalf("links = %+v", linked.Links)
++	}
++	bad := withURLParam(goalRequest("PUT", "/api/goals/"+child.ID+"/links", map[string]any{
++		"links": []map[string]any{{"target_type": "issue", "target_id": "00000000-0000-0000-0000-000000000001"}},
++	}), "id", child.ID)
++	testutil.Call(t, testHandler.SetGoalLinks, bad).Want(http.StatusBadRequest)
++
++	// A parent with children is not deleted; the child is.
++	testutil.Call(t, testHandler.DeleteGoal, withURLParam(goalRequest("DELETE", "/api/goals/"+parent.ID, nil), "id", parent.ID)).Want(http.StatusConflict)
++	testutil.Call(t, testHandler.DeleteGoal, withURLParam(goalRequest("DELETE", "/api/goals/"+child.ID, nil), "id", child.ID)).Want(http.StatusNoContent)
++
++	var list struct {
++		Goals []GoalResponse `json:"goals"`
++	}
++	testutil.Call(t, testHandler.ListGoals, goalRequest("GET", "/api/goals", nil)).Want(http.StatusOK).JSON(&list)
++	for _, g := range list.Goals {
++		if g.ID == child.ID {
++			t.Fatal("deleted goal still listed")
++		}
++	}
++}
++
++func TestGoalValidation(t *testing.T) {
++	testutil.Call(t, testHandler.CreateGoal, goalRequest("POST", "/api/goals", map[string]any{"title": "No target"})).Want(http.StatusBadRequest)
++	testutil.Call(t, testHandler.CreateGoal, goalRequest("POST", "/api/goals", map[string]any{"title": "x", "target_value": 1, "direction": "sideways"})).Want(http.StatusBadRequest)
++	testutil.Call(t, testHandler.CreateGoal, goalRequest("POST", "/api/goals", map[string]any{"title": "x", "target_value": 1, "due_date": "31/12"})).Want(http.StatusBadRequest)
++}
++
++// The repo is the source of truth: the PM mirrors repo goals, a person's edit
++// or number on a repo goal waits to be written back.
++func TestGoalRepoSourceRules(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	issueID := dbfx.Issue(t, "pm run", testutil.Cols{"status": "todo"})
++	taskID := runningTask(t, agentID, issueID, "todo")
++	asAgent := func(req *http.Request) *http.Request {
++		req.Header.Set("X-Actor-Source", "task_token")
++		req.Header.Set("X-Agent-ID", agentID)
++		req.Header.Set("X-Task-ID", taskID)
++		return req
++	}
++
++	// An agent cannot create a goal that is not from the repo.
++	testutil.Call(t, testHandler.CreateGoal, asAgent(goalRequest("POST", "/api/goals", map[string]any{"title": "x", "target_value": 1}))).Want(http.StatusForbidden)
++
++	// It can mirror one from the repo; mirrored goals are not pending.
++	var g GoalResponse
++	testutil.Call(t, testHandler.CreateGoal, asAgent(goalRequest("POST", "/api/goals", map[string]any{
++		"title": "Paying customers", "target_value": 50, "source_ref": "plans/goals.md#G1",
++	}))).Want(http.StatusCreated).JSON(&g)
++	t.Cleanup(func() {
++		dbfx.Exec(t, `DELETE FROM goal_value WHERE goal_id = $1`, g.ID)
++		dbfx.Exec(t, `DELETE FROM goal WHERE id = $1`, g.ID)
++	})
++	if g.SourceRef == nil || *g.SourceRef != "plans/goals.md#G1" || g.Pending {
++		t.Fatalf("mirrored goal = %+v", g)
++	}
++
++	// A person's edit marks it pending; the PM's write-back clears it.
++	var edited GoalResponse
++	testutil.Call(t, testHandler.UpdateGoal, withURLParam(goalRequest("PATCH", "/api/goals/"+g.ID, map[string]any{"target_value": 60}), "id", g.ID)).
++		Want(http.StatusOK).JSON(&edited)
++	if !edited.Pending || edited.TargetValue != 60 {
++		t.Fatalf("after a person's edit = %+v", edited)
++	}
++	var cleared GoalResponse
++	testutil.Call(t, testHandler.UpdateGoal, asAgent(withURLParam(goalRequest("PATCH", "/api/goals/"+g.ID, map[string]any{"pending": false}), "id", g.ID))).
++		Want(http.StatusOK).JSON(&cleared)
++	if cleared.Pending {
++		t.Fatal("PM write-back did not clear pending")
++	}
++
++	// A person's number is unsynced; the PM's mirrored number keeps the repo date.
++	testutil.Call(t, testHandler.AddGoalValue, withURLParam(goalRequest("POST", "/api/goals/"+g.ID+"/values", map[string]any{"value": 7}), "id", g.ID)).Want(http.StatusOK)
++	testutil.Call(t, testHandler.AddGoalValue, asAgent(withURLParam(goalRequest("POST", "/api/goals/"+g.ID+"/values", map[string]any{"value": 5, "recorded_at": "2026-11-01"}), "id", g.ID))).Want(http.StatusOK)
++	var detail struct {
++		History []GoalValueResponse `json:"history"`
++	}
++	testutil.Call(t, testHandler.GetGoal, withURLParam(goalRequest("GET", "/api/goals/"+g.ID, nil), "id", g.ID)).Want(http.StatusOK).JSON(&detail)
++	if len(detail.History) != 2 || detail.History[0].Value != 5 || !detail.History[0].Synced || detail.History[1].Synced {
++		t.Fatalf("history = %+v", detail.History)
++	}
++	testutil.Call(t, testHandler.MarkGoalValuesSynced, asAgent(withURLParam(goalRequest("POST", "/api/goals/"+g.ID+"/values/synced",
++		map[string]any{"ids": []string{detail.History[1].ID}}), "id", g.ID))).Want(http.StatusNoContent)
++}
++
++// A goal a person creates in Multica lives in a repo once it is linked to exactly
++// one project: the PM may then adopt it (write source_ref). Company goals, or goals
++// of several projects, stay with people.
++func TestGoalRepoHomeByProjectLink(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	issueID := dbfx.Issue(t, "pm adopt", testutil.Cols{"status": "todo"})
++	taskID := runningTask(t, agentID, issueID, "todo")
++	asAgent := func(req *http.Request) *http.Request {
++		req.Header.Set("X-Actor-Source", "task_token")
++		req.Header.Set("X-Agent-ID", agentID)
++		req.Header.Set("X-Task-ID", taskID)
++		return req
++	}
++	p1 := dbfx.Project(t, "goal home one")
++	p2 := dbfx.Project(t, "goal home two")
++	p3 := dbfx.Project(t, "goal home three, same repo as one")
++	repo := func(project, url string) {
++		dbfx.Exec(t, `INSERT INTO project_resource (project_id, workspace_id, resource_type, resource_ref, label, position)
++			VALUES ($1, $2, 'github_repo', jsonb_build_object('url', $3::text), 'repo', 0)`, project, testWorkspaceID, url)
++	}
++	repo(p1, "https://github.com/vantt/app")
++	repo(p2, "https://github.com/vantt/other")
++	repo(p3, "https://github.com/vantt/app.git")
++	g := createGoalForTest(t, map[string]any{"title": "Company goal", "target_value": 1000})
++	adopt := func() *testutil.Response {
++		return testutil.Call(t, testHandler.UpdateGoal, asAgent(withURLParam(goalRequest("PATCH", "/api/goals/"+g.ID,
++			map[string]any{"source_ref": "vantt/app:plans/goals.md#G2", "pending": false}), "id", g.ID)))
++	}
++	link := func(ids ...string) {
++		links := []map[string]any{}
++		for _, id := range ids {
++			links = append(links, map[string]any{"target_type": "project", "target_id": id})
++		}
++		testutil.Call(t, testHandler.SetGoalLinks, withURLParam(goalRequest("PUT", "/api/goals/"+g.ID+"/links", map[string]any{"links": links}), "id", g.ID)).Want(http.StatusOK)
++	}
++	adopt().Want(http.StatusForbidden) // no project: company goal
++	link(p1, p2)
++	adopt().Want(http.StatusForbidden) // two repos
++	link(p1, p3)
++	adopt().Want(http.StatusOK) // two projects, one repo
++}
++
++func TestGoalWithoutRepoStaysWithPeople(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	issueID := dbfx.Issue(t, "pm no repo", testutil.Cols{"status": "todo"})
++	taskID := runningTask(t, agentID, issueID, "todo")
++	p := dbfx.Project(t, "no repo project")
++	g := createGoalForTest(t, map[string]any{"title": "No repo", "target_value": 3})
++	testutil.Call(t, testHandler.SetGoalLinks, withURLParam(goalRequest("PUT", "/api/goals/"+g.ID+"/links",
++		map[string]any{"links": []map[string]any{{"target_type": "project", "target_id": p}}}), "id", g.ID)).Want(http.StatusOK)
++	req := withURLParam(goalRequest("PATCH", "/api/goals/"+g.ID, map[string]any{"source_ref": "x:plans/goals.md#G1"}), "id", g.ID)
++	req.Header.Set("X-Actor-Source", "task_token")
++	req.Header.Set("X-Agent-ID", agentID)
++	req.Header.Set("X-Task-ID", taskID)
++	testutil.Call(t, testHandler.UpdateGoal, req).Want(http.StatusForbidden)
++}
++
++// The owner running the repo sync by hand mirrors exactly like the PM.
++func TestGoalMirrorByOwner(t *testing.T) {
++	g := createGoalForTest(t, map[string]any{"title": "Mirror", "target_value": 10, "source_ref": "plans/goals.md#G9", "pending": false})
++	if g.Pending {
++		t.Fatal("a mirror sent pending=false")
++	}
++	req := withURLParam(goalRequest("POST", "/api/goals/"+g.ID+"/values", map[string]any{"value": 3, "recorded_at": "2026-11-01"}), "id", g.ID)
++	testutil.Call(t, testHandler.AddGoalValue, req).Want(http.StatusOK)
++	var detail struct {
++		History []GoalValueResponse `json:"history"`
++	}
++	testutil.Call(t, testHandler.GetGoal, withURLParam(goalRequest("GET", "/api/goals/"+g.ID, nil), "id", g.ID)).Want(http.StatusOK).JSON(&detail)
++	if len(detail.History) != 1 || !detail.History[0].Synced || detail.History[0].CreatedAt[:10] != "2026-11-01" {
++		t.Fatalf("history = %+v", detail.History)
++	}
++}
+diff --git a/server/internal/handler/workspace_delete_manifest_test.go b/server/internal/handler/workspace_delete_manifest_test.go
+index d08fe18ba..6854cb5d6 100644
+--- a/server/internal/handler/workspace_delete_manifest_test.go
++++ b/server/internal/handler/workspace_delete_manifest_test.go
+@@ -117,6 +117,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
+ 	"plugin_package_file":                workspaceDelete,
+ 	"project":                            workspaceDelete,
+ 	"project_resource":                   workspaceDelete,
++	"goal":                               workspaceDelete,
++	"goal_link":                          workspaceDelete,
++	"goal_value":                         workspaceDelete,
+ 	"quick_action":                       workspaceDelete,
+ 	"runtime_profile":                    workspaceDelete,
+ 	"schema_migrations":                  workspaceDeleteKeep,
+diff --git a/server/migrations/9001_vantt_goal.down.sql b/server/migrations/9001_vantt_goal.down.sql
+new file mode 100644
+index 000000000..eac116c68
+--- /dev/null
++++ b/server/migrations/9001_vantt_goal.down.sql
+@@ -0,0 +1,3 @@
++DROP TABLE IF EXISTS goal_link;
++DROP TABLE IF EXISTS goal_value;
++DROP TABLE IF EXISTS goal;
+diff --git a/server/migrations/9001_vantt_goal.up.sql b/server/migrations/9001_vantt_goal.up.sql
+new file mode 100644
+index 000000000..8dfade635
+--- /dev/null
++++ b/server/migrations/9001_vantt_goal.up.sql
+@@ -0,0 +1,49 @@
++-- vantt goals (patch goals, F2): results with a number and a deadline that work
++-- moves. No foreign keys: relationships are validated in the handler.
++CREATE TABLE IF NOT EXISTS goal (
++    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    workspace_id       UUID NOT NULL,
++    parent_id          UUID,
++    title              TEXT NOT NULL,
++    description        TEXT NOT NULL DEFAULT '',
++    unit               TEXT NOT NULL DEFAULT '',
++    direction          TEXT NOT NULL DEFAULT 'increase' CHECK (direction IN ('increase', 'decrease')),
++    start_value        DOUBLE PRECISION NOT NULL DEFAULT 0,
++    target_value       DOUBLE PRECISION NOT NULL,
++    current_value      DOUBLE PRECISION NOT NULL DEFAULT 0,
++    due_date           DATE,
++    status             TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('planned', 'active', 'achieved', 'missed', 'cancelled')),
++    measured_by        TEXT NOT NULL DEFAULT 'manual' CHECK (measured_by IN ('manual', 'script')),
++    owner_type         TEXT,
++    owner_id           UUID,
++    position           DOUBLE PRECISION NOT NULL DEFAULT 0,
++    -- The goal's home in the project repo (e.g. plans/goals.md#G1). The repo is the
++    -- source of truth; pending marks edits made in the UI not yet written back.
++    source_ref         TEXT,
++    pending            BOOLEAN NOT NULL DEFAULT false,
++    current_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
++    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
++    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
++);
++
++CREATE TABLE IF NOT EXISTS goal_value (
++    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    goal_id      UUID NOT NULL,
++    workspace_id UUID NOT NULL,
++    value        DOUBLE PRECISION NOT NULL,
++    note         TEXT NOT NULL DEFAULT '',
++    actor_type   TEXT NOT NULL,
++    actor_id     UUID,
++    -- false: entered in the UI on a repo goal, not yet written back to the repo.
++    synced       BOOLEAN NOT NULL DEFAULT true,
++    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
++);
++
++CREATE TABLE IF NOT EXISTS goal_link (
++    goal_id      UUID NOT NULL,
++    workspace_id UUID NOT NULL,
++    target_type  TEXT NOT NULL CHECK (target_type IN ('project', 'issue')),
++    target_id    UUID NOT NULL,
++    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
++    PRIMARY KEY (goal_id, target_type, target_id)
++);
+diff --git a/server/migrations/9002_vantt_goal_workspace_index.down.sql b/server/migrations/9002_vantt_goal_workspace_index.down.sql
+new file mode 100644
+index 000000000..0e5d78391
+--- /dev/null
++++ b/server/migrations/9002_vantt_goal_workspace_index.down.sql
+@@ -0,0 +1 @@
++DROP INDEX CONCURRENTLY IF EXISTS idx_goal_workspace;
+diff --git a/server/migrations/9002_vantt_goal_workspace_index.up.sql b/server/migrations/9002_vantt_goal_workspace_index.up.sql
+new file mode 100644
+index 000000000..fc10928e1
+--- /dev/null
++++ b/server/migrations/9002_vantt_goal_workspace_index.up.sql
+@@ -0,0 +1 @@
++CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_goal_workspace ON goal (workspace_id, position);
+diff --git a/server/migrations/9003_vantt_goal_value_goal_index.down.sql b/server/migrations/9003_vantt_goal_value_goal_index.down.sql
+new file mode 100644
+index 000000000..dcc9a5947
+--- /dev/null
++++ b/server/migrations/9003_vantt_goal_value_goal_index.down.sql
+@@ -0,0 +1 @@
++DROP INDEX CONCURRENTLY IF EXISTS idx_goal_value_goal;
+diff --git a/server/migrations/9003_vantt_goal_value_goal_index.up.sql b/server/migrations/9003_vantt_goal_value_goal_index.up.sql
+new file mode 100644
+index 000000000..1d1e53c6c
+--- /dev/null
++++ b/server/migrations/9003_vantt_goal_value_goal_index.up.sql
+@@ -0,0 +1 @@
++CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_goal_value_goal ON goal_value (goal_id, created_at);
+diff --git a/server/migrations/9004_vantt_goal_link_target_index.down.sql b/server/migrations/9004_vantt_goal_link_target_index.down.sql
+new file mode 100644
+index 000000000..fa1add3b7
+--- /dev/null
++++ b/server/migrations/9004_vantt_goal_link_target_index.down.sql
+@@ -0,0 +1 @@
++DROP INDEX CONCURRENTLY IF EXISTS idx_goal_link_target;
+diff --git a/server/migrations/9004_vantt_goal_link_target_index.up.sql b/server/migrations/9004_vantt_goal_link_target_index.up.sql
+new file mode 100644
+index 000000000..6ab3b2da9
+--- /dev/null
++++ b/server/migrations/9004_vantt_goal_link_target_index.up.sql
+@@ -0,0 +1 @@
++CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_goal_link_target ON goal_link (workspace_id, target_type, target_id);
+diff --git a/server/pkg/db/generated/goal.sql.go b/server/pkg/db/generated/goal.sql.go
+new file mode 100644
+index 000000000..869299247
+--- /dev/null
++++ b/server/pkg/db/generated/goal.sql.go
+@@ -0,0 +1,522 @@
++// Code generated by sqlc. DO NOT EDIT.
++// versions:
++//   sqlc v1.31.1
++// source: goal.sql
++
++package db
++
++import (
++	"context"
++
++	"github.com/jackc/pgx/v5/pgtype"
++)
++
++const countGoalChildren = `-- name: CountGoalChildren :one
++SELECT count(*) FROM goal WHERE parent_id = $1 AND workspace_id = $2
++`
++
++type CountGoalChildrenParams struct {
++	ParentID    pgtype.UUID `json:"parent_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) CountGoalChildren(ctx context.Context, arg CountGoalChildrenParams) (int64, error) {
++	row := q.db.QueryRow(ctx, countGoalChildren, arg.ParentID, arg.WorkspaceID)
++	var count int64
++	err := row.Scan(&count)
++	return count, err
++}
++
++const createGoal = `-- name: CreateGoal :one
++INSERT INTO goal (
++    workspace_id, parent_id, title, description, unit, direction,
++    start_value, target_value, current_value, due_date, status, measured_by,
++    owner_type, owner_id, position, source_ref
++) VALUES (
++    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
++) RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at
++`
++
++type CreateGoalParams struct {
++	WorkspaceID  pgtype.UUID `json:"workspace_id"`
++	ParentID     pgtype.UUID `json:"parent_id"`
++	Title        string      `json:"title"`
++	Description  string      `json:"description"`
++	Unit         string      `json:"unit"`
++	Direction    string      `json:"direction"`
++	StartValue   float64     `json:"start_value"`
++	TargetValue  float64     `json:"target_value"`
++	CurrentValue float64     `json:"current_value"`
++	DueDate      pgtype.Date `json:"due_date"`
++	Status       string      `json:"status"`
++	MeasuredBy   string      `json:"measured_by"`
++	OwnerType    pgtype.Text `json:"owner_type"`
++	OwnerID      pgtype.UUID `json:"owner_id"`
++	Position     float64     `json:"position"`
++	SourceRef    pgtype.Text `json:"source_ref"`
++}
++
++func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error) {
++	row := q.db.QueryRow(ctx, createGoal,
++		arg.WorkspaceID,
++		arg.ParentID,
++		arg.Title,
++		arg.Description,
++		arg.Unit,
++		arg.Direction,
++		arg.StartValue,
++		arg.TargetValue,
++		arg.CurrentValue,
++		arg.DueDate,
++		arg.Status,
++		arg.MeasuredBy,
++		arg.OwnerType,
++		arg.OwnerID,
++		arg.Position,
++		arg.SourceRef,
++	)
++	var i Goal
++	err := row.Scan(
++		&i.ID,
++		&i.WorkspaceID,
++		&i.ParentID,
++		&i.Title,
++		&i.Description,
++		&i.Unit,
++		&i.Direction,
++		&i.StartValue,
++		&i.TargetValue,
++		&i.CurrentValue,
++		&i.DueDate,
++		&i.Status,
++		&i.MeasuredBy,
++		&i.OwnerType,
++		&i.OwnerID,
++		&i.Position,
++		&i.SourceRef,
++		&i.Pending,
++		&i.CurrentUpdatedAt,
++		&i.CreatedAt,
++		&i.UpdatedAt,
++	)
++	return i, err
++}
++
++const createGoalLink = `-- name: CreateGoalLink :exec
++INSERT INTO goal_link (goal_id, workspace_id, target_type, target_id)
++VALUES ($1, $2, $3, $4)
++ON CONFLICT DO NOTHING
++`
++
++type CreateGoalLinkParams struct {
++	GoalID      pgtype.UUID `json:"goal_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++	TargetType  string      `json:"target_type"`
++	TargetID    pgtype.UUID `json:"target_id"`
++}
++
++func (q *Queries) CreateGoalLink(ctx context.Context, arg CreateGoalLinkParams) error {
++	_, err := q.db.Exec(ctx, createGoalLink,
++		arg.GoalID,
++		arg.WorkspaceID,
++		arg.TargetType,
++		arg.TargetID,
++	)
++	return err
++}
++
++const createGoalValue = `-- name: CreateGoalValue :one
++INSERT INTO goal_value (goal_id, workspace_id, value, note, actor_type, actor_id, synced, created_at)
++VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, now()))
++RETURNING id, goal_id, workspace_id, value, note, actor_type, actor_id, synced, created_at
++`
++
++type CreateGoalValueParams struct {
++	GoalID      pgtype.UUID        `json:"goal_id"`
++	WorkspaceID pgtype.UUID        `json:"workspace_id"`
++	Value       float64            `json:"value"`
++	Note        string             `json:"note"`
++	ActorType   string             `json:"actor_type"`
++	ActorID     pgtype.UUID        `json:"actor_id"`
++	Synced      bool               `json:"synced"`
++	RecordedAt  pgtype.Timestamptz `json:"recorded_at"`
++}
++
++func (q *Queries) CreateGoalValue(ctx context.Context, arg CreateGoalValueParams) (GoalValue, error) {
++	row := q.db.QueryRow(ctx, createGoalValue,
++		arg.GoalID,
++		arg.WorkspaceID,
++		arg.Value,
++		arg.Note,
++		arg.ActorType,
++		arg.ActorID,
++		arg.Synced,
++		arg.RecordedAt,
++	)
++	var i GoalValue
++	err := row.Scan(
++		&i.ID,
++		&i.GoalID,
++		&i.WorkspaceID,
++		&i.Value,
++		&i.Note,
++		&i.ActorType,
++		&i.ActorID,
++		&i.Synced,
++		&i.CreatedAt,
++	)
++	return i, err
++}
++
++const deleteGoal = `-- name: DeleteGoal :exec
++DELETE FROM goal WHERE id = $1 AND workspace_id = $2
++`
++
++type DeleteGoalParams struct {
++	ID          pgtype.UUID `json:"id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) DeleteGoal(ctx context.Context, arg DeleteGoalParams) error {
++	_, err := q.db.Exec(ctx, deleteGoal, arg.ID, arg.WorkspaceID)
++	return err
++}
++
++const deleteGoalLinks = `-- name: DeleteGoalLinks :exec
++DELETE FROM goal_link WHERE goal_id = $1 AND workspace_id = $2
++`
++
++type DeleteGoalLinksParams struct {
++	GoalID      pgtype.UUID `json:"goal_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) DeleteGoalLinks(ctx context.Context, arg DeleteGoalLinksParams) error {
++	_, err := q.db.Exec(ctx, deleteGoalLinks, arg.GoalID, arg.WorkspaceID)
++	return err
++}
++
++const deleteGoalValues = `-- name: DeleteGoalValues :exec
++DELETE FROM goal_value WHERE goal_id = $1 AND workspace_id = $2
++`
++
++type DeleteGoalValuesParams struct {
++	GoalID      pgtype.UUID `json:"goal_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) DeleteGoalValues(ctx context.Context, arg DeleteGoalValuesParams) error {
++	_, err := q.db.Exec(ctx, deleteGoalValues, arg.GoalID, arg.WorkspaceID)
++	return err
++}
++
++const getGoalInWorkspace = `-- name: GetGoalInWorkspace :one
++SELECT id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at FROM goal
++WHERE id = $1 AND workspace_id = $2
++`
++
++type GetGoalInWorkspaceParams struct {
++	ID          pgtype.UUID `json:"id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) GetGoalInWorkspace(ctx context.Context, arg GetGoalInWorkspaceParams) (Goal, error) {
++	row := q.db.QueryRow(ctx, getGoalInWorkspace, arg.ID, arg.WorkspaceID)
++	var i Goal
++	err := row.Scan(
++		&i.ID,
++		&i.WorkspaceID,
++		&i.ParentID,
++		&i.Title,
++		&i.Description,
++		&i.Unit,
++		&i.Direction,
++		&i.StartValue,
++		&i.TargetValue,
++		&i.CurrentValue,
++		&i.DueDate,
++		&i.Status,
++		&i.MeasuredBy,
++		&i.OwnerType,
++		&i.OwnerID,
++		&i.Position,
++		&i.SourceRef,
++		&i.Pending,
++		&i.CurrentUpdatedAt,
++		&i.CreatedAt,
++		&i.UpdatedAt,
++	)
++	return i, err
++}
++
++const listGoalLinks = `-- name: ListGoalLinks :many
++SELECT goal_id, workspace_id, target_type, target_id, created_at FROM goal_link
++WHERE workspace_id = $1
++ORDER BY created_at ASC
++`
++
++func (q *Queries) ListGoalLinks(ctx context.Context, workspaceID pgtype.UUID) ([]GoalLink, error) {
++	rows, err := q.db.Query(ctx, listGoalLinks, workspaceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	items := []GoalLink{}
++	for rows.Next() {
++		var i GoalLink
++		if err := rows.Scan(
++			&i.GoalID,
++			&i.WorkspaceID,
++			&i.TargetType,
++			&i.TargetID,
++			&i.CreatedAt,
++		); err != nil {
++			return nil, err
++		}
++		items = append(items, i)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	return items, nil
++}
++
++const listGoalValues = `-- name: ListGoalValues :many
++SELECT id, goal_id, workspace_id, value, note, actor_type, actor_id, synced, created_at FROM goal_value
++WHERE goal_id = $1 AND workspace_id = $2
++ORDER BY created_at ASC, id ASC
++`
++
++type ListGoalValuesParams struct {
++	GoalID      pgtype.UUID `json:"goal_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) ListGoalValues(ctx context.Context, arg ListGoalValuesParams) ([]GoalValue, error) {
++	rows, err := q.db.Query(ctx, listGoalValues, arg.GoalID, arg.WorkspaceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	items := []GoalValue{}
++	for rows.Next() {
++		var i GoalValue
++		if err := rows.Scan(
++			&i.ID,
++			&i.GoalID,
++			&i.WorkspaceID,
++			&i.Value,
++			&i.Note,
++			&i.ActorType,
++			&i.ActorID,
++			&i.Synced,
++			&i.CreatedAt,
++		); err != nil {
++			return nil, err
++		}
++		items = append(items, i)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	return items, nil
++}
++
++const listGoals = `-- name: ListGoals :many
++
++SELECT id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at FROM goal
++WHERE workspace_id = $1
++ORDER BY position ASC, created_at ASC
++`
++
++// vantt goals (patch goals, F2).
++func (q *Queries) ListGoals(ctx context.Context, workspaceID pgtype.UUID) ([]Goal, error) {
++	rows, err := q.db.Query(ctx, listGoals, workspaceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	items := []Goal{}
++	for rows.Next() {
++		var i Goal
++		if err := rows.Scan(
++			&i.ID,
++			&i.WorkspaceID,
++			&i.ParentID,
++			&i.Title,
++			&i.Description,
++			&i.Unit,
++			&i.Direction,
++			&i.StartValue,
++			&i.TargetValue,
++			&i.CurrentValue,
++			&i.DueDate,
++			&i.Status,
++			&i.MeasuredBy,
++			&i.OwnerType,
++			&i.OwnerID,
++			&i.Position,
++			&i.SourceRef,
++			&i.Pending,
++			&i.CurrentUpdatedAt,
++			&i.CreatedAt,
++			&i.UpdatedAt,
++		); err != nil {
++			return nil, err
++		}
++		items = append(items, i)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	return items, nil
++}
++
++const markGoalValuesSynced = `-- name: MarkGoalValuesSynced :exec
++UPDATE goal_value SET synced = true
++WHERE goal_id = $1 AND workspace_id = $2 AND id = ANY($3::uuid[])
++`
++
++type MarkGoalValuesSyncedParams struct {
++	GoalID      pgtype.UUID   `json:"goal_id"`
++	WorkspaceID pgtype.UUID   `json:"workspace_id"`
++	Ids         []pgtype.UUID `json:"ids"`
++}
++
++func (q *Queries) MarkGoalValuesSynced(ctx context.Context, arg MarkGoalValuesSyncedParams) error {
++	_, err := q.db.Exec(ctx, markGoalValuesSynced, arg.GoalID, arg.WorkspaceID, arg.Ids)
++	return err
++}
++
++const setGoalCurrent = `-- name: SetGoalCurrent :one
++UPDATE goal SET
++    current_value      = $3,
++    current_updated_at = now(),
++    updated_at         = now()
++WHERE id = $1 AND workspace_id = $2
++RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at
++`
++
++type SetGoalCurrentParams struct {
++	ID           pgtype.UUID `json:"id"`
++	WorkspaceID  pgtype.UUID `json:"workspace_id"`
++	CurrentValue float64     `json:"current_value"`
++}
++
++func (q *Queries) SetGoalCurrent(ctx context.Context, arg SetGoalCurrentParams) (Goal, error) {
++	row := q.db.QueryRow(ctx, setGoalCurrent, arg.ID, arg.WorkspaceID, arg.CurrentValue)
++	var i Goal
++	err := row.Scan(
++		&i.ID,
++		&i.WorkspaceID,
++		&i.ParentID,
++		&i.Title,
++		&i.Description,
++		&i.Unit,
++		&i.Direction,
++		&i.StartValue,
++		&i.TargetValue,
++		&i.CurrentValue,
++		&i.DueDate,
++		&i.Status,
++		&i.MeasuredBy,
++		&i.OwnerType,
++		&i.OwnerID,
++		&i.Position,
++		&i.SourceRef,
++		&i.Pending,
++		&i.CurrentUpdatedAt,
++		&i.CreatedAt,
++		&i.UpdatedAt,
++	)
++	return i, err
++}
++
++const updateGoal = `-- name: UpdateGoal :one
++UPDATE goal SET
++    parent_id    = $3,
++    title        = $4,
++    description  = $5,
++    unit         = $6,
++    direction    = $7,
++    start_value  = $8,
++    target_value = $9,
++    due_date     = $10,
++    status       = $11,
++    measured_by  = $12,
++    owner_type   = $13,
++    owner_id     = $14,
++    position     = $15,
++    source_ref   = $16,
++    pending      = $17,
++    updated_at   = now()
++WHERE id = $1 AND workspace_id = $2
++RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at
++`
++
++type UpdateGoalParams struct {
++	ID          pgtype.UUID `json:"id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++	ParentID    pgtype.UUID `json:"parent_id"`
++	Title       string      `json:"title"`
++	Description string      `json:"description"`
++	Unit        string      `json:"unit"`
++	Direction   string      `json:"direction"`
++	StartValue  float64     `json:"start_value"`
++	TargetValue float64     `json:"target_value"`
++	DueDate     pgtype.Date `json:"due_date"`
++	Status      string      `json:"status"`
++	MeasuredBy  string      `json:"measured_by"`
++	OwnerType   pgtype.Text `json:"owner_type"`
++	OwnerID     pgtype.UUID `json:"owner_id"`
++	Position    float64     `json:"position"`
++	SourceRef   pgtype.Text `json:"source_ref"`
++	Pending     bool        `json:"pending"`
++}
++
++func (q *Queries) UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error) {
++	row := q.db.QueryRow(ctx, updateGoal,
++		arg.ID,
++		arg.WorkspaceID,
++		arg.ParentID,
++		arg.Title,
++		arg.Description,
++		arg.Unit,
++		arg.Direction,
++		arg.StartValue,
++		arg.TargetValue,
++		arg.DueDate,
++		arg.Status,
++		arg.MeasuredBy,
++		arg.OwnerType,
++		arg.OwnerID,
++		arg.Position,
++		arg.SourceRef,
++		arg.Pending,
++	)
++	var i Goal
++	err := row.Scan(
++		&i.ID,
++		&i.WorkspaceID,
++		&i.ParentID,
++		&i.Title,
++		&i.Description,
++		&i.Unit,
++		&i.Direction,
++		&i.StartValue,
++		&i.TargetValue,
++		&i.CurrentValue,
++		&i.DueDate,
++		&i.Status,
++		&i.MeasuredBy,
++		&i.OwnerType,
++		&i.OwnerID,
++		&i.Position,
++		&i.SourceRef,
++		&i.Pending,
++		&i.CurrentUpdatedAt,
++		&i.CreatedAt,
++		&i.UpdatedAt,
++	)
++	return i, err
++}
+diff --git a/server/pkg/db/generated/models.go b/server/pkg/db/generated/models.go
+index d544c0c01..10451c526 100644
+--- a/server/pkg/db/generated/models.go
++++ b/server/pkg/db/generated/models.go
+@@ -804,6 +804,50 @@ type GithubPullRequestCheckSuite struct {
+ 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+ }
+ 
++type Goal struct {
++	ID               pgtype.UUID        `json:"id"`
++	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
++	ParentID         pgtype.UUID        `json:"parent_id"`
++	Title            string             `json:"title"`
++	Description      string             `json:"description"`
++	Unit             string             `json:"unit"`
++	Direction        string             `json:"direction"`
++	StartValue       float64            `json:"start_value"`
++	TargetValue      float64            `json:"target_value"`
++	CurrentValue     float64            `json:"current_value"`
++	DueDate          pgtype.Date        `json:"due_date"`
++	Status           string             `json:"status"`
++	MeasuredBy       string             `json:"measured_by"`
++	OwnerType        pgtype.Text        `json:"owner_type"`
++	OwnerID          pgtype.UUID        `json:"owner_id"`
++	Position         float64            `json:"position"`
++	SourceRef        pgtype.Text        `json:"source_ref"`
++	Pending          bool               `json:"pending"`
++	CurrentUpdatedAt pgtype.Timestamptz `json:"current_updated_at"`
++	CreatedAt        pgtype.Timestamptz `json:"created_at"`
++	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
++}
++
++type GoalLink struct {
++	GoalID      pgtype.UUID        `json:"goal_id"`
++	WorkspaceID pgtype.UUID        `json:"workspace_id"`
++	TargetType  string             `json:"target_type"`
++	TargetID    pgtype.UUID        `json:"target_id"`
++	CreatedAt   pgtype.Timestamptz `json:"created_at"`
++}
++
++type GoalValue struct {
++	ID          pgtype.UUID        `json:"id"`
++	GoalID      pgtype.UUID        `json:"goal_id"`
++	WorkspaceID pgtype.UUID        `json:"workspace_id"`
++	Value       float64            `json:"value"`
++	Note        string             `json:"note"`
++	ActorType   string             `json:"actor_type"`
++	ActorID     pgtype.UUID        `json:"actor_id"`
++	Synced      bool               `json:"synced"`
++	CreatedAt   pgtype.Timestamptz `json:"created_at"`
++}
++
+ type InboxItem struct {
+ 	ID            pgtype.UUID        `json:"id"`
+ 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+diff --git a/server/pkg/db/generated/workspace_delete.sql.go b/server/pkg/db/generated/workspace_delete.sql.go
+index 2d067d0f4..9d055bb88 100644
+--- a/server/pkg/db/generated/workspace_delete.sql.go
++++ b/server/pkg/db/generated/workspace_delete.sql.go
+@@ -413,6 +413,15 @@ deleted_squad_members AS (
+ deleted_project_resources AS (
+     DELETE FROM project_resource WHERE workspace_id = $1
+ ),
++deleted_goal_links AS (
++    DELETE FROM goal_link WHERE goal_link.workspace_id = $1
++),
++deleted_goal_values AS (
++    DELETE FROM goal_value WHERE goal_value.workspace_id = $1
++),
++deleted_goals AS (
++    DELETE FROM goal WHERE goal.workspace_id = $1
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+diff --git a/server/pkg/db/queries/goal.sql b/server/pkg/db/queries/goal.sql
+new file mode 100644
+index 000000000..42cca3ab7
+--- /dev/null
++++ b/server/pkg/db/queries/goal.sql
+@@ -0,0 +1,84 @@
++-- vantt goals (patch goals, F2).
++
++-- name: ListGoals :many
++SELECT * FROM goal
++WHERE workspace_id = $1
++ORDER BY position ASC, created_at ASC;
++
++-- name: GetGoalInWorkspace :one
++SELECT * FROM goal
++WHERE id = $1 AND workspace_id = $2;
++
++-- name: CreateGoal :one
++INSERT INTO goal (
++    workspace_id, parent_id, title, description, unit, direction,
++    start_value, target_value, current_value, due_date, status, measured_by,
++    owner_type, owner_id, position, source_ref
++) VALUES (
++    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
++) RETURNING *;
++
++-- name: UpdateGoal :one
++UPDATE goal SET
++    parent_id    = $3,
++    title        = $4,
++    description  = $5,
++    unit         = $6,
++    direction    = $7,
++    start_value  = $8,
++    target_value = $9,
++    due_date     = $10,
++    status       = $11,
++    measured_by  = $12,
++    owner_type   = $13,
++    owner_id     = $14,
++    position     = $15,
++    source_ref   = $16,
++    pending      = $17,
++    updated_at   = now()
++WHERE id = $1 AND workspace_id = $2
++RETURNING *;
++
++-- name: SetGoalCurrent :one
++UPDATE goal SET
++    current_value      = $3,
++    current_updated_at = now(),
++    updated_at         = now()
++WHERE id = $1 AND workspace_id = $2
++RETURNING *;
++
++-- name: DeleteGoal :exec
++DELETE FROM goal WHERE id = $1 AND workspace_id = $2;
++
++-- name: CountGoalChildren :one
++SELECT count(*) FROM goal WHERE parent_id = $1 AND workspace_id = $2;
++
++-- name: CreateGoalValue :one
++INSERT INTO goal_value (goal_id, workspace_id, value, note, actor_type, actor_id, synced, created_at)
++VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE(sqlc.narg('recorded_at')::timestamptz, now()))
++RETURNING *;
++
++-- name: MarkGoalValuesSynced :exec
++UPDATE goal_value SET synced = true
++WHERE goal_id = $1 AND workspace_id = $2 AND id = ANY(sqlc.arg('ids')::uuid[]);
++
++-- name: ListGoalValues :many
++SELECT * FROM goal_value
++WHERE goal_id = $1 AND workspace_id = $2
++ORDER BY created_at ASC, id ASC;
++
++-- name: DeleteGoalValues :exec
++DELETE FROM goal_value WHERE goal_id = $1 AND workspace_id = $2;
++
++-- name: ListGoalLinks :many
++SELECT * FROM goal_link
++WHERE workspace_id = $1
++ORDER BY created_at ASC;
++
++-- name: DeleteGoalLinks :exec
++DELETE FROM goal_link WHERE goal_id = $1 AND workspace_id = $2;
++
++-- name: CreateGoalLink :exec
++INSERT INTO goal_link (goal_id, workspace_id, target_type, target_id)
++VALUES ($1, $2, $3, $4)
++ON CONFLICT DO NOTHING;
+diff --git a/server/pkg/db/queries/workspace_delete.sql b/server/pkg/db/queries/workspace_delete.sql
+index 9f6972cfb..34530b959 100644
+--- a/server/pkg/db/queries/workspace_delete.sql
++++ b/server/pkg/db/queries/workspace_delete.sql
+@@ -426,6 +426,15 @@ deleted_squad_members AS (
+ deleted_project_resources AS (
+     DELETE FROM project_resource WHERE workspace_id = $1
+ ),
++deleted_goal_links AS (
++    DELETE FROM goal_link WHERE goal_link.workspace_id = $1
++),
++deleted_goal_values AS (
++    DELETE FROM goal_value WHERE goal_value.workspace_id = $1
++),
++deleted_goals AS (
++    DELETE FROM goal WHERE goal.workspace_id = $1
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+-- 
+2.53.0
+
