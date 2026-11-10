@@ -1707,6 +1707,9 @@
       }
     },
     "approval": {
+      "prs_label": "プルリクエスト",
+      "approve_on_github": "GitHub で承認",
+      "pr_then_approve": "GitHub で自分のアカウントから PR を承認してから、ここで承認してください。",
       "title": "あなたの承認待ち",
       "gate_note": "エージェントはこの課題をこのステップから移動できません。",
       "approve": "承認",
