@@ -130,6 +130,15 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	var gate *issueworkflow.GateError
+	if errors.As(err, &gate) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":  gate.Error(),
+			"code":   "owner_gate",
+			"status": gate.Status,
+		})
+		return true
+	}
 	var moved *issueworkflow.StepMovedError
 	if errors.As(err, &moved) {
 		writeJSON(w, http.StatusConflict, map[string]any{
@@ -141,6 +150,28 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		return true
 	}
 	return false
+}
+
+// refuseAgentLeavingGate stops an agent from moving an issue out of a step a
+// person handles, by changing its status or its project. Members are not
+// affected (vantt owner-gates).
+func (h *Handler) refuseAgentLeavingGate(ctx context.Context, prev db.Issue, params db.UpdateIssueParams, callerType string) error {
+	if callerType != "agent" {
+		return nil
+	}
+	statusChanging := params.Status.Valid && params.Status.String != prev.Status
+	projectMoving := params.ProjectID != prev.ProjectID
+	if !statusChanging && !projectMoving {
+		return nil
+	}
+	def, project, err := issueworkflow.ForProject(ctx, h.Queries, prev.WorkspaceID, prev.ProjectID)
+	if err != nil {
+		return err
+	}
+	if issueworkflow.PersonGate(def, prev.Status, project, prev.CreatorType, prev.CreatorID) {
+		return &issueworkflow.GateError{Status: prev.Status}
+	}
+	return nil
 }
 
 // agentRunOnIssue returns the calling agent's run when it works on this issue,
