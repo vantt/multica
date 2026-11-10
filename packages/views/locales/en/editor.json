@@ -182,5 +182,9 @@
     "clear_filter": "Clear filter",
     "no_matches": "No matching rows",
     "close": "Close"
+  },
+  "reader": {
+    "outline": "On this page",
+    "progress": "Reading progress"
   }
 }
