@@ -1,0 +1,20 @@
+[
+  {"title": "Viết nội dung landing page cho Momentry", "project": "momentry", "type": "Marketing · Copy"},
+  {"title": "Momentry bị crash khi mở phiên dài hơn 2 giờ", "project": "momentry", "type": "Tech · Bug"},
+  {"title": "Thêm xuất story ra markdown trong momentry", "project": "momentry", "type": "Tech · Feature"},
+  {"title": "Nghiên cứu cách tính giá license cho dev của momentry", "project": "momentry", "type": "Marketing · Research"},
+  {"title": "Bài LinkedIn giới thiệu OPC Studio tuần này", "project": "Nội dung marketing", "type": "Marketing · Post"},
+  {"title": "Email bản tin tháng 11 gửi khách hàng OPC", "project": "Nội dung marketing", "type": "Marketing · Email"},
+  {"title": "Chiến dịch ra mắt gói Content cho khách SME", "project": "Nội dung marketing", "type": "Marketing · Campaign"},
+  {"title": "Blog: vì sao một người vận hành công ty với agent", "project": "Nội dung marketing", "type": "Marketing · Copy"},
+  {"title": "Nút đăng nhập trên app không phản hồi trên Safari", "project": "Sản phẩm", "type": "Tech · Bug"},
+  {"title": "Thêm trang cài đặt hồ sơ người dùng trong app", "project": "Sản phẩm", "type": "Tech · Feature"},
+  {"title": "Nâng cấp dependency React lên bản mới trong app", "project": "Sản phẩm", "type": "Tech · Chore"},
+  {"title": "Viết tài liệu API cho app", "project": "Sản phẩm", "type": "Tech · Doc"},
+  {"title": "Báo cáo sức khoẻ kiến trúc tuần 46", "project": "Kiến trúc", "type": "Tech · Research"},
+  {"title": "Đồng bộ board tuần này và báo cáo tiến độ", "project": "Điều phối", "type": "Tech · Chore"},
+  {"title": "Fix lỗi đếm sai số từ khi momentry đọc transcript", "project": "momentry", "type": "Tech · Bug"},
+  {"title": "Post Facebook: case study khách dùng OPC Studio", "project": "Nội dung marketing", "type": "Marketing · Post"},
+  {"title": "So sánh Polar và Dodo để bán license momentry", "project": "momentry", "type": "Tech · Research"},
+  {"title": "App chậm khi danh sách có hơn 1000 dòng", "project": "Sản phẩm", "type": "Tech · Bug"}
+]

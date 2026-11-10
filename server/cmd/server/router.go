@@ -36,6 +36,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
+	"github.com/multica-ai/multica/server/internal/triage"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -536,7 +537,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// connection of its own outside the per-installation supervisor. The Router
 	// is the single shared inbound handler injected into every Channel.
 	channelRegistry := channel.NewRegistry()
-	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{
+	// vantt 0021: chat /issue gets project and Type when the model is sure;
+	// the create form asks POST /api/issues/triage-suggest.
+	var chatIssues engine.IssueCreator = h.IssueService
+	if clef := triage.FromEnv(slog.Default()); clef != nil {
+		handler.Triage = &triage.Suggester{DB: pool, Client: clef}
+		chatIssues = &triage.ChatIssues{IssueCreator: h.IssueService, Suggester: handler.Triage}
+		slog.Info("triage suggestions enabled (Workers AI Clef)")
+	}
+	channelRouter := engine.NewRouter(chatIssues, h.TaskService, queries, engine.RouterConfig{
 		Logger: slog.Default(), Lifecycle: h,
 	})
 	// Debounce the per-session run trigger so a burst of messages collapses
@@ -2042,6 +2051,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/children", h.ListChildrenByParents)
 				r.Get("/decisions/open", h.ListOpenDecisions) // vantt decisions
 				r.Get("/status-since", h.ListIssueStatusSince) // vantt board-age
+				r.Post("/triage-suggest", h.TriageSuggest)     // vantt 0021
 				r.Get("/grouped", h.ListGroupedIssues)
 				r.Get("/", h.ListIssues)
 				// POST twin of GET /api/issues for oversized filter sets
