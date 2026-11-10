@@ -320,6 +320,8 @@ type MessageEntity struct {
 type Update struct {
 	UpdateID int64    `json:"update_id"`
 	Message  *Message `json:"message"`
+	// vantt 0019: a pressed decision button (see vantt_push.go).
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
 }
 
 // GetMe validates the token and returns the bot's own identity.
@@ -357,7 +359,8 @@ func (a *botAPI) GetUpdates(ctx context.Context, offset int64) ([]Update, error)
 		Timeout: longPollTimeoutSecs,
 		// Restrict the stream to plain messages: fewer wakeups, and edits /
 		// reactions / channel posts never enter the pipeline.
-		AllowedUpdates: []string{"message"},
+		// vantt 0019: plus callback_query for decision buttons.
+		AllowedUpdates: []string{"message", "callback_query"},
 	}, &updates)
 	if err != nil {
 		var ae *apiError

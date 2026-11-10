@@ -80,6 +80,7 @@
     "quick_create_unconfirmed": "エージェントでの作成結果は未確認",
     "autopilot_paused": "自動化を一時停止しました",
     "children_done": "サブタスクがすべて終わりました",
+    "decision_requested": "判断が必要です",
     "autopilot_quota_exceeded": "自動化の実行上限に達しました"
   },
   "labels": {
@@ -117,5 +118,10 @@
     "unarchive_failed": "アーカイブ解除に失敗しました",
     "archived_load_failed": "アーカイブ済み通知を読み込めませんでした",
     "filters_load_failed": "フィルターを読み込めませんでした"
+  },
+  "tabs": {
+    "label": "受信箱の表示",
+    "needs_you": "要対応",
+    "for_your_info": "参考"
   }
 }
