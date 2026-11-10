@@ -1702,6 +1702,16 @@
           "waiting": "等待反馈"
         }
       }
+    },
+    "approval": {
+      "title": "等待你的审批",
+      "gate_note": "智能体无法将此事项移出此步骤。",
+      "approve": "批准",
+      "send_back": "退回",
+      "moves_to": "批准后移至 {{status}}",
+      "reason_label": "需要修改什么？",
+      "send_back_to": "退回到 {{status}}",
+      "cancel": "取消"
     }
   },
   "hover_card": {
