@@ -118,5 +118,10 @@
     "unarchive_failed": "取消归档失败",
     "archived_load_failed": "无法加载已归档通知",
     "filters_load_failed": "无法加载筛选项"
+  },
+  "tabs": {
+    "label": "收件箱视图",
+    "needs_you": "需要你处理",
+    "for_your_info": "供你知悉"
   }
 }
