@@ -15,3 +15,13 @@
 # Planned order (vantt/plans/plan.md): F0 fork-identity, F1 owner-gates, F2 goals,
 # F3 workflow-by-type, F4 boards, F5 decisions, F7 parent-child, F8 artifact-reader,
 # F6 budgets (last).
+
+[[patches]]
+id = "owner-gates"
+name = "feat(workflow): agents cannot move an issue out of a step a person handles"
+patch_file = "0001-owner-gates.patch"
+metadata_file = "0001-owner-gates.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/issueworkflow/issueworkflow.go", "server/internal/handler/issue_workflow_entry.go", "server/internal/handler/issue.go", "server/internal/handler/vantt_owner_gates_test.go"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'OwnerGate|AgentStepIsNotAGate' -count=1"
