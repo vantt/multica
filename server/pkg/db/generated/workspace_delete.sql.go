@@ -428,6 +428,10 @@ deleted_project_workflow_rules AS (
 deleted_issue_decisions AS (
     DELETE FROM issue_decision WHERE issue_decision.workspace_id = $1
 ),
+deleted_vantt_workflow_limits AS (
+    DELETE FROM vantt_workflow_limit
+    WHERE vantt_workflow_limit.workflow_id IN (SELECT id FROM issue_workflow WHERE issue_workflow.workspace_id = $1)
+),
 deleted_autopilot_collaborators AS (
     DELETE FROM autopilot_collaborator
     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
