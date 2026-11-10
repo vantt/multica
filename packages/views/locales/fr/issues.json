@@ -1772,6 +1772,9 @@
       }
     },
     "approval": {
+      "prs_label": "Pull requests",
+      "approve_on_github": "Approuver sur GitHub",
+      "pr_then_approve": "Approuvez la PR sur GitHub avec votre compte, puis Approuvez ici.",
       "title": "En attente de votre approbation",
       "gate_note": "Les agents ne peuvent pas faire sortir ce ticket de cette étape.",
       "approve": "Approuver",
