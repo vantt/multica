@@ -139,6 +139,9 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	if writeSendBackLimitError(w, err) { // vantt send-back-limit
+		return true
+	}
 	var moved *issueworkflow.StepMovedError
 	if errors.As(err, &moved) {
 		writeJSON(w, http.StatusConflict, map[string]any{
@@ -170,6 +173,9 @@ func (h *Handler) refuseAgentLeavingGate(ctx context.Context, prev db.Issue, par
 	}
 	if issueworkflow.PersonGate(def, prev.Status, project, prev.CreatorType, prev.CreatorID) {
 		return &issueworkflow.GateError{Status: prev.Status}
+	}
+	if statusChanging && !projectMoving {
+		return h.refuseSendBackOverLimit(ctx, def, prev, params.Status.String) // vantt send-back-limit
 	}
 	return nil
 }
