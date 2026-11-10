@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 )
 
@@ -33,6 +34,9 @@ type telegramChannel struct {
 	// stored (see ChannelDeps.AcceptsMedia). Without it media keeps getting
 	// the unsupported notice instead of a placeholder nothing stands behind.
 	acceptsMedia bool
+	// vantt 0019: installation id and the button-press handler (nil: ignored).
+	installationID pgtype.UUID
+	callbacks      CallbackHandler
 }
 
 // pollRetryDelay spaces retries after a transient getUpdates failure inside
@@ -122,6 +126,12 @@ func (c *telegramChannel) Connect(ctx context.Context) error {
 // location, …), they get a courteous notice in a private chat or when
 // explicitly addressed to the bot in a group.
 func (c *telegramChannel) dispatch(ctx context.Context, u Update) error {
+	if u.CallbackQuery != nil {
+		if c.callbacks != nil {
+			c.callbacks.HandleCallback(ctx, c.installationID, c.api, *u.CallbackQuery)
+		}
+		return nil
+	}
 	msg, ok := inboundFromUpdateWithContext(u, c.botID, c.botUsername, c.recent)
 	if !ok {
 		return nil
@@ -255,6 +265,8 @@ type ChannelDeps struct {
 	// sets it from the same condition, so the loop never accepts a photo the
 	// pipeline cannot keep.
 	AcceptsMedia bool
+	// Callbacks handles pressed inline buttons (vantt 0019). Nil ignores them.
+	Callbacks CallbackHandler
 }
 
 // RegisterTelegram registers the per-installation Telegram Factory so the
@@ -286,7 +298,7 @@ func newTelegramFactory(deps ChannelDeps) channel.Factory {
 		if err != nil {
 			return nil, fmt.Errorf("telegram: installation app_id is not a bot id: %w", err)
 		}
-		return &telegramChannel{
+		ch := &telegramChannel{
 			botID:        botID,
 			botUsername:  ic.BotUsername,
 			api:          newBotAPI(deps.APIBase, token, deps.HTTPClient),
@@ -294,6 +306,8 @@ func newTelegramFactory(deps ChannelDeps) channel.Factory {
 			logger:       logger,
 			recent:       newRecentContextBuffer(deps.RecentContextSize),
 			acceptsMedia: deps.AcceptsMedia,
-		}, nil
+		}
+		ch.installationID, ch.callbacks = cfg.ID, deps.Callbacks // vantt 0019
+		return ch, nil
 	}
 }
