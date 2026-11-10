@@ -1,30 +1,33 @@
-From 863cf8ab7fc151388bf1f30d2a7324025ea09153 Mon Sep 17 00:00:00 2001
+From 872d5ff4b599b196ce165e1b0359d8d00587da0e Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Wed, 11 Nov 2026 00:24:49 +0700
 Subject: [PATCH] feat(inbox): "Needs you" and "For your info" tabs
 
-The active inbox shows one of two tabs. "Needs you" holds the items the
-server already marks above info (action_required: assigned to you, a
-decision to answer, a run that failed; attention: an autopilot problem);
-"For your info" holds the rest. It opens on "Needs you" while that holds
-anything; the count there is red. Each "Needs you" row starts with a chip
-naming why (its kind). Archive stays "Done"; filters apply inside the tab.
-Web only: severity is already on every item. Reference: OpenMausBot's
+The active inbox shows one of two tabs. A row (an issue's notifications,
+grouped) is in "Needs you" when any of its unarchived notifications is
+marked above info by the server (action_required: assigned to you, a
+decision to answer, a run that failed; attention: an autopilot problem)
+and its issue is not done or closed; the rest is "For your info". The
+grouped row shows only the newest notification, often a comment, so the
+split reads every unarchived notification, not the row. It opens on
+"Needs you" while that holds anything; that count is red. Each "Needs you"
+row starts with a chip naming the notification that asks. Archive stays
+"Done"; filters apply inside the tab. Web only. Reference: OpenMausBot's
 Needs you / For your info / Done.
 
 Patch-Id: inbox-split
 ---
- .../inbox/components/inbox-list-item.tsx      |  2 +
- .../views/inbox/components/inbox-page.tsx     | 17 +++-
- .../inbox/components/inbox-tabs.test.tsx      | 38 +++++++++
- .../views/inbox/components/inbox-tabs.tsx     | 84 +++++++++++++++++++
- packages/views/locales/en/inbox.json          |  5 ++
- packages/views/locales/fr/inbox.json          |  5 ++
- packages/views/locales/ja/inbox.json          |  5 ++
- packages/views/locales/ko/inbox.json          |  5 ++
- packages/views/locales/zh-Hans/inbox.json     |  5 ++
- packages/views/locales/zh-Hant/inbox.json     |  5 ++
- 10 files changed, 170 insertions(+), 1 deletion(-)
+ .../inbox/components/inbox-list-item.tsx      |   2 +
+ .../views/inbox/components/inbox-page.tsx     |  28 +++-
+ .../inbox/components/inbox-tabs.test.tsx      |  46 +++++++
+ .../views/inbox/components/inbox-tabs.tsx     | 121 ++++++++++++++++++
+ packages/views/locales/en/inbox.json          |   5 +
+ packages/views/locales/fr/inbox.json          |   5 +
+ packages/views/locales/ja/inbox.json          |   5 +
+ packages/views/locales/ko/inbox.json          |   5 +
+ packages/views/locales/zh-Hans/inbox.json     |   5 +
+ packages/views/locales/zh-Hant/inbox.json     |   5 +
+ 10 files changed, 226 insertions(+), 1 deletion(-)
  create mode 100644 packages/views/inbox/components/inbox-tabs.test.tsx
  create mode 100644 packages/views/inbox/components/inbox-tabs.tsx
 
@@ -49,35 +52,59 @@ index 07344c6fe..b3457a120 100644
            </p>
            <div className="flex shrink-0 items-center gap-1.5">
 diff --git a/packages/views/inbox/components/inbox-page.tsx b/packages/views/inbox/components/inbox-page.tsx
-index 1fd27c52b..e7abec1b7 100644
+index 1fd27c52b..6482f015b 100644
 --- a/packages/views/inbox/components/inbox-page.tsx
 +++ b/packages/views/inbox/components/inbox-page.tsx
-@@ -99,6 +99,7 @@ import { PAGE_GUTTER, PageHeader } from "../../layout/page-header";
+@@ -99,6 +99,8 @@ import { PAGE_GUTTER, PageHeader } from "../../layout/page-header";
  import { useTimeAgo } from "./inbox-list-item";
  import { InboxList } from "./inbox-list";
  import { InboxFilterMenu } from "./inbox-filter-menu";
-+import { InboxTabs, effectiveTab, itemsForTab, needsYou, type InboxTab } from "./inbox-tabs"; // vantt inbox-split
++import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
++import { EMPTY_NEEDS, InboxTabs, NeedsYouContext, effectiveTab, itemsForTab, needsYouIndex, type InboxTab } from "./inbox-tabs"; // vantt inbox-split
  import { InboxContextMenuProvider } from "./inbox-context-menu";
  import { ARCHIVED_VIEW_PARAM, type InboxView } from "./inbox-view";
  import { useTypeLabels } from "./inbox-detail-label";
-@@ -217,7 +218,15 @@ export function InboxPage() {
+@@ -217,7 +219,23 @@ export function InboxPage() {
        ...filterInboxItems(lookupItems, effectiveFilters, filterContext),
      ]);
    }, [isArchivedView, selectedOnPage, filteredItems, lookupItems, effectiveFilters, filterContext]);
 -  const visibleItems = isArchivedView && pinnedKey ? selectionItems : filteredItems;
 +  // vantt inbox-split (D11): the active inbox shows one tab at a time.
 +  const [chosenTab, setChosenTab] = useState<InboxTab | null>(null);
-+  const needsCount = useMemo(() => filteredItems.filter(needsYou).length, [filteredItems]);
++  const { categoryOf: tabCategoryOf } = useIssueStatuses(wsId);
++  const needsIndex = useMemo(
++    () => needsYouIndex(rawItems, (i) => {
++      const category = i.issue_status ? tabCategoryOf(i.issue_status) : null;
++      return category === "done" || category === "closed";
++    }),
++    [rawItems, tabCategoryOf],
++  );
++  const needsCount = useMemo(() => itemsForTab(filteredItems, needsIndex, "needs").length, [filteredItems, needsIndex]);
 +  const tab = effectiveTab(chosenTab, needsCount);
 +  const tabItems = useMemo(
-+    () => (isArchivedView ? filteredItems : itemsForTab(filteredItems, tab)),
-+    [isArchivedView, filteredItems, tab],
++    () => (isArchivedView ? filteredItems : itemsForTab(filteredItems, needsIndex, tab)),
++    [isArchivedView, filteredItems, needsIndex, tab],
 +  );
 +  const visibleItems = isArchivedView && pinnedKey ? selectionItems : tabItems;
    const selected = selectionItems.find((i) => (i.issue_id ?? i.id) === selectedKey) ?? null;
    const selectedInView = selectedOnPage ?? (isArchivedView ? lookupItems.find((i) => (i.issue_id ?? i.id) === selectedKey) : null);
    const selectionFilteredOut = !!selectedKey && !!selectedInView && !selected;
-@@ -745,6 +754,9 @@ export function InboxPage() {
+@@ -703,6 +721,7 @@ export function InboxPage() {
+       </div>
+     </div>
+   ) : (
++    <NeedsYouContext.Provider value={isArchivedView ? EMPTY_NEEDS : needsIndex}>
+     <InboxContextMenuProvider
+       view={view}
+       actions={{
+@@ -739,12 +758,16 @@ export function InboxPage() {
+         }
+       />
+     </InboxContextMenuProvider>
++    </NeedsYouContext.Provider>
+   );
+ 
+   const listPanel = (
      <>
        {listHeader}
        {isArchivedView && archivedBackRow}
@@ -87,7 +114,7 @@ index 1fd27c52b..e7abec1b7 100644
        {lookupLoading && (
          <p role="status" className="shrink-0 border-b px-3 py-2 text-caption text-muted-foreground">
            {t(($) => $.list.loading_selection)}
-@@ -770,6 +782,9 @@ export function InboxPage() {
+@@ -770,6 +793,9 @@ export function InboxPage() {
      <>
        {listHeader}
        {isArchivedView && archivedBackRow}
@@ -99,28 +126,35 @@ index 1fd27c52b..e7abec1b7 100644
            <div key={i} className="flex items-center gap-3 px-2 py-2.5">
 diff --git a/packages/views/inbox/components/inbox-tabs.test.tsx b/packages/views/inbox/components/inbox-tabs.test.tsx
 new file mode 100644
-index 000000000..dafe87498
+index 000000000..6719cdc11
 --- /dev/null
 +++ b/packages/views/inbox/components/inbox-tabs.test.tsx
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,46 @@
 +import { cleanup, fireEvent, screen } from "@testing-library/react";
 +import { afterEach, describe, expect, it, vi } from "vitest";
++import type { InboxItem } from "@multica/core/types";
 +import { renderWithI18n } from "../../test/i18n";
-+import { effectiveTab, InboxTabs, itemsForTab, NeedsYouChip, needsYou } from "./inbox-tabs";
++import { effectiveTab, InboxTabs, itemsForTab, NeedsYouChip, NeedsYouContext, needsYouIndex } from "./inbox-tabs";
 +
 +afterEach(cleanup);
 +
-+const items = [
-+  { id: "a", severity: "action_required" as const, type: "decision_requested" as const },
-+  { id: "b", severity: "info" as const, type: "new_comment" as const },
-+  { id: "c", severity: "attention" as const, type: "autopilot_paused" as const },
++const n = (o: Partial<InboxItem>) => ({ archived: false, created_at: "2026-11-10T00:00:00Z", issue_status: "todo", ...o }) as InboxItem;
++const raw = [
++  n({ id: "1", issue_id: "A", severity: "action_required", type: "issue_assigned", created_at: "2026-11-09T00:00:00Z" }),
++  n({ id: "2", issue_id: "A", severity: "info", type: "new_comment" }), // A's newest is a comment
++  n({ id: "3", issue_id: "B", severity: "info", type: "status_changed" }),
++  n({ id: "4", issue_id: "C", severity: "action_required", type: "issue_assigned", issue_status: "done" }),
++  n({ id: "5", issue_id: "D", severity: "action_required", type: "decision_requested", archived: true }),
 +];
++const rows = [raw[1]!, raw[2]!, raw[3]!]; // grouped rows: newest per issue, unarchived
++const closed = (i: InboxItem) => i.issue_status === "done";
 +
 +describe("inbox tabs", () => {
-+  it("splits on the server's severity", () => {
-+    expect(items.filter(needsYou).map((i) => i.id)).toEqual(["a", "c"]);
-+    expect(itemsForTab(items, "needs").map((i) => i.id)).toEqual(["a", "c"]);
-+    expect(itemsForTab(items, "fyi").map((i) => i.id)).toEqual(["b"]);
++  it("puts a row in Needs you when any of its notifications asks, even if the newest is a comment", () => {
++    const index = needsYouIndex(raw, closed);
++    expect([...index.keys()]).toEqual(["A"]);
++    expect(itemsForTab(rows, index, "needs").map((r) => r.issue_id)).toEqual(["A"]);
++    expect(itemsForTab(rows, index, "fyi").map((r) => r.issue_id)).toEqual(["B", "C"]);
 +  });
 +  it("opens on Needs you while it holds anything, else on For your info", () => {
 +    expect(effectiveTab(null, 2)).toBe("needs");
@@ -134,36 +168,64 @@ index 000000000..dafe87498
 +    fireEvent.click(screen.getByRole("tab", { name: /For your info/ }));
 +    expect(onChange).toHaveBeenCalledWith("fyi");
 +  });
-+  it("labels why a row needs you, and nothing for info rows", () => {
-+    renderWithI18n(<NeedsYouChip item={items[0]!} />);
-+    expect(screen.getByText("Decision needed")).toBeTruthy();
-+    const { container } = renderWithI18n(<NeedsYouChip item={items[1]!} />);
++  it("labels a row with the notification that asks", () => {
++    const index = needsYouIndex(raw, closed);
++    renderWithI18n(<NeedsYouContext.Provider value={index}><NeedsYouChip item={rows[0]!} /></NeedsYouContext.Provider>);
++    expect(screen.getByText("Assigned")).toBeTruthy();
++    const { container } = renderWithI18n(<NeedsYouContext.Provider value={index}><NeedsYouChip item={rows[1]!} /></NeedsYouContext.Provider>);
 +    expect(container.textContent).toBe("");
 +  });
 +});
 diff --git a/packages/views/inbox/components/inbox-tabs.tsx b/packages/views/inbox/components/inbox-tabs.tsx
 new file mode 100644
-index 000000000..ee5154b45
+index 000000000..5b16412e9
 --- /dev/null
 +++ b/packages/views/inbox/components/inbox-tabs.tsx
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,121 @@
 +"use client";
 +
++import { createContext, useContext } from "react";
 +import type { InboxItem } from "@multica/core/types";
 +import { useT } from "../../i18n";
 +import { useTypeLabels } from "./inbox-detail-label";
 +
 +/**
 + * vantt inbox-split (patch 0020, design D11): the active inbox in two tabs.
-+ * "Needs you" holds the items the server already marks above info
++ * A row (one issue, its notifications grouped) is in "Needs you" when any of
++ * its unarchived notifications is marked above info by the server
 + * (action_required: assigned to you, a decision to answer, a run that failed;
-+ * attention: an autopilot problem); "For your info" holds the rest. Archive is
-+ * still "Done". Reference: OpenMausBot's Needs you / For your info / Done.
++ * attention: an autopilot problem) and its issue is not closed; everything else
++ * is "For your info". The row list shows only each issue's newest
++ * notification, which is often a comment, so the grouped rows alone cannot
++ * tell. Archive is still "Done". Reference: OpenMausBot's Needs you / For your
++ * info / Done.
 + */
 +export type InboxTab = "needs" | "fyi";
 +
-+export function needsYou(item: Pick<InboxItem, "severity">): boolean {
++export const rowKey = (item: Pick<InboxItem, "issue_id" | "id">) => item.issue_id ?? item.id;
++
++export function asksSomething(item: Pick<InboxItem, "severity">): boolean {
 +  return item.severity === "action_required" || item.severity === "attention";
++}
++
++/**
++ * Row key → the newest notification that asks something of the person, over
++ * every unarchived notification (not only each row's newest). Rows whose issue
++ * is closed are left out: an old "assigned to you" on a finished issue asks
++ * nothing any more.
++ */
++export function needsYouIndex(
++  items: readonly InboxItem[],
++  isClosed: (item: InboxItem) => boolean,
++): Map<string, InboxItem> {
++  const index = new Map<string, InboxItem>();
++  for (const item of items) {
++    if (item.archived || !asksSomething(item) || isClosed(item)) continue;
++    const key = rowKey(item);
++    const prev = index.get(key);
++    if (!prev || prev.created_at < item.created_at) index.set(key, item);
++  }
++  return index;
 +}
 +
 +/** The tab shown: the chosen one, else "Needs you" while it holds anything. */
@@ -171,9 +233,18 @@ index 000000000..ee5154b45
 +  return chosen ?? (needsCount > 0 ? "needs" : "fyi");
 +}
 +
-+export function itemsForTab<T extends Pick<InboxItem, "severity">>(items: readonly T[], tab: InboxTab): T[] {
-+  return items.filter((item) => needsYou(item) === (tab === "needs"));
++export function itemsForTab<T extends Pick<InboxItem, "issue_id" | "id">>(
++  rows: readonly T[],
++  index: ReadonlyMap<string, unknown>,
++  tab: InboxTab,
++): T[] {
++  return rows.filter((row) => index.has(rowKey(row)) === (tab === "needs"));
 +}
++
++export const EMPTY_NEEDS: ReadonlyMap<string, InboxItem> = new Map();
++
++/** The index, for the chip on each row. */
++export const NeedsYouContext = createContext<ReadonlyMap<string, InboxItem>>(EMPTY_NEEDS);
 +
 +export function InboxTabs({
 +  tab,
@@ -202,7 +273,7 @@ index 000000000..ee5154b45
 +        {label}
 +        <span
 +          className={`tabular-nums text-micro ${
-+            on && value === "needs" && count > 0 ? "rounded-full bg-destructive px-1.5 text-white" : "text-muted-foreground"
++            value === "needs" && count > 0 ? "rounded-full bg-destructive px-1.5 text-white" : "text-muted-foreground"
 +          }`}
 +        >
 +          {count}
@@ -218,15 +289,16 @@ index 000000000..ee5154b45
 +  );
 +}
 +
-+/** Why a "Needs you" row is there: its kind, as a small chip. */
-+export function NeedsYouChip({ item }: { item: Pick<InboxItem, "severity" | "type"> }) {
++/** Why a "Needs you" row is there: the kind of the notification that asks. */
++export function NeedsYouChip({ item }: { item: Pick<InboxItem, "issue_id" | "id"> }) {
 +  const labels = useTypeLabels();
-+  if (!needsYou(item)) return null;
-+  const label = labels[item.type] ?? item.type.replace(/_/g, " ");
++  const asking = useContext(NeedsYouContext).get(rowKey(item));
++  if (!asking) return null;
++  const label = labels[asking.type] ?? asking.type.replace(/_/g, " ");
 +  const tone =
-+    item.type === "decision_requested"
++    asking.type === "decision_requested"
 +      ? "bg-violet-500/10 text-violet-700 dark:text-violet-300"
-+      : item.type === "task_failed" || item.severity === "attention"
++      : asking.type === "task_failed" || asking.severity === "attention"
 +        ? "bg-orange-500/10 text-orange-700 dark:text-orange-300"
 +        : "bg-red-500/10 text-red-700 dark:text-red-300";
 +  return <span className={`mr-1.5 inline-flex shrink-0 rounded-full px-1.5 text-micro font-medium ${tone}`}>{label}</span>;

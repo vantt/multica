@@ -2,10 +2,14 @@
 
 ## Requirement
 The active inbox shows two tabs above the list:
-- **Needs you**: items whose `severity` is `action_required` (assigned to you, which is
-  how a person-handled workflow step reaches you; a decision to answer, patch 0019;
-  a run that failed) or `attention` (autopilot problems).
-- **For your info**: everything else (`info`).
+- **Needs you**: rows (an issue's notifications, grouped) where any unarchived
+  notification has `severity` `action_required` (assigned to you, which is how a
+  person-handled workflow step reaches you; a decision to answer, patch 0019; a run
+  that failed) or `attention` (autopilot problems), and the issue is not in a done or
+  closed status category. The row shows only its newest notification (often a comment),
+  so the split reads all unarchived notifications. Found live on vantt.17: 13 "assigned"
+  items hidden under newer comments.
+- **For your info**: every other row.
 
 It opens on Needs you while that tab holds anything; its count is red. Each Needs you
 row starts with a chip naming its kind ("Decision needed", "Assigned to you", "Run
