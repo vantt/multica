@@ -14,7 +14,11 @@ shape). Learned from OpenMausBot's decider and Linear's Triage Intelligence.
   fails validation (choice not offered, probabilities not summing to ~1, choice not the
   most likely) = no suggestion.
 - `POST /api/issues/triage-suggest {title, description, project_id, has_type}` returns
-  only the fields still missing and sure (the form; its UI is this patch's second part).
+  only the fields still missing and sure.
+- Web, design D12 (owner approved 2026-11-11): a "Suggested" strip in the manual
+  create form once the title has 3 words or 12 characters (600 ms after typing stops):
+  one chip per field, "Apply both", ✕ hides it for this issue; tooltip "Clef · 95% · …".
+  Never changes a field without a click; a field already set is never offered.
 - Chat `/issue` (origin `*_chat`) without a project: project and Type are set when sure,
   description gains `_Clef xếp: <project> 87% · <Type> 91%_`; a refused create is retried
   as typed.
@@ -30,7 +34,8 @@ Type 7 / 1 / 10 (few Type examples in the workspace yet). Latency ~200 ms.
 
 ## Touch points
 New package `server/internal/triage`; `handler/vantt_triage.go` (+test); `cmd/server/router.go`
-(route, and wrapping the chat router's issue creator).
+(route, and wrapping the chat router's issue creator). Web: `core/triage`, `api.triageSuggest`,
+`views/modals/triage-suggest.tsx` (+test), one block in `create-issue.tsx`, `issues.triage.*` strings.
 
 ## Tests
 See series.toml.

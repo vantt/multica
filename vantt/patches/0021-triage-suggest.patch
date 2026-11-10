@@ -1,4 +1,4 @@
-From 59259bae4d650d46efad336aac19e331e2dd1c76 Mon Sep 17 00:00:00 2001
+From 7a393a8c37792c1093ff5b18c6a79659f44b63e4 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 23:52:57 +0700
 Subject: [PATCH] feat(triage): suggest a new issue's project and Type with a
@@ -26,6 +26,10 @@ per option). Nothing about options is built in.
 - A chat /issue (origin *_chat) with no project gets project and Type when
   sure, plus a line "_Clef xếp: <project> 87% · <Type> 91%_"; any refusal
   creates the issue as typed.
+- Web (design D12): a "Suggested" strip in the manual create form once the
+  title has a few words and project or Type is empty: a chip per field,
+  "Apply both", ✕ to hide; tooltip "Clef · 95% · …". Never changes a field
+  without a click.
 - MULTICA_CLOUDFLARE_AI_ACCOUNT_ID + MULTICA_CLOUDFLARE_AI_TOKEN turn it on;
   MULTICA_TRIAGE_FORM=off / MULTICA_TRIAGE_CHAT=off switch a job off.
 - Opt-in live eval (TRIAGE_LIVE_EVAL=1) against a workspace's issues or a
@@ -33,6 +37,18 @@ per option). Nothing about options is built in.
 
 Patch-Id: triage-suggest
 ---
+ packages/core/api/client.ts                   |  10 +
+ packages/core/package.json                    |   1 +
+ packages/core/triage/index.ts                 |  43 +++
+ packages/views/locales/en/issues.json         |   6 +
+ packages/views/locales/fr/issues.json         |   6 +
+ packages/views/locales/ja/issues.json         |   6 +
+ packages/views/locales/ko/issues.json         |   6 +
+ packages/views/locales/zh-Hans/issues.json    |   6 +
+ packages/views/locales/zh-Hant/issues.json    |   6 +
+ packages/views/modals/create-issue.tsx        |  10 +
+ packages/views/modals/triage-suggest.test.tsx |  47 +++
+ packages/views/modals/triage-suggest.tsx      |  88 ++++++
  server/cmd/server/router.go                   |  12 +-
  server/internal/handler/vantt_triage.go       |  54 ++++
  server/internal/handler/vantt_triage_test.go  | 135 +++++++++
@@ -42,7 +58,10 @@ Patch-Id: triage-suggest
  server/internal/triage/eval_test.go           | 106 +++++++
  server/internal/triage/suggest.go             | 274 ++++++++++++++++++
  .../internal/triage/testdata/opc-studio.json  |  20 ++
- 9 files changed, 992 insertions(+), 1 deletion(-)
+ 21 files changed, 1227 insertions(+), 1 deletion(-)
+ create mode 100644 packages/core/triage/index.ts
+ create mode 100644 packages/views/modals/triage-suggest.test.tsx
+ create mode 100644 packages/views/modals/triage-suggest.tsx
  create mode 100644 server/internal/handler/vantt_triage.go
  create mode 100644 server/internal/handler/vantt_triage_test.go
  create mode 100644 server/internal/triage/chat.go
@@ -52,6 +71,359 @@ Patch-Id: triage-suggest
  create mode 100644 server/internal/triage/suggest.go
  create mode 100644 server/internal/triage/testdata/opc-studio.json
 
+diff --git a/packages/core/api/client.ts b/packages/core/api/client.ts
+index 1eef04c11..343812554 100644
+--- a/packages/core/api/client.ts
++++ b/packages/core/api/client.ts
+@@ -4130,6 +4130,16 @@ export class ApiClient {
+     });
+   }
+ 
++  // vantt triage-suggest (patch 0021, design D12): project and Type the
++  // workspace's decision model is sure of; {} when off or unsure.
++  async triageSuggest(input: { title: string; description?: string; project_id?: string; has_type?: boolean }): Promise<import("../triage").TriageSuggestion> {
++    const raw = await this.fetch<Record<string, unknown>>("/api/issues/triage-suggest", {
++      method: "POST",
++      body: JSON.stringify(input),
++    });
++    return (raw && typeof raw === "object" ? raw : {}) as import("../triage").TriageSuggestion;
++  }
++
+   // vantt board-gates (design D3): when each open issue entered its status.
+   async listIssueStatusSince(projectId: string | null): Promise<{ issues: Record<string, import("../board-gates").StatusSince> }> {
+     const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+diff --git a/packages/core/package.json b/packages/core/package.json
+index c02367b6e..460ce7a00 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -42,6 +42,7 @@
+     "./workflow-rules": "./workflow-rules/index.ts",
+     "./decisions": "./decisions/index.ts",
+     "./board-gates": "./board-gates/index.ts",
++    "./triage": "./triage/index.ts",
+     "./issues": "./issues/index.ts",
+     "./issues/batch": "./issues/batch.ts",
+     "./issues/canonical-id": "./issues/canonical-id.ts",
+diff --git a/packages/core/triage/index.ts b/packages/core/triage/index.ts
+new file mode 100644
+index 000000000..1defbe4dc
+--- /dev/null
++++ b/packages/core/triage/index.ts
+@@ -0,0 +1,43 @@
++import { api } from "../api";
++
++/**
++ * vantt triage-suggest (patch 0021, design D12): the server asks a fast decision
++ * model (Cloudflare Clef) which project and Type a new issue belongs to, from the
++ * workspace's own projects, Types and recent issues, and answers only what it is
++ * at least 60% sure of. References: Linear Triage Intelligence (suggestions in
++ * the create form), OpenMausBot's decision model (fail open, show the source).
++ */
++export interface TriageSuggestion {
++  project?: { id: string; name: string; probability: number };
++  type?: { property_id: string; option_id: string; label: string; probability: number };
++  provider?: string;
++}
++
++export interface TriageInput {
++  title: string;
++  projectId?: string;
++  hasType: boolean;
++}
++
++export const triageKeys = {
++  suggest: (wsId: string, input: TriageInput) =>
++    ["triage-suggest", wsId, input.title, input.projectId ?? "", input.hasType] as const,
++};
++
++// Plain options object so tests that mock react-query with only useQuery work.
++export function triageSuggestOptions(wsId: string, input: TriageInput) {
++  return {
++    queryKey: triageKeys.suggest(wsId, input),
++    queryFn: () => api.triageSuggest({ title: input.title, project_id: input.projectId, has_type: input.hasType }),
++    staleTime: 5 * 60_000,
++    retry: false,
++  };
++}
++
++/** A title long enough to classify: at least 3 words or 12 characters. */
++export function worthSuggesting(title: string): boolean {
++  const t = title.trim();
++  return t.length >= 12 || t.split(/\s+/).length >= 3;
++}
++
++export const percent = (p: number) => `${Math.round(p * 100)}%`;
+diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
+index 2834e1119..fc31bd10f 100644
+--- a/packages/views/locales/en/issues.json
++++ b/packages/views/locales/en/issues.json
+@@ -1821,5 +1821,11 @@
+     "done": "Done",
+     "gate_hint": "Only the approver moves cards out of this column",
+     "drop_blocked": "This issue's workflow has no step in that column"
++  },
++  "triage": {
++    "suggested": "Suggested",
++    "apply_both": "Apply both",
++    "dismiss": "Hide suggestion",
++    "source": "Clef · {{percent}} · from the workspace's projects, Types and recent issues"
+   }
+ }
+diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
+index 8127f105e..6a1d22778 100644
+--- a/packages/views/locales/fr/issues.json
++++ b/packages/views/locales/fr/issues.json
+@@ -1820,5 +1820,11 @@
+     "done": "Terminé",
+     "gate_hint": "Seul l'approbateur sort les cartes de cette colonne",
+     "drop_blocked": "Le workflow de ce ticket n'a aucune étape dans cette colonne"
++  },
++  "triage": {
++    "suggested": "Suggéré",
++    "apply_both": "Appliquer les deux",
++    "dismiss": "Masquer la suggestion",
++    "source": "Clef · {{percent}} · d'après les projets, Types et tickets récents de l'espace"
+   }
+ }
+diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
+index 90e2e0bc3..655389f67 100644
+--- a/packages/views/locales/ja/issues.json
++++ b/packages/views/locales/ja/issues.json
+@@ -1755,5 +1755,11 @@
+     "done": "完了",
+     "gate_hint": "この列から動かせるのは承認者だけです",
+     "drop_blocked": "この課題のワークフローにはこの列のステップがありません"
++  },
++  "triage": {
++    "suggested": "提案",
++    "apply_both": "両方を適用",
++    "dismiss": "提案を隠す",
++    "source": "Clef · {{percent}} · ワークスペースのプロジェクト、Type、最近の課題から"
+   }
+ }
+diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
+index 8a0a18059..2cca78241 100644
+--- a/packages/views/locales/ko/issues.json
++++ b/packages/views/locales/ko/issues.json
+@@ -1755,5 +1755,11 @@
+     "done": "완료",
+     "gate_hint": "이 열에서는 승인자만 카드를 옮길 수 있습니다",
+     "drop_blocked": "이 이슈의 워크플로에는 이 열의 단계가 없습니다"
++  },
++  "triage": {
++    "suggested": "제안",
++    "apply_both": "둘 다 적용",
++    "dismiss": "제안 숨기기",
++    "source": "Clef · {{percent}} · 워크스페이스의 프로젝트, Type, 최근 이슈 기반"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
+index 2531b408d..c2ba6b279 100644
+--- a/packages/views/locales/zh-Hans/issues.json
++++ b/packages/views/locales/zh-Hans/issues.json
+@@ -1755,5 +1755,11 @@
+     "done": "已完成",
+     "gate_hint": "只有审批人能把卡片移出此列",
+     "drop_blocked": "此任务的工作流在该列没有步骤"
++  },
++  "triage": {
++    "suggested": "建议",
++    "apply_both": "全部应用",
++    "dismiss": "隐藏建议",
++    "source": "Clef · {{percent}} · 基于工作区的项目、Type 和近期问题"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
+index 939dba505..9c32c0912 100644
+--- a/packages/views/locales/zh-Hant/issues.json
++++ b/packages/views/locales/zh-Hant/issues.json
+@@ -1754,5 +1754,11 @@
+     "done": "已完成",
+     "gate_hint": "只有審批人能把卡片移出此欄",
+     "drop_blocked": "此任務的工作流程在該欄沒有步驟"
++  },
++  "triage": {
++    "suggested": "建議",
++    "apply_both": "全部套用",
++    "dismiss": "隱藏建議",
++    "source": "Clef · {{percent}} · 根據工作區的專案、Type 與近期問題"
+   }
+ }
+diff --git a/packages/views/modals/create-issue.tsx b/packages/views/modals/create-issue.tsx
+index 8ab238b00..1c00192b7 100644
+--- a/packages/views/modals/create-issue.tsx
++++ b/packages/views/modals/create-issue.tsx
+@@ -100,6 +100,7 @@ import {
+ } from "../issues/components/pickers/custom-property-picker";
+ import { IssuePickerModal } from "./issue-picker-modal";
+ import { useT } from "../i18n";
++import { TriageSuggestBar } from "./triage-suggest"; // vantt triage-suggest
+ import { SourceContextPreviewCard, useSourceContextFailureMessage } from "./source-context-preview";
+ import { useIssueLimitUpgradePrompt } from "./use-issue-limit-upgrade-prompt";
+ 
+@@ -1047,6 +1048,15 @@ export function ManualCreatePanel({
+               />
+             )}
+ 
++            {/* vantt triage-suggest (D12): project and Type the decision model is sure of. */}
++            <TriageSuggestBar
++              title={title}
++              projectId={projectId}
++              typePropertyValue={(id) => propertyValues[id]}
++              onApplyProject={(id) => updateProject(id)}
++              onApplyType={(propertyId, optionId) => updatePropertyValue(propertyId, optionId)}
++            />
++
+             {/* Pre-trigger preview — a passive caption above the toolbar; reveals
+                 when an agent assignee will pick the issue up. */}
+             {assigneeId ? (
+diff --git a/packages/views/modals/triage-suggest.test.tsx b/packages/views/modals/triage-suggest.test.tsx
+new file mode 100644
+index 000000000..9b28d44ea
+--- /dev/null
++++ b/packages/views/modals/triage-suggest.test.tsx
+@@ -0,0 +1,47 @@
++import { cleanup, fireEvent, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { renderWithI18n } from "../test/i18n";
++import { TriageSuggestBar } from "./triage-suggest";
++
++let suggestion: unknown = {};
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("../common/use-debounced-value", () => ({ useDebouncedValue: (v: unknown) => v }));
++vi.mock("@tanstack/react-query", () => ({ useQuery: (o: { enabled?: boolean }) => ({ data: o.enabled ? suggestion : undefined }) }));
++
++afterEach(cleanup);
++
++const both = {
++  project: { id: "p1", name: "momentry", probability: 0.95 },
++  type: { property_id: "type", option_id: "bug", label: "Tech · Bug", probability: 0.89 },
++};
++
++describe("TriageSuggestBar", () => {
++  it("offers the sure fields and applies them on click", () => {
++    suggestion = both;
++    const onApplyProject = vi.fn();
++    const onApplyType = vi.fn();
++    renderWithI18n(<TriageSuggestBar title="Momentry crashes on long sessions" typePropertyValue={() => undefined} onApplyProject={onApplyProject} onApplyType={onApplyType} />);
++    expect(screen.getByText("95%")).toBeTruthy();
++    fireEvent.click(screen.getByText("Apply both"));
++    expect(onApplyProject).toHaveBeenCalledWith("p1");
++    expect(onApplyType).toHaveBeenCalledWith("type", "bug");
++  });
++
++  it("never offers a field already set, and hides on dismiss", () => {
++    suggestion = both;
++    renderWithI18n(<TriageSuggestBar title="Momentry crashes on long sessions" projectId="p9" typePropertyValue={() => undefined} onApplyProject={vi.fn()} onApplyType={vi.fn()} />);
++    expect(screen.queryByText(/momentry/)).toBeNull();
++    expect(screen.getByText("Tech · Bug")).toBeTruthy();
++    fireEvent.click(screen.getByLabelText("Hide suggestion"));
++    expect(screen.queryByText("Tech · Bug")).toBeNull();
++  });
++
++  it("shows nothing for a short title or an unsure model", () => {
++    suggestion = both;
++    const { container } = renderWithI18n(<TriageSuggestBar title="fix" typePropertyValue={() => undefined} onApplyProject={vi.fn()} onApplyType={vi.fn()} />);
++    expect(container.textContent).toBe("");
++    suggestion = {};
++    const second = renderWithI18n(<TriageSuggestBar title="Momentry crashes on long sessions" typePropertyValue={() => undefined} onApplyProject={vi.fn()} onApplyType={vi.fn()} />);
++    expect(second.container.textContent).toBe("");
++  });
++});
+diff --git a/packages/views/modals/triage-suggest.tsx b/packages/views/modals/triage-suggest.tsx
+new file mode 100644
+index 000000000..e8f5a3f01
+--- /dev/null
++++ b/packages/views/modals/triage-suggest.tsx
+@@ -0,0 +1,88 @@
++"use client";
++
++import { useState } from "react";
++import { useQuery } from "@tanstack/react-query";
++import { Sparkles, X } from "lucide-react";
++import { percent, triageSuggestOptions, worthSuggesting } from "@multica/core/triage";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { useDebouncedValue } from "../common/use-debounced-value";
++import { useT } from "../i18n";
++
++/**
++ * vantt triage-suggest (patch 0021, design D12): a "Suggested" strip in the
++ * manual create form. Once the title has a few words and project or Type is
++ * still empty, the server's decision model may suggest them; each chip applies
++ * one field, "Apply both" applies all, ✕ hides it for this issue. Nothing is
++ * shown when the model is off or unsure, and nothing is ever changed without a
++ * click. Reference: Linear's create-form suggestions.
++ */
++export function TriageSuggestBar({
++  title,
++  projectId,
++  typePropertyValue,
++  onApplyProject,
++  onApplyType,
++}: {
++  title: string;
++  projectId?: string;
++  /** The current value of the suggested Type property, by property id. */
++  typePropertyValue: (propertyId: string) => unknown;
++  onApplyProject: (id: string) => void;
++  onApplyType: (propertyId: string, optionId: string) => void;
++}) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const [dismissed, setDismissed] = useState(false);
++  const debounced = useDebouncedValue(title.trim(), 600);
++  const enabled = !dismissed && worthSuggesting(debounced);
++  const { data } = useQuery({
++    ...triageSuggestOptions(wsId, { title: debounced, projectId, hasType: false }),
++    enabled,
++  });
++  if (dismissed || !data) return null;
++  const project = !projectId ? data.project : undefined;
++  const type = data.type && typePropertyValue(data.type.property_id) == null ? data.type : undefined;
++  if (!project && !type) return null;
++  const source = (p: number) => t(($) => $.triage.source, { percent: percent(p) });
++  const chip = "inline-flex items-center gap-1 rounded-full border border-violet-300 bg-background px-2 py-0.5 text-caption text-violet-900 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-200 dark:hover:bg-violet-950";
++  return (
++    <div
++      role="group"
++      aria-label={t(($) => $.triage.suggested)}
++      className="mx-4 mb-1 flex flex-wrap items-center gap-2 rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-caption text-violet-800 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-200"
++    >
++      <span className="inline-flex items-center gap-1 font-medium">
++        <Sparkles className="size-3.5" aria-hidden />
++        {t(($) => $.triage.suggested)}
++      </span>
++      {project && (
++        <button type="button" className={chip} title={source(project.probability)} onClick={() => onApplyProject(project.id)}>
++          <span>📁 {project.name}</span>
++          <span className="text-micro text-violet-600 dark:text-violet-400">{percent(project.probability)}</span>
++        </button>
++      )}
++      {type && (
++        <button type="button" className={chip} title={source(type.probability)} onClick={() => onApplyType(type.property_id, type.option_id)}>
++          <span>{type.label}</span>
++          <span className="text-micro text-violet-600 dark:text-violet-400">{percent(type.probability)}</span>
++        </button>
++      )}
++      <span className="flex-1" />
++      {project && type && (
++        <button
++          type="button"
++          className="font-medium hover:underline"
++          onClick={() => {
++            onApplyProject(project.id);
++            onApplyType(type.property_id, type.option_id);
++          }}
++        >
++          {t(($) => $.triage.apply_both)}
++        </button>
++      )}
++      <button type="button" aria-label={t(($) => $.triage.dismiss)} className="rounded p-0.5 hover:bg-violet-100 dark:hover:bg-violet-900" onClick={() => setDismissed(true)}>
++        <X className="size-3.5" aria-hidden />
++      </button>
++    </div>
++  );
++}
 diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
 index 8a6e5dc2c..ccd0906b3 100644
 --- a/server/cmd/server/router.go

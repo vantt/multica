@@ -214,4 +214,14 @@ metadata_file = "0021-triage-suggest.spec.md"
 upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["server/internal/triage/", "server/internal/handler/vantt_triage.go", "server/cmd/server/router.go"]
-test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/triage/ -count=1 && go test ./internal/handler/ -run 'TriageSuggest' -count=1"
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/triage/ -count=1 && go test ./internal/handler/ -run 'TriageSuggest' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts && cd packages/views && npx vitest run modals locales"
+
+[[patches]]
+id = "inbox-split"
+name = "feat(inbox): \"Needs you\" and \"For your info\" tabs"
+patch_file = "0020-inbox-split.patch"
+metadata_file = "0020-inbox-split.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/inbox/components/inbox-tabs.tsx", "packages/views/inbox/components/inbox-page.tsx", "packages/views/inbox/components/inbox-list-item.tsx", "packages/views/locales/*/inbox.json"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts && cd packages/views && npx vitest run inbox locales"
