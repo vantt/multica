@@ -1808,5 +1808,14 @@
     "status_bar": "Sous-tickets par statut : {{summary}}",
     "days": "{{count}} j",
     "days_title": "{{count}} jours en {{status}}"
+  },
+  "board_lanes": {
+    "backlog": "Backlog",
+    "todo": "À faire",
+    "in_progress": "En cours",
+    "awaiting_approval": "En attente d'approbation",
+    "done": "Terminé",
+    "gate_hint": "Seul l'approbateur sort les cartes de cette colonne",
+    "drop_blocked": "Le workflow de ce ticket n'a aucune étape dans cette colonne"
   }
 }
