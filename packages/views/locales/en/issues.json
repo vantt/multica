@@ -1798,5 +1798,8 @@
   },
   "hover_card": {
     "created_updated": "created {{created}} · updated {{updated}}"
+  },
+  "parent_chip": {
+    "title": "Sub-issue of {{identifier}} · {{title}}"
   }
 }

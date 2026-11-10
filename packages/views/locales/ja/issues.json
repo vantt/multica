@@ -1732,5 +1732,8 @@
   },
   "hover_card": {
     "created_updated": "{{created}}に作成 · {{updated}}に更新"
+  },
+  "parent_chip": {
+    "title": "{{identifier}} のサブ課題 · {{title}}"
   }
 }
