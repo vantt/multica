@@ -17,3 +17,12 @@ describe("mergeRuleWorkflows", () => {
     expect(mergeRuleWorkflows(delivery, [], [delivery], ["done"])).toBe(delivery);
   });
 });
+
+describe("ruleProperties", () => {
+  it("names the properties the rules read, once", async () => {
+    const { ruleProperties } = await import("./index");
+    const r = (p: string) => ({ property_id: p, option_id: "o", workflow_id: "w" });
+    expect([...ruleProperties([r("type"), r("type"), r("domain")])]).toEqual(["type", "domain"]);
+    expect(ruleProperties(undefined).size).toBe(0);
+  });
+});
