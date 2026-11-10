@@ -1787,6 +1787,13 @@
       "project_default": "Project workflow",
       "cancel": "Cancel",
       "save": "Save"
+    },
+    "decision": {
+      "title": "Decision for you",
+      "due": "Due {{date}}",
+      "recommended": "Recommended",
+      "note_placeholder": "Add a note (optional)",
+      "answer": "Answer: {{option}}"
     }
   },
   "hover_card": {

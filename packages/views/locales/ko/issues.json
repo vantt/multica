@@ -1721,6 +1721,13 @@
       "project_default": "프로젝트 워크플로",
       "cancel": "취소",
       "save": "저장"
+    },
+    "decision": {
+      "title": "결정이 필요합니다",
+      "due": "기한 {{date}}",
+      "recommended": "권장",
+      "note_placeholder": "메모 추가 (선택)",
+      "answer": "답변: {{option}}"
     }
   },
   "hover_card": {

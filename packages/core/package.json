@@ -40,6 +40,7 @@
     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
     "./goals": "./goals/index.ts",
     "./workflow-rules": "./workflow-rules/index.ts",
+    "./decisions": "./decisions/index.ts",
     "./issues": "./issues/index.ts",
     "./issues/batch": "./issues/batch.ts",
     "./issues/canonical-id": "./issues/canonical-id.ts",

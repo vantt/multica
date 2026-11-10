@@ -1721,6 +1721,13 @@
       "project_default": "项目工作流",
       "cancel": "取消",
       "save": "保存"
+    },
+    "decision": {
+      "title": "等待你的决定",
+      "due": "截止 {{date}}",
+      "recommended": "推荐",
+      "note_placeholder": "添加备注（可选）",
+      "answer": "答复：{{option}}"
     }
   },
   "hover_card": {

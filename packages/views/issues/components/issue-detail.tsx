@@ -15,6 +15,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
 import { ApprovalPanel } from "../../workflows/approval-panel";
+import { DecisionPanel } from "../../workflows/decision-panel";
 import {
   Archive,
   Calendar,
@@ -3314,6 +3315,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               )
             }
           />
+          <DecisionPanel issue={issue} />
           <ApprovalPanel issue={issue} onUpdateField={(updates) => handleUpdateField(updates)} />
           <div id={descriptionSectionId}>
           {titleLazy.active && (
