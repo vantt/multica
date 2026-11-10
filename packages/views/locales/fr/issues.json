@@ -1780,6 +1780,15 @@
       "reason_label": "Que faut-il changer ?",
       "send_back_to": "Renvoyer à {{status}}",
       "cancel": "Annuler"
+    },
+    "rules": {
+      "label": "Par type",
+      "none": "Identique pour chaque type",
+      "help": "Les tickets dont la propriété a l’une de ces valeurs suivent un autre workflow. Les autres suivent celui du projet.",
+      "choose_by": "Choisir le workflow selon",
+      "project_default": "Workflow du projet",
+      "cancel": "Annuler",
+      "save": "Enregistrer"
     }
   },
   "hover_card": {
