@@ -19,6 +19,14 @@ Paperclip refuses a review move without an approver (`doc/execution-semantics.md
    lock on gated status (D5). PR gate Approve also approves the GitHub PR when the owner's
    GitHub is connected, else "Approve on GitHub" opens the PR.
 
+## Done so far
+- 0001 owner-gates (server): GateError/PersonGate, 403 `owner_gate` on UpdateIssue, batch skips;
+  4 tests; full handler suite green. Upstream already refuses a run moving an issue from a step it
+  is not on (`workflowStepMoved`); 0001 covers agents with no run on the issue and project moves.
+- 0002 approval-panel (UI): Approve → next status, Send back → comment + back status; all locales.
+- Deviation from D5b: Approve does not approve the GitHub PR (Multica has no per-user GitHub
+  token); the owner approves on GitHub as before. Evidence list (CI/review/QA) not shown yet.
+
 ## Steps
 - [ ] Read: `server/internal/issueworkflow`, status-change handler(s), timeline/activity,
       how actor type is known (agent task token vs member session).

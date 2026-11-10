@@ -16,9 +16,9 @@ inventing; every patch has a spec and aims upstream (proposals upstream need the
 
 | Phase | Patch | What | Status |
 |---|---|---|---|
-| [01](phase-01-foundation.md) | — | Fork, upstream remote, catchup, CI, images | in progress |
-| [02](phase-02-fork-identity.md) | F0 | Fork version shown; owner instance runs fork images | todo |
-| [03](phase-03-owner-gates.md) | F1 | Server-enforced owner gates, Waiting on me, approval panel | todo |
+| [01](phase-01-foundation.md) | — | Fork, upstream remote, catchup, CI, images | done |
+| [02](phase-02-fork-identity.md) | F0 | Fork version shown; owner instance runs fork images | in progress (no code needed) |
+| [03](phase-03-owner-gates.md) | F1 | Server-enforced owner gates, Waiting on me, approval panel | in progress (0001 server, 0002 panel done; Waiting on me next) |
 | [04](phase-04-goals.md) | F2 | Goals with numbers | todo |
 | [05](phase-05-workflow-by-type.md) | F3 | Workflow chosen by a select property (Type) | todo |
 | [06](phase-06-boards.md) | F4 | Jira-style boards: saved boards, automatic columns, swimlanes, quick filters | todo |

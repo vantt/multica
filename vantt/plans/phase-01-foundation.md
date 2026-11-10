@@ -11,8 +11,8 @@
 - [x] Skill `.claude/skills/multica-catchup`.
 - [x] Disable upstream workflows on the fork (ci, desktop-smoke, mobile-verify,
       openclaw-config-smoke, release, ui-performance).
-- [ ] First CI catchup green; images `ghcr.io/vantt/multica-{backend,web}:v0.7.1-vantt.1` exist.
-- [ ] Make the GHCR packages public (owner instance pulls without a token) or log the host in.
+- [x] First CI catchup green; images `ghcr.io/vantt/multica-{backend,web}:v0.7.1-vantt.1` exist.
+- [x] GHCR packages are public (linked to the public repo); the host pulls without a token.
 
 ## Done when
 CI built and pushed both images for `v0.7.1-vantt.1` from an empty series.
