@@ -1,0 +1,338 @@
+From bb5683c84ad13a1f189b8b3a1266e3fa06b8a1d3 Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:57:29 +0700
+Subject: [PATCH 11/11] feat(attachments): reading view for markdown documents
+
+Markdown attachments open in a reader with a reading-progress bar and, for
+documents with three or more headings, an outline beside the text on wide
+screens (click to jump, current section highlighted).
+
+Patch-Id: artifact-reader
+---
+ .../editor/attachment-preview-modal.test.tsx  |   1 +
+ .../views/editor/attachment-preview-modal.tsx |   5 +-
+ .../views/editor/markdown-reader.test.tsx     |  44 ++++++
+ packages/views/editor/markdown-reader.tsx     | 130 ++++++++++++++++++
+ packages/views/locales/en/editor.json         |   4 +
+ packages/views/locales/fr/editor.json         |   4 +
+ packages/views/locales/ja/editor.json         |   4 +
+ packages/views/locales/ko/editor.json         |   4 +
+ packages/views/locales/zh-Hans/editor.json    |   4 +
+ packages/views/locales/zh-Hant/editor.json    |   4 +
+ 10 files changed, 202 insertions(+), 2 deletions(-)
+ create mode 100644 packages/views/editor/markdown-reader.test.tsx
+ create mode 100644 packages/views/editor/markdown-reader.tsx
+
+diff --git a/packages/views/editor/attachment-preview-modal.test.tsx b/packages/views/editor/attachment-preview-modal.test.tsx
+index 2e8cf0541..457710239 100644
+--- a/packages/views/editor/attachment-preview-modal.test.tsx
++++ b/packages/views/editor/attachment-preview-modal.test.tsx
+@@ -123,6 +123,7 @@ vi.mock("../i18n", () => ({
+   useT: () => ({
+     t: (sel: (s: Record<string, Record<string, string>>) => string) =>
+       sel({
++        reader: { outline: "On this page", progress: "Reading progress" },
+         image: {
+           download: "Download",
+           copy_image: "Copy image",
+diff --git a/packages/views/editor/attachment-preview-modal.tsx b/packages/views/editor/attachment-preview-modal.tsx
+index 0ac3dee65..568ab9125 100644
+--- a/packages/views/editor/attachment-preview-modal.tsx
++++ b/packages/views/editor/attachment-preview-modal.tsx
+@@ -71,6 +71,7 @@ import { openExternal } from "../platform";
+ import { isDesktopShell } from "../platform/local-directory";
+ import { useImmersiveMode } from "../platform/use-immersive-mode";
+ import { ReadonlyContent } from "./readonly-content";
++import { MarkdownReader } from "./markdown-reader";
+ import {
+   canOpenPreview,
+   extensionToLanguage,
+@@ -1405,13 +1406,13 @@ function PreviewContent({
+           attachmentId={state.attachmentId!}
+           onDownload={onDownload}
+           render={(text) => (
+-            <DocumentSheet width="prose" onBackdropClick={onBackdropClick}>
++            <MarkdownReader text={text} onBackdropClick={onBackdropClick}>
+               <ReadonlyContent
+                 content={text}
+                 className="px-10 py-8"
+                 attachments={source.kind === "full" ? [source.attachment] : []}
+               />
+-            </DocumentSheet>
++            </MarkdownReader>
+           )}
+         />
+       );
+diff --git a/packages/views/editor/markdown-reader.test.tsx b/packages/views/editor/markdown-reader.test.tsx
+new file mode 100644
+index 000000000..63496826b
+--- /dev/null
++++ b/packages/views/editor/markdown-reader.test.tsx
+@@ -0,0 +1,44 @@
++import { cleanup, fireEvent, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { renderWithI18n } from "../test/i18n";
++import { MarkdownReader, markdownOutline } from "./markdown-reader";
++
++afterEach(cleanup);
++
++describe("markdownOutline", () => {
++  it("lists headings outside code fences", () => {
++    const text = "# Spec\n\n## Goals\n```\n# not a heading\n```\n### Notes *draft*\n#### too deep";
++    expect(markdownOutline(text)).toEqual([
++      { level: 1, text: "Spec" },
++      { level: 2, text: "Goals" },
++      { level: 3, text: "Notes draft" },
++    ]);
++  });
++});
++
++describe("MarkdownReader", () => {
++  it("shows an outline for three headings and jumps to one", () => {
++    const scroll = vi.fn();
++    Element.prototype.scrollIntoView = scroll;
++    renderWithI18n(
++      <MarkdownReader text={"# A\n## B\n## C"} onBackdropClick={vi.fn()}>
++        <h1>A</h1>
++        <h2>B</h2>
++        <h2>C</h2>
++      </MarkdownReader>,
++    );
++    expect(screen.getByRole("navigation", { name: "On this page" })).toBeTruthy();
++    fireEvent.click(screen.getByRole("button", { name: "C" }));
++    expect(scroll).toHaveBeenCalled();
++    expect(screen.getByRole("progressbar", { name: "Reading progress" })).toBeTruthy();
++  });
++
++  it("has no outline for a short note", () => {
++    renderWithI18n(
++      <MarkdownReader text={"# Only"} onBackdropClick={vi.fn()}>
++        <h1>Only</h1>
++      </MarkdownReader>,
++    );
++    expect(screen.queryByRole("navigation")).toBeNull();
++  });
++});
+diff --git a/packages/views/editor/markdown-reader.tsx b/packages/views/editor/markdown-reader.tsx
+new file mode 100644
+index 000000000..39d5070be
+--- /dev/null
++++ b/packages/views/editor/markdown-reader.tsx
+@@ -0,0 +1,130 @@
++"use client";
++
++import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
++import { cn } from "@multica/ui/lib/utils";
++import { useT } from "../i18n";
++
++/**
++ * Reading view for a markdown document (vantt artifact-reader, design D10): a
++ * reading-progress bar and, for documents with at least three headings, a table
++ * of contents beside the text on wide screens. Reference: GitHub's markdown
++ * outline, Notion and Confluence page outlines.
++ */
++
++export interface OutlineItem {
++  level: number;
++  text: string;
++}
++
++/** Headings (#, ##, ###) of a markdown text, outside fenced code blocks. */
++export function markdownOutline(text: string): OutlineItem[] {
++  const out: OutlineItem[] = [];
++  let fence: string | null = null;
++  for (const line of text.split("\n")) {
++    const f = line.match(/^\s*(```|~~~)/);
++    if (f) {
++      fence = fence === f[1] ? null : fence ?? f[1]!;
++      continue;
++    }
++    if (fence) continue;
++    const m = line.match(/^(#{1,3})\s+(.+?)\s*#*\s*$/);
++    if (m) out.push({ level: m[1]!.length, text: m[2]!.replace(/[*_`]/g, "") });
++  }
++  return out;
++}
++
++export function MarkdownReader({
++  text,
++  children,
++  onBackdropClick,
++}: {
++  text: string;
++  children: ReactNode;
++  onBackdropClick: (e: React.MouseEvent) => void;
++}) {
++  const { t } = useT("editor");
++  const scrollRef = useRef<HTMLDivElement>(null);
++  const bodyRef = useRef<HTMLDivElement>(null);
++  const outline = useMemo(() => markdownOutline(text), [text]);
++  const showOutline = outline.length >= 3;
++  const [progress, setProgress] = useState(0);
++  const [active, setActive] = useState(0);
++
++  const headings = useCallback(
++    () => Array.from(bodyRef.current?.querySelectorAll("h1, h2, h3") ?? []) as HTMLElement[],
++    [],
++  );
++
++  useEffect(() => {
++    const el = scrollRef.current;
++    if (!el) return;
++    const onScroll = () => {
++      const max = el.scrollHeight - el.clientHeight;
++      setProgress(max > 0 ? el.scrollTop / max : 1);
++      const top = el.getBoundingClientRect().top + 80;
++      let current = 0;
++      headings().forEach((h, i) => {
++        if (h.getBoundingClientRect().top <= top) current = i;
++      });
++      setActive(current);
++    };
++    onScroll();
++    el.addEventListener("scroll", onScroll, { passive: true });
++    return () => el.removeEventListener("scroll", onScroll);
++  }, [headings]);
++
++  const jump = (index: number) => {
++    headings()[index]?.scrollIntoView({ behavior: "smooth", block: "start" });
++  };
++
++  return (
++    <div ref={scrollRef} className="relative h-full overflow-y-auto" onClick={onBackdropClick}>
++      <div
++        role="progressbar"
++        aria-label={t(($) => $.reader.progress)}
++        aria-valuemin={0}
++        aria-valuemax={100}
++        aria-valuenow={Math.round(progress * 100)}
++        className="sticky top-0 z-10 h-0.5 w-full bg-transparent"
++      >
++        <div className="h-0.5 bg-brand transition-[width]" style={{ width: `${Math.round(progress * 100)}%` }} />
++      </div>
++      <div className="mx-auto flex w-full max-w-6xl items-start gap-6">
++        {showOutline && (
++          <nav
++            aria-label={t(($) => $.reader.outline)}
++            onClick={(e) => e.stopPropagation()}
++            className="sticky top-4 mt-8 hidden max-h-[calc(100vh-4rem)] w-56 shrink-0 overflow-y-auto rounded-lg bg-background/90 p-3 text-caption xl:block"
++          >
++            <p className="mb-2 font-semibold text-foreground">{t(($) => $.reader.outline)}</p>
++            <ol className="flex flex-col gap-0.5">
++              {outline.map((item, i) => (
++                <li key={`${i}-${item.text}`}>
++                  <button
++                    type="button"
++                    onClick={() => jump(i)}
++                    aria-current={i === active ? "location" : undefined}
++                    className={cn(
++                      "w-full truncate rounded px-1.5 py-1 text-left hover:bg-accent",
++                      item.level === 2 && "pl-3.5",
++                      item.level === 3 && "pl-6",
++                      i === active ? "font-medium text-foreground" : "text-muted-foreground",
++                    )}
++                  >
++                    {item.text}
++                  </button>
++                </li>
++              ))}
++            </ol>
++          </nav>
++        )}
++        <div
++          ref={bodyRef}
++          className="mx-auto min-h-full w-full max-w-3xl rounded-t-lg bg-background text-foreground leading-relaxed"
++        >
++          {children}
++        </div>
++      </div>
++    </div>
++  );
++}
+diff --git a/packages/views/locales/en/editor.json b/packages/views/locales/en/editor.json
+index b53e73efc..cea2504cc 100644
+--- a/packages/views/locales/en/editor.json
++++ b/packages/views/locales/en/editor.json
+@@ -182,5 +182,9 @@
+     "clear_filter": "Clear filter",
+     "no_matches": "No matching rows",
+     "close": "Close"
++  },
++  "reader": {
++    "outline": "On this page",
++    "progress": "Reading progress"
+   }
+ }
+diff --git a/packages/views/locales/fr/editor.json b/packages/views/locales/fr/editor.json
+index e1bfb8278..b0c710dff 100644
+--- a/packages/views/locales/fr/editor.json
++++ b/packages/views/locales/fr/editor.json
+@@ -182,5 +182,9 @@
+     "clear_filter": "Effacer le filtre",
+     "no_matches": "Aucune ligne correspondante",
+     "close": "Fermer"
++  },
++  "reader": {
++    "outline": "Sur cette page",
++    "progress": "Progression de lecture"
+   }
+ }
+diff --git a/packages/views/locales/ja/editor.json b/packages/views/locales/ja/editor.json
+index 12c3f1dd4..4843736b6 100644
+--- a/packages/views/locales/ja/editor.json
++++ b/packages/views/locales/ja/editor.json
+@@ -178,5 +178,9 @@
+     "clear_filter": "絞り込みを解除",
+     "no_matches": "一致する行がありません",
+     "close": "閉じる"
++  },
++  "reader": {
++    "outline": "このページの目次",
++    "progress": "読了の進み具合"
+   }
+ }
+diff --git a/packages/views/locales/ko/editor.json b/packages/views/locales/ko/editor.json
+index ea12cf524..76cdfbe7c 100644
+--- a/packages/views/locales/ko/editor.json
++++ b/packages/views/locales/ko/editor.json
+@@ -178,5 +178,9 @@
+     "clear_filter": "필터 지우기",
+     "no_matches": "일치하는 행이 없습니다",
+     "close": "닫기"
++  },
++  "reader": {
++    "outline": "이 페이지의 목차",
++    "progress": "읽기 진행률"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hans/editor.json b/packages/views/locales/zh-Hans/editor.json
+index b45fbad95..d54f02822 100644
+--- a/packages/views/locales/zh-Hans/editor.json
++++ b/packages/views/locales/zh-Hans/editor.json
+@@ -178,5 +178,9 @@
+     "clear_filter": "清除筛选",
+     "no_matches": "没有匹配的行",
+     "close": "关闭"
++  },
++  "reader": {
++    "outline": "本页目录",
++    "progress": "阅读进度"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hant/editor.json b/packages/views/locales/zh-Hant/editor.json
+index a858ff21a..9520b3993 100644
+--- a/packages/views/locales/zh-Hant/editor.json
++++ b/packages/views/locales/zh-Hant/editor.json
+@@ -178,5 +178,9 @@
+     "clear_filter": "清除篩選",
+     "no_matches": "沒有匹配的行",
+     "close": "關閉"
++  },
++  "reader": {
++    "outline": "本頁目錄",
++    "progress": "閱讀進度"
+   }
+ }
+-- 
+2.53.0
+
