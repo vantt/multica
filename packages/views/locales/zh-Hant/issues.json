@@ -1723,6 +1723,13 @@
       "project_default": "專案工作流程",
       "cancel": "取消",
       "save": "儲存"
+    },
+    "decision": {
+      "title": "等待你的決定",
+      "due": "截止 {{date}}",
+      "recommended": "推薦",
+      "note_placeholder": "新增備註（可選）",
+      "answer": "答覆：{{option}}"
     }
   },
   "hover_card": {
