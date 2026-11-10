@@ -1,4 +1,4 @@
-From 8d48bf5a3ad52e6f45aa33c24ad3f8926eaea6af Mon Sep 17 00:00:00 2001
+From 4653a721b9aa90e7cf5d9485041c5a684e68e3e3 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:22:47 +0700
 Subject: [PATCH] feat(goals): goals with a number, a deadline, history and
@@ -16,6 +16,7 @@ Patch-Id: goals
  server/cmd/server/router.go                   |  13 +
  server/internal/handler/vantt_goal.go         | 578 ++++++++++++++++++
  server/internal/handler/vantt_goal_test.go    | 135 ++++
+ .../handler/workspace_delete_manifest_test.go |   3 +
  server/migrations/9001_vantt_goal.down.sql    |   3 +
  server/migrations/9001_vantt_goal.up.sql      |  43 ++
  .../9002_vantt_goal_workspace_index.down.sql  |   1 +
@@ -26,8 +27,10 @@ Patch-Id: goals
  .../9004_vantt_goal_link_target_index.up.sql  |   1 +
  server/pkg/db/generated/goal.sql.go           | 482 +++++++++++++++
  server/pkg/db/generated/models.go             |  41 ++
+ .../pkg/db/generated/workspace_delete.sql.go  |   9 +
  server/pkg/db/queries/goal.sql                |  78 +++
- 14 files changed, 1379 insertions(+)
+ server/pkg/db/queries/workspace_delete.sql    |   9 +
+ 17 files changed, 1400 insertions(+)
  create mode 100644 server/internal/handler/vantt_goal.go
  create mode 100644 server/internal/handler/vantt_goal_test.go
  create mode 100644 server/migrations/9001_vantt_goal.down.sql
@@ -790,6 +793,20 @@ index 000000000..a5fd5d904
 +	testutil.Call(t, testHandler.CreateGoal, goalRequest("POST", "/api/goals", map[string]any{"title": "x", "target_value": 1, "direction": "sideways"})).Want(http.StatusBadRequest)
 +	testutil.Call(t, testHandler.CreateGoal, goalRequest("POST", "/api/goals", map[string]any{"title": "x", "target_value": 1, "due_date": "31/12"})).Want(http.StatusBadRequest)
 +}
+diff --git a/server/internal/handler/workspace_delete_manifest_test.go b/server/internal/handler/workspace_delete_manifest_test.go
+index d08fe18ba..6854cb5d6 100644
+--- a/server/internal/handler/workspace_delete_manifest_test.go
++++ b/server/internal/handler/workspace_delete_manifest_test.go
+@@ -117,6 +117,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
+ 	"plugin_package_file":                workspaceDelete,
+ 	"project":                            workspaceDelete,
+ 	"project_resource":                   workspaceDelete,
++	"goal":                               workspaceDelete,
++	"goal_link":                          workspaceDelete,
++	"goal_value":                         workspaceDelete,
+ 	"quick_action":                       workspaceDelete,
+ 	"runtime_profile":                    workspaceDelete,
+ 	"schema_migrations":                  workspaceDeleteKeep,
 diff --git a/server/migrations/9001_vantt_goal.down.sql b/server/migrations/9001_vantt_goal.down.sql
 new file mode 100644
 index 000000000..eac116c68
@@ -1430,6 +1447,26 @@ index d544c0c01..3f8c49204 100644
  type InboxItem struct {
  	ID            pgtype.UUID        `json:"id"`
  	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+diff --git a/server/pkg/db/generated/workspace_delete.sql.go b/server/pkg/db/generated/workspace_delete.sql.go
+index 2d067d0f4..9d055bb88 100644
+--- a/server/pkg/db/generated/workspace_delete.sql.go
++++ b/server/pkg/db/generated/workspace_delete.sql.go
+@@ -413,6 +413,15 @@ deleted_squad_members AS (
+ deleted_project_resources AS (
+     DELETE FROM project_resource WHERE workspace_id = $1
+ ),
++deleted_goal_links AS (
++    DELETE FROM goal_link WHERE goal_link.workspace_id = $1
++),
++deleted_goal_values AS (
++    DELETE FROM goal_value WHERE goal_value.workspace_id = $1
++),
++deleted_goals AS (
++    DELETE FROM goal WHERE goal.workspace_id = $1
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
 diff --git a/server/pkg/db/queries/goal.sql b/server/pkg/db/queries/goal.sql
 new file mode 100644
 index 000000000..025e6c312
@@ -1514,6 +1551,26 @@ index 000000000..025e6c312
 +INSERT INTO goal_link (goal_id, workspace_id, target_type, target_id)
 +VALUES ($1, $2, $3, $4)
 +ON CONFLICT DO NOTHING;
+diff --git a/server/pkg/db/queries/workspace_delete.sql b/server/pkg/db/queries/workspace_delete.sql
+index 9f6972cfb..34530b959 100644
+--- a/server/pkg/db/queries/workspace_delete.sql
++++ b/server/pkg/db/queries/workspace_delete.sql
+@@ -426,6 +426,15 @@ deleted_squad_members AS (
+ deleted_project_resources AS (
+     DELETE FROM project_resource WHERE workspace_id = $1
+ ),
++deleted_goal_links AS (
++    DELETE FROM goal_link WHERE goal_link.workspace_id = $1
++),
++deleted_goal_values AS (
++    DELETE FROM goal_value WHERE goal_value.workspace_id = $1
++),
++deleted_goals AS (
++    DELETE FROM goal WHERE goal.workspace_id = $1
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
 -- 
 2.53.0
 

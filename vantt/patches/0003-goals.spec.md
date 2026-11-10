@@ -48,6 +48,11 @@ owner) — without numbers; we add target/current/unit/direction/due.
 2. Add-only schema; dropping the patch leaves unused tables.
 3. Strings in every locale.
 
+## Workspace deletion
+The tables have no foreign keys, so `pkg/db/queries/workspace_delete.sql` deletes their rows
+(`deleted_goal_links`, `deleted_goal_values`, `deleted_goals`, after `deleted_project_resources`)
+and `workspace_delete_manifest_test.go` lists them as `workspaceDelete`.
+
 ## Touch points (expected)
 - `server/migrations/NNN_goal*.sql`, `server/pkg/db/queries/goal.sql` + sqlc output,
   `server/internal/handler/goal.go` (+ tests), router registration.

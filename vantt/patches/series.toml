@@ -44,7 +44,7 @@ metadata_file = "0003-goals.spec.md"
 upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["server/migrations/9001_vantt_goal*", "server/pkg/db/queries/goal.sql", "server/pkg/db/generated/goal.sql.go", "server/pkg/db/generated/models.go", "server/internal/handler/vantt_goal.go", "server/cmd/server/router.go"]
-test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Goal' -count=1"
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Goal|WorkspaceDeletion' -count=1"
 
 [[patches]]
 id = "goals-ui"
@@ -55,3 +55,23 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["packages/core/goals/", "packages/views/goals/", "packages/core/api/client.ts", "packages/core/paths/", "packages/views/layout/app-sidebar.tsx", "apps/desktop/src/renderer/src/routes.tsx"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run goals paths) && (cd packages/views && npx vitest run locales layout search)"
+
+[[patches]]
+id = "workflow-by-type"
+name = "feat(workflow): pick a project's workflow by a select property (Type)"
+patch_file = "0005-workflow-by-type.patch"
+metadata_file = "0005-workflow-by-type.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = "https://github.com/multica-ai/multica/issues/5524"
+touches = ["server/internal/issueworkflow/issueworkflow.go", "server/internal/handler/issue_workflow_entry.go", "server/internal/handler/issue.go", "server/internal/service/issue.go", "server/internal/handler/property.go", "server/pkg/db/queries/workspace_delete.sql"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'WorkflowRule|FollowsRuleWorkflow|ChangingType|WorkspaceDeletion' -count=1"
+
+[[patches]]
+id = "workflow-by-type-ui"
+name = "feat(projects): edit workflows by Type in the project sidebar"
+patch_file = "0006-workflow-by-type-ui.patch"
+metadata_file = "0006-workflow-by-type-ui.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/workflows/workflow-rules-row.tsx", "packages/views/projects/components/project-detail.tsx", "packages/core/api/client.ts"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run locales projects workflows"
