@@ -1773,6 +1773,9 @@
       }
     },
     "approval": {
+      "prs_label": "Pull requests",
+      "approve_on_github": "Approve on GitHub",
+      "pr_then_approve": "Approve the PR on GitHub with your account, then Approve here.",
       "title": "Waiting for your approval",
       "gate_note": "Agents cannot move this issue out of this step.",
       "approve": "Approve",
