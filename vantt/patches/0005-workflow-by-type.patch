@@ -1,0 +1,809 @@
+From 926896968d9d9ef1c478e2872cd3e6190dc59842 Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:39:26 +0700
+Subject: [PATCH 05/11] feat(workflow): pick a project's workflow by a select
+ property (Type)
+
+Table project_workflow_rule (add-only, no foreign keys): in a project, an
+issue whose select property has an option follows another workflow; anything
+else follows the project's workflow. ForIssue resolves rule -> project ->
+Default for issue writes, create, the claim brief and the gate check.
+API GET/PUT /api/projects/{id}/workflow-rules (owner/admin). Changing the
+property moves a status the new workflow lacks to its equivalent, like a
+project move; an agent cannot change it while the issue waits on a person.
+Workspace deletion removes the rules.
+
+Patch-Id: workflow-by-type
+---
+ server/cmd/server/router.go                   |   2 +
+ server/internal/handler/issue.go              |   3 +-
+ server/internal/handler/issue_trigger.go      |   2 +-
+ .../internal/handler/issue_workflow_entry.go  |   6 +-
+ server/internal/handler/pr_auto_complete.go   |   2 +-
+ server/internal/handler/property.go           |   9 +
+ .../internal/handler/vantt_workflow_rules.go  | 219 ++++++++++++++++++
+ .../handler/vantt_workflow_rules_test.go      |  94 ++++++++
+ .../handler/workspace_delete_manifest_test.go |   1 +
+ .../internal/issueworkflow/issueworkflow.go   |  68 ++++++
+ server/internal/service/issue.go              |   7 +-
+ .../9005_vantt_project_workflow_rule.down.sql |   1 +
+ .../9005_vantt_project_workflow_rule.up.sql   |  13 ++
+ ...ject_workflow_rule_workflow_index.down.sql |   1 +
+ ...roject_workflow_rule_workflow_index.up.sql |   1 +
+ server/pkg/db/generated/models.go             |  10 +
+ .../db/generated/project_workflow_rule.sql.go |  93 ++++++++
+ .../pkg/db/generated/workspace_delete.sql.go  |   3 +
+ .../pkg/db/queries/project_workflow_rule.sql  |  13 ++
+ server/pkg/db/queries/workspace_delete.sql    |   3 +
+ 20 files changed, 544 insertions(+), 7 deletions(-)
+ create mode 100644 server/internal/handler/vantt_workflow_rules.go
+ create mode 100644 server/internal/handler/vantt_workflow_rules_test.go
+ create mode 100644 server/migrations/9005_vantt_project_workflow_rule.down.sql
+ create mode 100644 server/migrations/9005_vantt_project_workflow_rule.up.sql
+ create mode 100644 server/migrations/9006_vantt_project_workflow_rule_workflow_index.down.sql
+ create mode 100644 server/migrations/9006_vantt_project_workflow_rule_workflow_index.up.sql
+ create mode 100644 server/pkg/db/generated/project_workflow_rule.sql.go
+ create mode 100644 server/pkg/db/queries/project_workflow_rule.sql
+
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 1b8b70712..4d6c9bcc1 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -2174,6 +2174,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 					r.Put("/", h.UpdateProject)
+ 					r.Delete("/", h.DeleteProject)
+ 					r.Post("/workflow", h.SetProjectWorkflow)
++					r.Get("/workflow-rules", h.ListProjectWorkflowRules) // vantt workflow-by-type
++					r.Put("/workflow-rules", h.SetProjectWorkflowRules)
+ 					r.Get("/resources", h.ListProjectResources)
+ 					r.Post("/resources", h.CreateProjectResource)
+ 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
+diff --git a/server/internal/handler/issue.go b/server/internal/handler/issue.go
+index a4a91c999..6d38656bd 100644
+--- a/server/internal/handler/issue.go
++++ b/server/internal/handler/issue.go
+@@ -3299,7 +3299,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
+ 			workflowProjectID = parent.ProjectID
+ 		}
+ 	}
+-	createWorkflow, createWorkflowProject, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, workflowProjectID)
++	createProps, _ := json.Marshal(req.Properties)
++	createWorkflow, createWorkflowProject, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, workflowProjectID, createProps)
+ 	if err != nil {
+ 		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
+ 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+diff --git a/server/internal/handler/issue_trigger.go b/server/internal/handler/issue_trigger.go
+index 19bd3a119..e8d8d143c 100644
+--- a/server/internal/handler/issue_trigger.go
++++ b/server/internal/handler/issue_trigger.go
+@@ -219,7 +219,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
+ 		// handoff when no assignee was picked. (MUL-7420)
+ 		if req.ProjectID != nil && *req.ProjectID != "" {
+ 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
+-				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
++				if def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, projectUUID, nil); err == nil && def != nil {
+ 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
+ 						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID)); ok {
+ 							candidate.AssigneeType = pgtype.Text{String: t, Valid: true}
+diff --git a/server/internal/handler/issue_workflow_entry.go b/server/internal/handler/issue_workflow_entry.go
+index 342747059..f0e3b000a 100644
+--- a/server/internal/handler/issue_workflow_entry.go
++++ b/server/internal/handler/issue_workflow_entry.go
+@@ -46,7 +46,7 @@ type workflowHandoff struct {
+ // move the issue from the step it works on. It returns the handoff that write
+ // triggers, or nil.
+ func (h *Handler) applyIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
+-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, prev.WorkspaceID, params.ProjectID)
++	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, prev.WorkspaceID, params.ProjectID, prev.Properties)
+ 	if err != nil || def == nil {
+ 		return nil, err
+ 	}
+@@ -164,7 +164,7 @@ func (h *Handler) refuseAgentLeavingGate(ctx context.Context, prev db.Issue, par
+ 	if !statusChanging && !projectMoving {
+ 		return nil
+ 	}
+-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, prev.WorkspaceID, prev.ProjectID)
++	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, prev.WorkspaceID, prev.ProjectID, prev.Properties)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -366,7 +366,7 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, issue db.Issue) []db.A
+ // legacyRuntimeRules is true for a daemon that does not advertise
+ // protocol.DaemonCapabilityWorkflowStatusRulesV1; see BriefInput.
+ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue, legacyRuntimeRules bool) *TaskProjectWorkflowData {
+-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
++	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID, issue.Properties)
+ 	if err != nil {
+ 		slog.Warn("task claim: failed to load project workflow for brief injection",
+ 			"issue_id", uuidToString(issue.ID), "error", err)
+diff --git a/server/internal/handler/pr_auto_complete.go b/server/internal/handler/pr_auto_complete.go
+index ee9b0190b..79e57a55e 100644
+--- a/server/internal/handler/pr_auto_complete.go
++++ b/server/internal/handler/pr_auto_complete.go
+@@ -209,7 +209,7 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
+ 	// rule a manual status change follows (applyIssueWorkflow). Default and
+ 	// issues outside any project accept every status. The issue page shows
+ 	// nothing for this state: the issue just stays where it is.
+-	def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
++	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID, issue.Properties)
+ 	if err != nil {
+ 		return prAutoCompleteDecision{}, err
+ 	}
+diff --git a/server/internal/handler/property.go b/server/internal/handler/property.go
+index 3b89204d8..acb5d925f 100644
+--- a/server/internal/handler/property.go
++++ b/server/internal/handler/property.go
+@@ -683,6 +683,14 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
+ 	if !ok {
+ 		return
+ 	}
++	if callerType, _ := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID)); callerType == "agent" {
++		if err := h.refuseAgentRuleChange(r.Context(), issue, propertyID, callerType); err != nil {
++			if !writeIssueWorkflowError(w, err) {
++				writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
++			}
++			return
++		}
++	}
+ 
+ 	// Validation and write share the property advisory lock with definition
+ 	// updates: the value written is guaranteed to reference the definition
+@@ -754,6 +762,7 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
+ 		"properties":     properties,
+ 		"issue_revision": updated.Revision,
+ 	})
++	h.followRuleWorkflow(r, issue, updated, actorType, actorID)
+ 	writeJSON(w, http.StatusOK, map[string]any{"properties": properties, "issue_revision": updated.Revision})
+ }
+ 
+diff --git a/server/internal/handler/vantt_workflow_rules.go b/server/internal/handler/vantt_workflow_rules.go
+new file mode 100644
+index 000000000..82c78aa3a
+--- /dev/null
++++ b/server/internal/handler/vantt_workflow_rules.go
+@@ -0,0 +1,219 @@
++package handler
++
++// vantt workflow-by-type (patch workflow-by-type, F3): in a project, issues whose
++// select property (e.g. Type) has a given option follow another workflow.
++// Reference: Jira workflow schemes (issue type → workflow).
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"log/slog"
++	"net/http"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/issuestatus"
++	"github.com/multica-ai/multica/server/internal/issueworkflow"
++	"github.com/multica-ai/multica/server/internal/util"
++	"github.com/multica-ai/multica/server/pkg/protocol"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++type WorkflowRuleJSON struct {
++	PropertyID string `json:"property_id"`
++	OptionID   string `json:"option_id"`
++	WorkflowID string `json:"workflow_id"`
++}
++
++func (h *Handler) loadProjectForRules(w http.ResponseWriter, r *http.Request) (db.Project, bool) {
++	wsID := h.resolveWorkspaceID(r)
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
++		return db.Project{}, false
++	}
++	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
++	if !ok {
++		return db.Project{}, false
++	}
++	id, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
++	if !ok {
++		return db.Project{}, false
++	}
++	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: id, WorkspaceID: wsUUID})
++	if err != nil {
++		writeError(w, http.StatusNotFound, "project not found")
++		return db.Project{}, false
++	}
++	return project, true
++}
++
++func rulesToJSON(rules []db.ProjectWorkflowRule) []WorkflowRuleJSON {
++	out := make([]WorkflowRuleJSON, 0, len(rules))
++	for _, rule := range rules {
++		out = append(out, WorkflowRuleJSON{PropertyID: uuidToString(rule.PropertyID), OptionID: rule.OptionID, WorkflowID: uuidToString(rule.WorkflowID)})
++	}
++	return out
++}
++
++func (h *Handler) ListProjectWorkflowRules(w http.ResponseWriter, r *http.Request) {
++	project, ok := h.loadProjectForRules(w, r)
++	if !ok {
++		return
++	}
++	rules, err := h.Queries.ListProjectWorkflowRules(r.Context(), db.ListProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID})
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list rules")
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"rules": rulesToJSON(rules)})
++}
++
++// SetProjectWorkflowRules replaces a project's rules. Owner/admin only. Every
++// rule names a select property of the workspace, one of its options and a
++// workflow of the workspace. Existing issues keep their status; they follow
++// the new workflow from their next move.
++func (h *Handler) SetProjectWorkflowRules(w http.ResponseWriter, r *http.Request) {
++	project, ok := h.loadProjectForRules(w, r)
++	if !ok {
++		return
++	}
++	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(project.WorkspaceID), "workspace not found", "owner", "admin"); !ok {
++		return
++	}
++	var req struct {
++		Rules []WorkflowRuleJSON `json:"rules"`
++	}
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	ctx := r.Context()
++	type parsed struct {
++		property, workflow pgtype.UUID
++		option             string
++	}
++	var rules []parsed
++	seen := map[string]bool{}
++	for _, rule := range req.Rules {
++		propID, err1 := util.ParseUUID(rule.PropertyID)
++		wfID, err2 := util.ParseUUID(rule.WorkflowID)
++		if err1 != nil || err2 != nil || rule.OptionID == "" {
++			writeError(w, http.StatusBadRequest, "each rule needs property_id, option_id and workflow_id")
++			return
++		}
++		prop, err := h.Queries.GetIssueProperty(ctx, db.GetIssuePropertyParams{ID: propID, WorkspaceID: project.WorkspaceID})
++		if err != nil || prop.Type != "select" {
++			writeError(w, http.StatusBadRequest, "property must be a select property of this workspace")
++			return
++		}
++		cfg := parsePropertyConfig(prop.Config)
++		known := false
++		for _, o := range cfg.Options {
++			known = known || o.ID == rule.OptionID
++		}
++		if !known {
++			writeError(w, http.StatusBadRequest, "option is not one of the property's options")
++			return
++		}
++		if _, err := h.Queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: wfID, WorkspaceID: project.WorkspaceID}); err != nil {
++			writeError(w, http.StatusBadRequest, "workflow not found")
++			return
++		}
++		key := rule.PropertyID + "/" + rule.OptionID
++		if seen[key] {
++			writeError(w, http.StatusBadRequest, "duplicate rule for the same option")
++			return
++		}
++		seen[key] = true
++		rules = append(rules, parsed{propID, wfID, rule.OptionID})
++	}
++	if err := h.Queries.DeleteProjectWorkflowRules(ctx, db.DeleteProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to set rules")
++		return
++	}
++	for i, rule := range rules {
++		if err := h.Queries.CreateProjectWorkflowRule(ctx, db.CreateProjectWorkflowRuleParams{
++			ProjectID: project.ID, WorkspaceID: project.WorkspaceID, PropertyID: rule.property,
++			OptionID: rule.option, WorkflowID: rule.workflow, Position: int32(i),
++		}); err != nil {
++			writeError(w, http.StatusInternalServerError, "failed to set rules")
++			return
++		}
++	}
++	saved, _ := h.Queries.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID})
++	writeJSON(w, http.StatusOK, map[string]any{"rules": rulesToJSON(saved)})
++}
++
++// ruleUsesProperty reports whether the issue's project picks workflows by this property.
++func (h *Handler) ruleUsesProperty(ctx context.Context, issue db.Issue, propertyID pgtype.UUID) bool {
++	if !issue.ProjectID.Valid {
++		return false
++	}
++	rules, err := h.Queries.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
++	if err != nil {
++		return false
++	}
++	for _, rule := range rules {
++		if rule.PropertyID == propertyID {
++			return true
++		}
++	}
++	return false
++}
++
++// refuseAgentRuleChange stops an agent from switching an issue's workflow
++// (by changing the property a rule reads) while the issue waits on a person.
++func (h *Handler) refuseAgentRuleChange(ctx context.Context, issue db.Issue, propertyID pgtype.UUID, callerType string) error {
++	if callerType != "agent" || !h.ruleUsesProperty(ctx, issue, propertyID) {
++		return nil
++	}
++	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID, issue.Properties)
++	if err != nil {
++		return err
++	}
++	if issueworkflow.PersonGate(def, issue.Status, project, issue.CreatorType, issue.CreatorID) {
++		return &issueworkflow.GateError{Status: issue.Status}
++	}
++	return nil
++}
++
++// followRuleWorkflow keeps an issue inside the workflow its new property value
++// picks: a status the new workflow does not list moves to the equivalent one,
++// as a project move does. No handoff runs; the next status change hands off.
++func (h *Handler) followRuleWorkflow(r *http.Request, prev, updated db.Issue, actorType, actorID string) {
++	ctx := r.Context()
++	if !h.ruleUsesAny(ctx, updated) {
++		return
++	}
++	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, updated.WorkspaceID, updated.ProjectID, updated.Properties)
++	if err != nil || def == nil || def.IsDefault || def.Has(updated.Status) {
++		return
++	}
++	target := issueworkflow.MoveTarget(*def, updated.Status, func(key string) string {
++		return issuestatus.Category(ctx, h.Queries, updated.WorkspaceID, key)
++	})
++	moved, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: updated.ID, Status: target, WorkspaceID: updated.WorkspaceID})
++	if err != nil {
++		slog.Warn("workflow rule: remap status failed", "issue_id", uuidToString(updated.ID), "error", err)
++		return
++	}
++	prefix := h.getIssuePrefix(ctx, moved.WorkspaceID)
++	resp := issueToResponse(moved, prefix)
++	h.fillStatusCategory(ctx, moved.WorkspaceID, &resp)
++	h.publish(protocol.EventIssueUpdated, uuidToString(moved.WorkspaceID), actorType, actorID, map[string]any{
++		"issue":          resp,
++		"status_changed": true,
++		"prev_status":    prev.Status,
++		"creator_type":   prev.CreatorType,
++		"creator_id":     uuidToString(prev.CreatorID),
++	})
++}
++
++func (h *Handler) ruleUsesAny(ctx context.Context, issue db.Issue) bool {
++	if !issue.ProjectID.Valid {
++		return false
++	}
++	rules, err := h.Queries.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
++	return err == nil && len(rules) > 0
++}
+diff --git a/server/internal/handler/vantt_workflow_rules_test.go b/server/internal/handler/vantt_workflow_rules_test.go
+new file mode 100644
+index 000000000..df6000771
+--- /dev/null
++++ b/server/internal/handler/vantt_workflow_rules_test.go
+@@ -0,0 +1,94 @@
++package handler
++
++import (
++	"encoding/json"
++	"net/http"
++	"testing"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++// vantt workflow-by-type: a project's rule sends issues with a given select
++// option to another workflow.
++
++type ruleFixture struct {
++	projectID, propertyID, copyOption, codeOption, contentWF string
++}
++
++func setupWorkflowRule(t *testing.T) ruleFixture {
++	t.Helper()
++	sfx := workflowTestSuffix()
++	projectID := createWorkflowTestProject(t, "Rule project "+sfx)
++
++	var prop PropertyResponse
++	testutil.Call(t, testHandler.CreateProperty, goalRequest("POST", "/api/properties", map[string]any{
++		"name": "Type " + sfx[len(sfx)-6:], "type": "select",
++		"config": map[string]any{"options": []map[string]any{{"name": "Copy", "color": "#ec4899"}, {"name": "Code", "color": "#3b82f6"}}},
++	})).Want(http.StatusCreated).JSON(&prop)
++	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue_property WHERE id = $1`, prop.ID) })
++
++	content := createTestWorkflow(t, "content "+sfx, "in_review")
++	f := ruleFixture{projectID: projectID, propertyID: prop.ID, contentWF: content.ID}
++	for _, o := range prop.Config.Options {
++		if o.Name == "Copy" {
++			f.copyOption = o.ID
++		} else {
++			f.codeOption = o.ID
++		}
++	}
++	req := withURLParam(goalRequest("PUT", "/api/projects/"+projectID+"/workflow-rules", map[string]any{
++		"rules": []map[string]any{{"property_id": prop.ID, "option_id": f.copyOption, "workflow_id": content.ID}},
++	}), "id", projectID)
++	testutil.Call(t, testHandler.SetProjectWorkflowRules, req).Want(http.StatusOK)
++	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM project_workflow_rule WHERE project_id = $1`, projectID) })
++	return f
++}
++
++func TestWorkflowRuleListAndValidation(t *testing.T) {
++	seedTestCatalog(t)
++	f := setupWorkflowRule(t)
++	var list struct {
++		Rules []WorkflowRuleJSON `json:"rules"`
++	}
++	testutil.Call(t, testHandler.ListProjectWorkflowRules, withURLParam(goalRequest("GET", "/api/projects/"+f.projectID+"/workflow-rules", nil), "id", f.projectID)).
++		Want(http.StatusOK).JSON(&list)
++	if len(list.Rules) != 1 || list.Rules[0].WorkflowID != f.contentWF {
++		t.Fatalf("rules = %+v", list.Rules)
++	}
++	bad := withURLParam(goalRequest("PUT", "/api/projects/"+f.projectID+"/workflow-rules", map[string]any{
++		"rules": []map[string]any{{"property_id": f.propertyID, "option_id": "not-an-option", "workflow_id": f.contentWF}},
++	}), "id", f.projectID)
++	testutil.Call(t, testHandler.SetProjectWorkflowRules, bad).Want(http.StatusBadRequest)
++}
++
++// An issue whose Type is Copy follows the content workflow: a status only that
++// workflow lacks is refused, and one it lists is accepted.
++func TestIssueFollowsRuleWorkflow(t *testing.T) {
++	seedTestCatalog(t)
++	f := setupWorkflowRule(t)
++	props, _ := json.Marshal(map[string]string{f.propertyID: f.copyOption})
++	issueID := dbfx.Issue(t, "copy issue", testutil.Cols{"project_id": f.projectID, "status": "todo", "properties": string(props)})
++
++	// content lists backlog, in_review, blocked (+ todo, done, cancelled), not in_progress.
++	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusBadRequest)
++	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
++
++	// A Code issue in the same project stays on the project's workflow (Default).
++	codeProps, _ := json.Marshal(map[string]string{f.propertyID: f.codeOption})
++	code := dbfx.Issue(t, "code issue", testutil.Cols{"project_id": f.projectID, "status": "todo", "properties": string(codeProps)})
++	updateIssueForTest(t, code, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++}
++
++// Switching Type moves a status the new workflow lacks to its equivalent.
++func TestChangingTypeFollowsNewWorkflow(t *testing.T) {
++	seedTestCatalog(t)
++	f := setupWorkflowRule(t)
++	issueID := dbfx.Issue(t, "becomes copy", testutil.Cols{"project_id": f.projectID, "status": "in_progress"})
++
++	req := withURLParams(goalRequest("PUT", "/api/issues/"+issueID+"/properties/"+f.propertyID, map[string]any{"value": f.copyOption}),
++		"id", issueID, "propertyId", f.propertyID)
++	testutil.Call(t, testHandler.SetIssueProperty, req).Want(http.StatusOK)
++	if status, _, _ := issueStatusAndAssignee(t, issueID); status == "in_progress" {
++		t.Fatalf("status stayed in_progress, which the content workflow does not list")
++	}
++}
+diff --git a/server/internal/handler/workspace_delete_manifest_test.go b/server/internal/handler/workspace_delete_manifest_test.go
+index 6854cb5d6..362a7b7cf 100644
+--- a/server/internal/handler/workspace_delete_manifest_test.go
++++ b/server/internal/handler/workspace_delete_manifest_test.go
+@@ -120,6 +120,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
+ 	"goal":                               workspaceDelete,
+ 	"goal_link":                          workspaceDelete,
+ 	"goal_value":                         workspaceDelete,
++	"project_workflow_rule":              workspaceDelete,
+ 	"quick_action":                       workspaceDelete,
+ 	"runtime_profile":                    workspaceDelete,
+ 	"schema_migrations":                  workspaceDeleteKeep,
+diff --git a/server/internal/issueworkflow/issueworkflow.go b/server/internal/issueworkflow/issueworkflow.go
+index 405978247..bbd2484d3 100644
+--- a/server/internal/issueworkflow/issueworkflow.go
++++ b/server/internal/issueworkflow/issueworkflow.go
+@@ -529,6 +529,7 @@ type Querier interface {
+ 	GetIssueWorkflow(ctx context.Context, arg db.GetIssueWorkflowParams) (db.IssueWorkflow, error)
+ 	GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtype.UUID) (db.IssueWorkflow, error)
+ 	GetProjectInWorkspace(ctx context.Context, arg db.GetProjectInWorkspaceParams) (db.Project, error)
++	ListProjectWorkflowRules(ctx context.Context, arg db.ListProjectWorkflowRulesParams) ([]db.ProjectWorkflowRule, error)
+ }
+ 
+ // DefaultFor loads the workspace Default workflow, or the built-in one when
+@@ -561,6 +562,73 @@ func ForProject(ctx context.Context, q Querier, workspaceID, projectID pgtype.UU
+ 	return def, project, err
+ }
+ 
++// ForIssue loads the workflow an issue follows: the project's rule matching one
++// of the issue's select property values (vantt workflow-by-type), otherwise the
++// project's workflow. properties is the issue's property bag as stored or sent:
++// a JSON object keyed by property id. A rule naming a missing workflow is skipped.
++func ForIssue(ctx context.Context, q Querier, workspaceID, projectID pgtype.UUID, properties []byte) (*Definition, db.Project, error) {
++	if !projectID.Valid {
++		return nil, db.Project{}, nil
++	}
++	project, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
++	if err != nil {
++		if errors.Is(err, pgx.ErrNoRows) {
++			return nil, db.Project{}, nil
++		}
++		return nil, db.Project{}, err
++	}
++	if wf, ok, err := RuleWorkflow(ctx, q, project, properties); err != nil {
++		return nil, db.Project{}, err
++	} else if ok {
++		return &wf, project, nil
++	}
++	def, err := ForProjectRow(ctx, q, project)
++	return def, project, err
++}
++
++// RuleWorkflow returns the workflow a project's rules pick for a property bag.
++func RuleWorkflow(ctx context.Context, q Querier, project db.Project, properties []byte) (Definition, bool, error) {
++	if len(properties) == 0 {
++		return Definition{}, false, nil
++	}
++	var bag map[string]json.RawMessage
++	if json.Unmarshal(properties, &bag) != nil || len(bag) == 0 {
++		return Definition{}, false, nil
++	}
++	rules, err := q.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID})
++	if err != nil || len(rules) == 0 {
++		return Definition{}, false, err
++	}
++	for _, rule := range rules {
++		raw, ok := bag[uuidString(rule.PropertyID)]
++		if !ok {
++			continue
++		}
++		var value string
++		if json.Unmarshal(raw, &value) != nil || value != rule.OptionID {
++			continue
++		}
++		row, err := q.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: rule.WorkflowID, WorkspaceID: project.WorkspaceID})
++		if err != nil {
++			if errors.Is(err, pgx.ErrNoRows) {
++				continue
++			}
++			return Definition{}, false, err
++		}
++		def, err := Decode(row)
++		return def, err == nil, err
++	}
++	return Definition{}, false, nil
++}
++
++func uuidString(u pgtype.UUID) string {
++	if !u.Valid {
++		return ""
++	}
++	b := u.Bytes
++	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
++}
++
+ // ForProjectRow loads the workflow of an already-loaded project. A dangling
+ // workflow reference falls back to Default.
+ func ForProjectRow(ctx context.Context, q Querier, project db.Project) (*Definition, error) {
+diff --git a/server/internal/service/issue.go b/server/internal/service/issue.go
+index 2328422bf..86ae1d4b8 100644
+--- a/server/internal/service/issue.go
++++ b/server/internal/service/issue.go
+@@ -858,7 +858,12 @@ func (s *IssueService) createWorkflow(ctx context.Context, qtx *db.Queries, p Is
+ 		}
+ 		projectID = parent.ProjectID
+ 	}
+-	def, _, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID)
++	props := make(map[string]json.RawMessage, len(p.Properties))
++	for id, v := range p.Properties {
++		props[util.UUIDToString(id)] = v
++	}
++	bag, _ := json.Marshal(props)
++	def, _, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, projectID, bag)
+ 	return def, err
+ }
+ 
+diff --git a/server/migrations/9005_vantt_project_workflow_rule.down.sql b/server/migrations/9005_vantt_project_workflow_rule.down.sql
+new file mode 100644
+index 000000000..cd8c6e477
+--- /dev/null
++++ b/server/migrations/9005_vantt_project_workflow_rule.down.sql
+@@ -0,0 +1 @@
++DROP TABLE IF EXISTS project_workflow_rule;
+diff --git a/server/migrations/9005_vantt_project_workflow_rule.up.sql b/server/migrations/9005_vantt_project_workflow_rule.up.sql
+new file mode 100644
+index 000000000..a23fcf5e8
+--- /dev/null
++++ b/server/migrations/9005_vantt_project_workflow_rule.up.sql
+@@ -0,0 +1,13 @@
++-- vantt workflow-by-type (patch workflow-by-type, F3): in a project, an issue
++-- whose select property (e.g. Type) has a given option follows another workflow.
++-- No foreign keys: the handler validates project, property, option and workflow.
++CREATE TABLE IF NOT EXISTS project_workflow_rule (
++    project_id   UUID NOT NULL,
++    workspace_id UUID NOT NULL,
++    property_id  UUID NOT NULL,
++    option_id    TEXT NOT NULL,
++    workflow_id  UUID NOT NULL,
++    position     INT  NOT NULL DEFAULT 0,
++    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
++    PRIMARY KEY (project_id, property_id, option_id)
++);
+diff --git a/server/migrations/9006_vantt_project_workflow_rule_workflow_index.down.sql b/server/migrations/9006_vantt_project_workflow_rule_workflow_index.down.sql
+new file mode 100644
+index 000000000..9d25c79ef
+--- /dev/null
++++ b/server/migrations/9006_vantt_project_workflow_rule_workflow_index.down.sql
+@@ -0,0 +1 @@
++DROP INDEX CONCURRENTLY IF EXISTS idx_project_workflow_rule_workflow;
+diff --git a/server/migrations/9006_vantt_project_workflow_rule_workflow_index.up.sql b/server/migrations/9006_vantt_project_workflow_rule_workflow_index.up.sql
+new file mode 100644
+index 000000000..fb9dedbdb
+--- /dev/null
++++ b/server/migrations/9006_vantt_project_workflow_rule_workflow_index.up.sql
+@@ -0,0 +1 @@
++CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_project_workflow_rule_workflow ON project_workflow_rule (workspace_id, workflow_id);
+diff --git a/server/pkg/db/generated/models.go b/server/pkg/db/generated/models.go
+index 3f8c49204..8c6825841 100644
+--- a/server/pkg/db/generated/models.go
++++ b/server/pkg/db/generated/models.go
+@@ -1425,6 +1425,16 @@ type ProjectResource struct {
+ 	CreatedBy    pgtype.UUID        `json:"created_by"`
+ }
+ 
++type ProjectWorkflowRule struct {
++	ProjectID   pgtype.UUID        `json:"project_id"`
++	WorkspaceID pgtype.UUID        `json:"workspace_id"`
++	PropertyID  pgtype.UUID        `json:"property_id"`
++	OptionID    string             `json:"option_id"`
++	WorkflowID  pgtype.UUID        `json:"workflow_id"`
++	Position    int32              `json:"position"`
++	CreatedAt   pgtype.Timestamptz `json:"created_at"`
++}
++
+ type QuickAction struct {
+ 	ID            pgtype.UUID        `json:"id"`
+ 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+diff --git a/server/pkg/db/generated/project_workflow_rule.sql.go b/server/pkg/db/generated/project_workflow_rule.sql.go
+new file mode 100644
+index 000000000..7e268c2bb
+--- /dev/null
++++ b/server/pkg/db/generated/project_workflow_rule.sql.go
+@@ -0,0 +1,93 @@
++// Code generated by sqlc. DO NOT EDIT.
++// versions:
++//   sqlc v1.31.1
++// source: project_workflow_rule.sql
++
++package db
++
++import (
++	"context"
++
++	"github.com/jackc/pgx/v5/pgtype"
++)
++
++const createProjectWorkflowRule = `-- name: CreateProjectWorkflowRule :exec
++INSERT INTO project_workflow_rule (project_id, workspace_id, property_id, option_id, workflow_id, position)
++VALUES ($1, $2, $3, $4, $5, $6)
++`
++
++type CreateProjectWorkflowRuleParams struct {
++	ProjectID   pgtype.UUID `json:"project_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++	PropertyID  pgtype.UUID `json:"property_id"`
++	OptionID    string      `json:"option_id"`
++	WorkflowID  pgtype.UUID `json:"workflow_id"`
++	Position    int32       `json:"position"`
++}
++
++func (q *Queries) CreateProjectWorkflowRule(ctx context.Context, arg CreateProjectWorkflowRuleParams) error {
++	_, err := q.db.Exec(ctx, createProjectWorkflowRule,
++		arg.ProjectID,
++		arg.WorkspaceID,
++		arg.PropertyID,
++		arg.OptionID,
++		arg.WorkflowID,
++		arg.Position,
++	)
++	return err
++}
++
++const deleteProjectWorkflowRules = `-- name: DeleteProjectWorkflowRules :exec
++DELETE FROM project_workflow_rule WHERE project_id = $1 AND workspace_id = $2
++`
++
++type DeleteProjectWorkflowRulesParams struct {
++	ProjectID   pgtype.UUID `json:"project_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) DeleteProjectWorkflowRules(ctx context.Context, arg DeleteProjectWorkflowRulesParams) error {
++	_, err := q.db.Exec(ctx, deleteProjectWorkflowRules, arg.ProjectID, arg.WorkspaceID)
++	return err
++}
++
++const listProjectWorkflowRules = `-- name: ListProjectWorkflowRules :many
++
++SELECT project_id, workspace_id, property_id, option_id, workflow_id, position, created_at FROM project_workflow_rule
++WHERE project_id = $1 AND workspace_id = $2
++ORDER BY position ASC, created_at ASC
++`
++
++type ListProjectWorkflowRulesParams struct {
++	ProjectID   pgtype.UUID `json:"project_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++// vantt workflow-by-type (patch workflow-by-type, F3).
++func (q *Queries) ListProjectWorkflowRules(ctx context.Context, arg ListProjectWorkflowRulesParams) ([]ProjectWorkflowRule, error) {
++	rows, err := q.db.Query(ctx, listProjectWorkflowRules, arg.ProjectID, arg.WorkspaceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	items := []ProjectWorkflowRule{}
++	for rows.Next() {
++		var i ProjectWorkflowRule
++		if err := rows.Scan(
++			&i.ProjectID,
++			&i.WorkspaceID,
++			&i.PropertyID,
++			&i.OptionID,
++			&i.WorkflowID,
++			&i.Position,
++			&i.CreatedAt,
++		); err != nil {
++			return nil, err
++		}
++		items = append(items, i)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	return items, nil
++}
+diff --git a/server/pkg/db/generated/workspace_delete.sql.go b/server/pkg/db/generated/workspace_delete.sql.go
+index 9d055bb88..ad9b77eaa 100644
+--- a/server/pkg/db/generated/workspace_delete.sql.go
++++ b/server/pkg/db/generated/workspace_delete.sql.go
+@@ -422,6 +422,9 @@ deleted_goal_values AS (
+ deleted_goals AS (
+     DELETE FROM goal WHERE goal.workspace_id = $1
+ ),
++deleted_project_workflow_rules AS (
++    DELETE FROM project_workflow_rule WHERE project_workflow_rule.workspace_id = $1
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+diff --git a/server/pkg/db/queries/project_workflow_rule.sql b/server/pkg/db/queries/project_workflow_rule.sql
+new file mode 100644
+index 000000000..2efc02731
+--- /dev/null
++++ b/server/pkg/db/queries/project_workflow_rule.sql
+@@ -0,0 +1,13 @@
++-- vantt workflow-by-type (patch workflow-by-type, F3).
++
++-- name: ListProjectWorkflowRules :many
++SELECT * FROM project_workflow_rule
++WHERE project_id = $1 AND workspace_id = $2
++ORDER BY position ASC, created_at ASC;
++
++-- name: DeleteProjectWorkflowRules :exec
++DELETE FROM project_workflow_rule WHERE project_id = $1 AND workspace_id = $2;
++
++-- name: CreateProjectWorkflowRule :exec
++INSERT INTO project_workflow_rule (project_id, workspace_id, property_id, option_id, workflow_id, position)
++VALUES ($1, $2, $3, $4, $5, $6);
+diff --git a/server/pkg/db/queries/workspace_delete.sql b/server/pkg/db/queries/workspace_delete.sql
+index 34530b959..59555175e 100644
+--- a/server/pkg/db/queries/workspace_delete.sql
++++ b/server/pkg/db/queries/workspace_delete.sql
+@@ -435,6 +435,9 @@ deleted_goal_values AS (
+ deleted_goals AS (
+     DELETE FROM goal WHERE goal.workspace_id = $1
+ ),
++deleted_project_workflow_rules AS (
++    DELETE FROM project_workflow_rule WHERE project_workflow_rule.workspace_id = $1
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+-- 
+2.53.0
+

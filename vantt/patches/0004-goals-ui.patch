@@ -1,0 +1,1551 @@
+From d7f306792177de8bac661a3c09854d126e154b74 Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:31:04 +0700
+Subject: [PATCH 04/11] feat(goals): Goals page and goal detail on web and
+ desktop
+
+Sidebar entry Goals (after Projects). List: off track / at risk / on track /
+update due tiles, goal tree with progress, health and pace, measured by and
+linked work; New goal form. Detail: big number, chart of actual values
+against the needed line, enter a value with a note, linked issues, history.
+Core: goals api client methods with zod schemas, queries and mutations.
+
+Patch-Id: goals-ui
+---
+ .../renderer/src/pages/goal-detail-page.tsx   |  10 +
+ apps/desktop/src/renderer/src/routes.tsx      |  12 +
+ .../(dashboard)/goals/[id]/page.tsx           |   9 +
+ .../(dashboard)/goals/page.tsx                |   7 +
+ packages/core/api/client.ts                   |  25 ++
+ packages/core/goals/index.ts                  |   3 +
+ packages/core/goals/mutations.ts              |  32 ++
+ packages/core/goals/queries.ts                |  50 +++
+ packages/core/goals/schemas.test.ts           |  40 ++
+ packages/core/goals/schemas.ts                |  63 +++
+ packages/core/goals/types.ts                  |  75 ++++
+ packages/core/package.json                    |   1 +
+ packages/core/paths/consistency.test.ts       |   1 +
+ packages/core/paths/paths.ts                  |   2 +
+ packages/core/paths/route-icons.ts            |   4 +
+ packages/core/paths/tab-subject.ts            |   2 +
+ packages/views/goals/goals-page.tsx           | 416 ++++++++++++++++++
+ packages/views/goals/index.ts                 |   1 +
+ packages/views/layout/app-sidebar.test.tsx    |   1 +
+ packages/views/layout/app-sidebar.tsx         |   3 +
+ .../layout/global-shortcuts.chat.test.tsx     |   1 +
+ .../layout/global-shortcuts.history.test.tsx  |   1 +
+ .../views/layout/route-icon-components.tsx    |   2 +
+ packages/views/locales/en/layout.json         |   3 +-
+ packages/views/locales/en/projects.json       |  49 +++
+ packages/views/locales/fr/layout.json         |   3 +-
+ packages/views/locales/fr/projects.json       |  49 +++
+ packages/views/locales/ja/layout.json         |   3 +-
+ packages/views/locales/ja/projects.json       |  49 +++
+ packages/views/locales/ko/layout.json         |   3 +-
+ packages/views/locales/ko/projects.json       |  49 +++
+ packages/views/locales/zh-Hans/layout.json    |   3 +-
+ packages/views/locales/zh-Hans/projects.json  |  49 +++
+ packages/views/locales/zh-Hant/layout.json    |   3 +-
+ packages/views/locales/zh-Hant/projects.json  |  49 +++
+ packages/views/package.json                   |   1 +
+ packages/views/search/use-root-model.ts       |   1 +
+ 37 files changed, 1069 insertions(+), 6 deletions(-)
+ create mode 100644 apps/desktop/src/renderer/src/pages/goal-detail-page.tsx
+ create mode 100644 apps/web/app/[workspaceSlug]/(dashboard)/goals/[id]/page.tsx
+ create mode 100644 apps/web/app/[workspaceSlug]/(dashboard)/goals/page.tsx
+ create mode 100644 packages/core/goals/index.ts
+ create mode 100644 packages/core/goals/mutations.ts
+ create mode 100644 packages/core/goals/queries.ts
+ create mode 100644 packages/core/goals/schemas.test.ts
+ create mode 100644 packages/core/goals/schemas.ts
+ create mode 100644 packages/core/goals/types.ts
+ create mode 100644 packages/views/goals/goals-page.tsx
+ create mode 100644 packages/views/goals/index.ts
+
+diff --git a/apps/desktop/src/renderer/src/pages/goal-detail-page.tsx b/apps/desktop/src/renderer/src/pages/goal-detail-page.tsx
+new file mode 100644
+index 000000000..68050b043
+--- /dev/null
++++ b/apps/desktop/src/renderer/src/pages/goal-detail-page.tsx
+@@ -0,0 +1,10 @@
++import { useParams } from "react-router-dom";
++import { GoalsPage } from "@multica/views/goals";
++import { useDocumentTitle } from "@/hooks/use-document-title";
++
++export function GoalDetailPage() {
++  const { id } = useParams<{ id: string }>();
++  useDocumentTitle("Goal");
++  if (!id) return null;
++  return <GoalsPage goalId={id} />;
++}
+diff --git a/apps/desktop/src/renderer/src/routes.tsx b/apps/desktop/src/renderer/src/routes.tsx
+index e16c412e7..df07f13b3 100644
+--- a/apps/desktop/src/renderer/src/routes.tsx
++++ b/apps/desktop/src/renderer/src/routes.tsx
+@@ -3,6 +3,7 @@ import { createMemoryRouter, Outlet, useMatches } from "react-router-dom";
+ import type { RouteObject } from "react-router-dom";
+ import { IssueDetailPage } from "./pages/issue-detail-page";
+ import { ProjectDetailPage } from "./pages/project-detail-page";
++import { GoalDetailPage } from "./pages/goal-detail-page";
+ import { AutopilotDetailPage } from "./pages/autopilot-detail-page";
+ import { SkillDetailPage } from "./pages/skill-detail-page";
+ import { AgentDetailPage } from "./pages/agent-detail-page";
+@@ -15,6 +16,7 @@ import {
+ import { AttachmentPreviewRoute } from "./pages/attachment-preview-page";
+ import { IssuesPage } from "@multica/views/issues/components";
+ import { ProjectsPage } from "@multica/views/projects/components";
++import { GoalsPage } from "@multica/views/goals";
+ import { DashboardPage } from "@multica/views/dashboard";
+ import { AutopilotsPage } from "@multica/views/autopilots/components";
+ import { MyIssuesPage } from "@multica/views/my-issues";
+@@ -148,6 +150,16 @@ export const appRoutes: RouteObject[] = [
+             element: <ProjectDetailPage />,
+             handle: { title: "Project" },
+           },
++          {
++            path: "goals",
++            element: <GoalsPage />,
++            handle: { title: "Goals" },
++          },
++          {
++            path: "goals/:id",
++            element: <GoalDetailPage />,
++            handle: { title: "Goal" },
++          },
+           {
+             path: "autopilots",
+             element: <AutopilotsPage />,
+diff --git a/apps/web/app/[workspaceSlug]/(dashboard)/goals/[id]/page.tsx b/apps/web/app/[workspaceSlug]/(dashboard)/goals/[id]/page.tsx
+new file mode 100644
+index 000000000..aa7270ccb
+--- /dev/null
++++ b/apps/web/app/[workspaceSlug]/(dashboard)/goals/[id]/page.tsx
+@@ -0,0 +1,9 @@
++"use client";
++
++import { use } from "react";
++import { GoalsPage } from "@multica/views/goals";
++
++export default function Page({ params }: { params: Promise<{ id: string }> }) {
++  const { id } = use(params);
++  return <GoalsPage goalId={id} />;
++}
+diff --git a/apps/web/app/[workspaceSlug]/(dashboard)/goals/page.tsx b/apps/web/app/[workspaceSlug]/(dashboard)/goals/page.tsx
+new file mode 100644
+index 000000000..a7dc0aadf
+--- /dev/null
++++ b/apps/web/app/[workspaceSlug]/(dashboard)/goals/page.tsx
+@@ -0,0 +1,7 @@
++"use client";
++
++import { GoalsPage } from "@multica/views/goals";
++
++export default function Page() {
++  return <GoalsPage />;
++}
+diff --git a/packages/core/api/client.ts b/packages/core/api/client.ts
+index 2648e8bf0..a70e5111e 100644
+--- a/packages/core/api/client.ts
++++ b/packages/core/api/client.ts
+@@ -494,6 +494,8 @@ import {
+   type IssueViewPreference,
+   type CreateIssueViewRequest,
+ } from "./schemas";
++import type { Goal, GoalDetail, GoalWriteRequest } from "../goals/types";
++import { EMPTY_GOAL_DETAIL, EMPTY_GOALS, GoalDetailSchema, ListGoalsSchema } from "../goals/schemas";
+ 
+ /** Identifies the calling client to the server.
+  *  Sent on every HTTP request as X-Client-Platform / X-Client-Version /
+@@ -4110,6 +4112,29 @@ export class ApiClient {
+   }
+ 
+   // Project resources
++  // vantt goals (patch goals-ui, F2).
++  async listGoals(): Promise<{ goals: Goal[] }> {
++    const raw = await this.fetch<unknown>("/api/goals");
++    return parseWithFallback(raw, ListGoalsSchema, EMPTY_GOALS, { endpoint: "GET /api/goals" });
++  }
++
++  async getGoal(id: string): Promise<GoalDetail | null> {
++    const raw = await this.fetch<unknown>(`/api/goals/${id}`);
++    return parseWithFallback(raw, GoalDetailSchema, EMPTY_GOAL_DETAIL, { endpoint: "GET /api/goals/:id" });
++  }
++
++  async createGoal(body: GoalWriteRequest): Promise<Goal> {
++    return this.fetch("/api/goals", { method: "POST", body: JSON.stringify(body) });
++  }
++
++  async updateGoal(id: string, body: GoalWriteRequest): Promise<Goal> {
++    return this.fetch(`/api/goals/${id}`, { method: "PATCH", body: JSON.stringify(body) });
++  }
++
++  async addGoalValue(id: string, value: number, note: string): Promise<Goal> {
++    return this.fetch(`/api/goals/${id}/values`, { method: "POST", body: JSON.stringify({ value, note }) });
++  }
++
+   async listProjectResources(
+     projectId: string,
+   ): Promise<ListProjectResourcesResponse> {
+diff --git a/packages/core/goals/index.ts b/packages/core/goals/index.ts
+new file mode 100644
+index 000000000..8db101a56
+--- /dev/null
++++ b/packages/core/goals/index.ts
+@@ -0,0 +1,3 @@
++export type { Goal, GoalDetail, GoalHealth, GoalHistoryEntry, GoalLink, GoalStatus, GoalWriteRequest } from "./types";
++export { goalKeys, goalListOptions, goalDetailOptions, goalTree, goalsForTarget } from "./queries";
++export { useCreateGoal, useUpdateGoal, useAddGoalValue } from "./mutations";
+diff --git a/packages/core/goals/mutations.ts b/packages/core/goals/mutations.ts
+new file mode 100644
+index 000000000..976399c6f
+--- /dev/null
++++ b/packages/core/goals/mutations.ts
+@@ -0,0 +1,32 @@
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import { api } from "../api";
++import { useWorkspaceId } from "../hooks";
++import { goalKeys } from "./queries";
++import type { GoalWriteRequest } from "./types";
++
++function useInvalidateGoals() {
++  const qc = useQueryClient();
++  const wsId = useWorkspaceId();
++  return () => qc.invalidateQueries({ queryKey: goalKeys.all(wsId) });
++}
++
++export function useCreateGoal() {
++  const invalidate = useInvalidateGoals();
++  return useMutation({ mutationFn: (body: GoalWriteRequest) => api.createGoal(body), onSuccess: invalidate });
++}
++
++export function useUpdateGoal() {
++  const invalidate = useInvalidateGoals();
++  return useMutation({
++    mutationFn: ({ id, ...body }: GoalWriteRequest & { id: string }) => api.updateGoal(id, body),
++    onSuccess: invalidate,
++  });
++}
++
++export function useAddGoalValue() {
++  const invalidate = useInvalidateGoals();
++  return useMutation({
++    mutationFn: ({ id, value, note }: { id: string; value: number; note?: string }) => api.addGoalValue(id, value, note ?? ""),
++    onSuccess: invalidate,
++  });
++}
+diff --git a/packages/core/goals/queries.ts b/packages/core/goals/queries.ts
+new file mode 100644
+index 000000000..4c3a2a782
+--- /dev/null
++++ b/packages/core/goals/queries.ts
+@@ -0,0 +1,50 @@
++import { queryOptions } from "@tanstack/react-query";
++import { api } from "../api";
++import type { Goal } from "./types";
++
++export const goalKeys = {
++  all: (wsId: string) => ["goals", wsId] as const,
++  list: (wsId: string) => [...goalKeys.all(wsId), "list"] as const,
++  detail: (wsId: string, id: string) => [...goalKeys.all(wsId), "detail", id] as const,
++};
++
++export function goalListOptions(wsId: string) {
++  return queryOptions({
++    queryKey: goalKeys.list(wsId),
++    queryFn: () => api.listGoals(),
++    select: (data) => data.goals,
++    staleTime: 60_000,
++  });
++}
++
++export function goalDetailOptions(wsId: string, id: string) {
++  return queryOptions({
++    queryKey: goalKeys.detail(wsId, id),
++    queryFn: () => api.getGoal(id),
++  });
++}
++
++/** Goals as a tree: roots first, each followed by its children, in position order. */
++export function goalTree(goals: readonly Goal[]): { goal: Goal; depth: number }[] {
++  const byParent = new Map<string | null, Goal[]>();
++  const ids = new Set(goals.map((g) => g.id));
++  for (const g of goals) {
++    const key = g.parent_id && ids.has(g.parent_id) ? g.parent_id : null;
++    byParent.set(key, [...(byParent.get(key) ?? []), g]);
++  }
++  const out: { goal: Goal; depth: number }[] = [];
++  const walk = (parent: string | null, depth: number) => {
++    for (const g of byParent.get(parent) ?? []) {
++      out.push({ goal: g, depth });
++      walk(g.id, depth + 1);
++    }
++  };
++  walk(null, 0);
++  return out;
++}
++
++/** The goals that a project or an issue (or its parent) moves. */
++export function goalsForTarget(goals: readonly Goal[], targetType: "project" | "issue", ids: (string | null | undefined)[]): Goal[] {
++  const want = new Set(ids.filter(Boolean) as string[]);
++  return goals.filter((g) => g.links.some((l) => l.target_type === targetType && want.has(l.target_id)));
++}
+diff --git a/packages/core/goals/schemas.test.ts b/packages/core/goals/schemas.test.ts
+new file mode 100644
+index 000000000..335bfbe74
+--- /dev/null
++++ b/packages/core/goals/schemas.test.ts
+@@ -0,0 +1,40 @@
++// @vitest-environment node
++import { describe, expect, it } from "vitest";
++import { parseWithFallback } from "../api/schema";
++import { EMPTY_GOALS, GoalDetailSchema, ListGoalsSchema } from "./schemas";
++import { goalTree, goalsForTarget } from "./queries";
++import type { Goal } from "./types";
++
++const goal = (over: Partial<Goal> = {}) =>
++  ListGoalsSchema.parse({ goals: [{ id: "g1", title: "Paying customers", target_value: 50, ...over }] }).goals[0]!;
++
++describe("goal schemas", () => {
++  it("fills defaults and tolerates unknown enums", () => {
++    const g = goal({ health: "sideways" as never, links: "bad" as never });
++    expect(g.health).toBe("no_target_date");
++    expect(g.links).toEqual([]);
++    expect(g.current_value).toBe(0);
++  });
++
++  it("falls back on a malformed list", () => {
++    expect(parseWithFallback("nope", ListGoalsSchema, EMPTY_GOALS, { endpoint: "test" })).toEqual(EMPTY_GOALS);
++  });
++
++  it("parses a detail with history", () => {
++    const d = GoalDetailSchema.parse({ goal: { id: "g1", title: "x", target_value: 1 }, history: [{ id: "v1", value: 3 }] });
++    expect(d.history[0]?.value).toBe(3);
++  });
++});
++
++describe("goal helpers", () => {
++  it("orders the tree parents first", () => {
++    const tree = goalTree([goal({ id: "c", parent_id: "p" }), goal({ id: "p" })]);
++    expect(tree.map((t) => [t.goal.id, t.depth])).toEqual([["p", 0], ["c", 1]]);
++  });
++
++  it("finds goals for an issue or its parent", () => {
++    const g = goal({ links: [{ target_type: "issue", target_id: "epic-1" }] });
++    expect(goalsForTarget([g], "issue", ["child-1", "epic-1"])).toHaveLength(1);
++    expect(goalsForTarget([g], "issue", ["other"])).toHaveLength(0);
++  });
++});
+diff --git a/packages/core/goals/schemas.ts b/packages/core/goals/schemas.ts
+new file mode 100644
+index 000000000..f04962dde
+--- /dev/null
++++ b/packages/core/goals/schemas.ts
+@@ -0,0 +1,63 @@
++import { z } from "zod";
++import type { Goal, GoalDetail } from "./types";
++
++const HEALTHS = ["on_track", "at_risk", "off_track", "no_target_date", "planned", "achieved", "missed", "cancelled"] as const;
++const STATUSES = ["planned", "active", "achieved", "missed", "cancelled"] as const;
++
++const num = z.number().catch(0);
++const optNum = z.number().nullable().catch(null);
++const str = z.string().catch("");
++const optStr = z.string().nullable().catch(null);
++
++export const GoalSchema = z.object({
++  id: z.string(),
++  workspace_id: str,
++  parent_id: optStr,
++  title: str,
++  description: str,
++  unit: str,
++  direction: z.enum(["increase", "decrease"]).catch("increase"),
++  start_value: num,
++  target_value: num,
++  current_value: num,
++  due_date: optStr,
++  status: z.enum(STATUSES).catch("active"),
++  measured_by: z.enum(["manual", "script"]).catch("manual"),
++  owner_type: optStr,
++  owner_id: optStr,
++  position: num,
++  current_updated_at: str,
++  created_at: str,
++  updated_at: str,
++  links: z
++    .array(z.object({ target_type: z.enum(["project", "issue"]), target_id: z.string() }))
++    .catch([]),
++  progress: num,
++  expected: optNum,
++  // Unknown health values from a newer server read as on-track-neutral.
++  health: z.enum(HEALTHS).catch("no_target_date"),
++  update_due: z.boolean().catch(false),
++  needed_per_week: optNum,
++  actual_per_week: optNum,
++});
++
++export const ListGoalsSchema = z.object({ goals: z.array(GoalSchema).catch([]) });
++
++export const GoalDetailSchema = z.object({
++  goal: GoalSchema,
++  history: z
++    .array(
++      z.object({
++        id: z.string(),
++        value: num,
++        note: str,
++        actor_type: str,
++        actor_id: optStr,
++        created_at: str,
++      }),
++    )
++    .catch([]),
++});
++
++export const EMPTY_GOALS: { goals: Goal[] } = { goals: [] };
++export const EMPTY_GOAL_DETAIL: GoalDetail | null = null;
+diff --git a/packages/core/goals/types.ts b/packages/core/goals/types.ts
+new file mode 100644
+index 000000000..9c7b4984b
+--- /dev/null
++++ b/packages/core/goals/types.ts
+@@ -0,0 +1,75 @@
++/**
++ * vantt goals (patch goals-ui, F2): results with a number and a deadline that
++ * work moves. Health is computed by the server. Reference: Atlassian Goals.
++ */
++export type GoalStatus = "planned" | "active" | "achieved" | "missed" | "cancelled";
++export type GoalHealth =
++  | "on_track"
++  | "at_risk"
++  | "off_track"
++  | "no_target_date"
++  | "planned"
++  | "achieved"
++  | "missed"
++  | "cancelled";
++
++export interface GoalLink {
++  target_type: "project" | "issue";
++  target_id: string;
++}
++
++export interface Goal {
++  id: string;
++  workspace_id: string;
++  parent_id: string | null;
++  title: string;
++  description: string;
++  unit: string;
++  direction: "increase" | "decrease";
++  start_value: number;
++  target_value: number;
++  current_value: number;
++  due_date: string | null;
++  status: GoalStatus;
++  measured_by: "manual" | "script";
++  owner_type: string | null;
++  owner_id: string | null;
++  position: number;
++  current_updated_at: string;
++  created_at: string;
++  updated_at: string;
++  links: GoalLink[];
++  progress: number;
++  expected: number | null;
++  health: GoalHealth;
++  update_due: boolean;
++  needed_per_week: number | null;
++  actual_per_week: number | null;
++}
++
++export interface GoalHistoryEntry {
++  id: string;
++  value: number;
++  note: string;
++  actor_type: string;
++  actor_id: string | null;
++  created_at: string;
++}
++
++export interface GoalDetail {
++  goal: Goal;
++  history: GoalHistoryEntry[];
++}
++
++export interface GoalWriteRequest {
++  parent_id?: string | null;
++  title?: string;
++  description?: string;
++  unit?: string;
++  direction?: "increase" | "decrease";
++  start_value?: number;
++  target_value?: number;
++  due_date?: string | null;
++  status?: GoalStatus;
++  measured_by?: "manual" | "script";
++}
+diff --git a/packages/core/package.json b/packages/core/package.json
+index c25543b88..b79966ddc 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -38,6 +38,7 @@
+     "./issue-workflows/queries": "./issue-workflows/queries.ts",
+     "./issue-workflows/hooks": "./issue-workflows/hooks.ts",
+     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
++    "./goals": "./goals/index.ts",
+     "./issues": "./issues/index.ts",
+     "./issues/batch": "./issues/batch.ts",
+     "./issues/canonical-id": "./issues/canonical-id.ts",
+diff --git a/packages/core/paths/consistency.test.ts b/packages/core/paths/consistency.test.ts
+index fc804adc6..796747161 100644
+--- a/packages/core/paths/consistency.test.ts
++++ b/packages/core/paths/consistency.test.ts
+@@ -15,6 +15,7 @@ describe("paths.workspace() shape", () => {
+     // that each method emits its explicitly registered workspace subpath.
+     const expectedSegments: Array<[string, string]> = [
+       ["usage", "usage"],
++      ["goals", "goals"],
+       ["issues", "issues"],
+       ["projects", "projects"],
+       ["autopilots", "autopilots"],
+diff --git a/packages/core/paths/paths.ts b/packages/core/paths/paths.ts
+index bda798fd1..f4c4fa02d 100644
+--- a/packages/core/paths/paths.ts
++++ b/packages/core/paths/paths.ts
+@@ -31,6 +31,8 @@ function workspaceScoped(slug: string) {
+     issueDetail: (id: string) => `${ws}/issues/${encode(id)}`,
+     projects: () => `${ws}/projects`,
+     projectDetail: (id: string) => `${ws}/projects/${encode(id)}`,
++    goals: () => `${ws}/goals`,
++    goalDetail: (id: string) => `${ws}/goals/${encode(id)}`,
+     autopilots: () => `${ws}/autopilots`,
+     autopilotDetail: (id: string) => `${ws}/autopilots/${encode(id)}`,
+     agents: () => `${ws}/agents`,
+diff --git a/packages/core/paths/route-icons.ts b/packages/core/paths/route-icons.ts
+index 814d247b0..500e08601 100644
+--- a/packages/core/paths/route-icons.ts
++++ b/packages/core/paths/route-icons.ts
+@@ -25,6 +25,7 @@ export type RouteIconName =
+   | "CircleUser"
+   | "ListTodo"
+   | "FolderKanban"
++  | "Target"
+   | "Zap"
+   | "Bot"
+   | "Users"
+@@ -49,6 +50,7 @@ export type NavLabelKey =
+   | "my_issues"
+   | "issues"
+   | "projects"
++  | "goals"
+   | "autopilots"
+   | "agents"
+   | "squads"
+@@ -64,6 +66,7 @@ export type WorkspacePageKey =
+   | "myIssues"
+   | "issues"
+   | "projects"
++  | "goals"
+   | "autopilots"
+   | "agents"
+   | "squads"
+@@ -91,6 +94,7 @@ export const WORKSPACE_PAGES: Record<WorkspacePageKey, WorkspacePage> = {
+   myIssues: { segment: "my-issues", icon: "CircleUser", navKey: "my_issues" },
+   issues: { segment: "issues", icon: "ListTodo", navKey: "issues" },
+   projects: { segment: "projects", icon: "FolderKanban", navKey: "projects" },
++  goals: { segment: "goals", icon: "Target", navKey: "goals" },
+   autopilots: { segment: "autopilots", icon: "Zap", navKey: "autopilots" },
+   agents: { segment: "agents", icon: "Bot", navKey: "agents" },
+   squads: { segment: "squads", icon: "Users", navKey: "squads" },
+diff --git a/packages/core/paths/tab-subject.ts b/packages/core/paths/tab-subject.ts
+index 93cf6f5af..735347020 100644
+--- a/packages/core/paths/tab-subject.ts
++++ b/packages/core/paths/tab-subject.ts
+@@ -82,6 +82,8 @@ export function parseTabSubject(url: string): TabSubject {
+       return { kind: "page", page: "myIssues" };
+     case "projects":
+       return id ? { kind: "project", id } : { kind: "page", page: "projects" };
++    case "goals":
++      return { kind: "page", page: "goals" };
+     case "autopilots":
+       return id ? { kind: "autopilot", id } : { kind: "page", page: "autopilots" };
+     case "agents":
+diff --git a/packages/views/goals/goals-page.tsx b/packages/views/goals/goals-page.tsx
+new file mode 100644
+index 000000000..197e3b65f
+--- /dev/null
++++ b/packages/views/goals/goals-page.tsx
+@@ -0,0 +1,416 @@
++"use client";
++
++import { useMemo, useState } from "react";
++import { useQuery } from "@tanstack/react-query";
++import { Target } from "lucide-react";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { useWorkspacePaths } from "@multica/core/paths";
++import {
++  goalDetailOptions,
++  goalListOptions,
++  goalTree,
++  useAddGoalValue,
++  useCreateGoal,
++  type Goal,
++  type GoalHealth,
++} from "@multica/core/goals";
++import { issueDetailOptions } from "@multica/core/issues/queries";
++import { Button } from "@multica/ui/components/ui/button";
++import { Input } from "@multica/ui/components/ui/input";
++import { cn } from "@multica/ui/lib/utils";
++import { PageHeader, PAGE_GUTTER, PAGE_RAIL } from "../layout/page-header";
++import { AppLink } from "../navigation";
++import { useT } from "../i18n";
++
++/**
++ * Goals (vantt patch goals-ui, design D1 and D2): results with a number and a
++ * deadline, their health, and the work that moves them. Reference: Atlassian
++ * Goals (On track / At risk / Off track), Linear initiatives.
++ */
++
++const HEALTH_CLASS: Record<GoalHealth, string> = {
++  on_track: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
++  at_risk: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
++  off_track: "bg-red-100 text-red-800 dark:bg-red-500/15 dark:text-red-300",
++  no_target_date: "bg-muted text-muted-foreground",
++  planned: "bg-muted text-muted-foreground",
++  achieved: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
++  missed: "bg-red-100 text-red-800 dark:bg-red-500/15 dark:text-red-300",
++  cancelled: "bg-muted text-muted-foreground",
++};
++
++const BAR_CLASS: Record<GoalHealth, string> = {
++  on_track: "bg-emerald-600",
++  at_risk: "bg-amber-500",
++  off_track: "bg-red-600",
++  no_target_date: "bg-foreground/60",
++  planned: "bg-foreground/40",
++  achieved: "bg-emerald-600",
++  missed: "bg-red-600",
++  cancelled: "bg-foreground/30",
++};
++
++function fmt(n: number, unit: string): string {
++  const v = Math.abs(n) >= 100 ? Math.round(n).toLocaleString() : Number(n.toFixed(3)).toLocaleString();
++  return unit ? `${v} ${unit}` : v;
++}
++
++function useHealthLabel() {
++  const { t } = useT("projects");
++  return (h: GoalHealth) => t(($) => $.goals.health[h]);
++}
++
++function HealthPill({ goal }: { goal: Goal }) {
++  const label = useHealthLabel();
++  const { t } = useT("projects");
++  return (
++    <span className={cn("inline-flex items-center rounded-full px-2 py-0.5 text-caption font-medium", HEALTH_CLASS[goal.health])}>
++      {goal.update_due ? t(($) => $.goals.update_due) : label(goal.health)}
++    </span>
++  );
++}
++
++function ProgressBar({ goal }: { goal: Goal }) {
++  return (
++    <div className="h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
++      <div className={cn("h-1.5 rounded-full", BAR_CLASS[goal.health])} style={{ width: `${Math.round(goal.progress * 100)}%` }} />
++    </div>
++  );
++}
++
++function PaceText({ goal }: { goal: Goal }) {
++  const { t } = useT("projects");
++  if (goal.needed_per_week == null) return null;
++  return (
++    <span className="text-caption text-muted-foreground">
++      {t(($) => $.goals.pace, {
++        needed: fmt(goal.needed_per_week ?? 0, ""),
++        actual: fmt(goal.actual_per_week ?? 0, ""),
++      })}
++    </span>
++  );
++}
++
++export function GoalsPage({ goalId }: { goalId?: string }) {
++  return goalId ? <GoalDetailView goalId={goalId} /> : <GoalListView />;
++}
++
++function GoalListView() {
++  const { t } = useT("projects");
++  const wsId = useWorkspaceId();
++  const paths = useWorkspacePaths();
++  const { data: goals = [], isLoading } = useQuery(goalListOptions(wsId));
++  const [creating, setCreating] = useState(false);
++  const tree = useMemo(() => goalTree(goals), [goals]);
++  const open = goals.filter((g) => g.status === "active" || g.status === "planned");
++  const count = (pred: (g: Goal) => boolean) => open.filter(pred).length;
++
++  return (
++    <div className="flex min-h-0 flex-1 flex-col">
++      <PageHeader>
++        <Target aria-hidden className="size-4 text-muted-foreground" />
++        <h1 className="text-body font-semibold">{t(($) => $.goals.title)}</h1>
++        <div className="ml-auto">
++          <Button type="button" size="sm" onClick={() => setCreating((v) => !v)}>
++            {t(($) => $.goals.new_goal)}
++          </Button>
++        </div>
++      </PageHeader>
++      <div className={cn(PAGE_RAIL, PAGE_GUTTER, "flex flex-col gap-4 overflow-y-auto py-5")}>
++        <p className="text-caption text-muted-foreground">{t(($) => $.goals.subtitle)}</p>
++        {creating && <NewGoalForm goals={goals} onDone={() => setCreating(false)} />}
++        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
++          <Tile label={t(($) => $.goals.health.off_track)} value={count((g) => g.health === "off_track")} tone="text-red-700 dark:text-red-400" />
++          <Tile label={t(($) => $.goals.health.at_risk)} value={count((g) => g.health === "at_risk")} tone="text-amber-700 dark:text-amber-400" />
++          <Tile label={t(($) => $.goals.health.on_track)} value={count((g) => g.health === "on_track")} tone="text-emerald-700 dark:text-emerald-400" />
++          <Tile label={t(($) => $.goals.update_due)} value={count((g) => g.update_due)} tone="text-amber-700 dark:text-amber-400" />
++        </div>
++        {!isLoading && goals.length === 0 ? (
++          <p className="rounded-md border border-dashed p-6 text-center text-body text-muted-foreground">{t(($) => $.goals.empty)}</p>
++        ) : (
++          <div className="overflow-x-auto rounded-md border">
++            <table className="w-full min-w-[760px] text-body">
++              <thead>
++                <tr className="border-b text-left text-caption text-muted-foreground">
++                  <th className="px-3 py-2 font-medium">{t(($) => $.goals.col_goal)}</th>
++                  <th className="px-3 py-2 font-medium">{t(($) => $.goals.col_progress)}</th>
++                  <th className="px-3 py-2 font-medium">{t(($) => $.goals.col_health)}</th>
++                  <th className="px-3 py-2 font-medium">{t(($) => $.goals.col_measured)}</th>
++                  <th className="px-3 py-2 font-medium">{t(($) => $.goals.col_work)}</th>
++                </tr>
++              </thead>
++              <tbody>
++                {tree.map(({ goal, depth }) => (
++                  <tr key={goal.id} className="border-b last:border-0 hover:bg-accent/50">
++                    <td className="px-3 py-2.5" style={{ paddingLeft: `${12 + depth * 20}px` }}>
++                      <AppLink href={paths.goalDetail(goal.id)} className="font-medium hover:underline">
++                        {goal.title}
++                      </AppLink>
++                      {goal.due_date && (
++                        <div className="text-caption text-muted-foreground">{t(($) => $.goals.due, { date: goal.due_date })}</div>
++                      )}
++                    </td>
++                    <td className="w-56 px-3 py-2.5">
++                      <div className="mb-1 flex justify-between text-caption">
++                        <span className="font-semibold">{fmt(goal.current_value, goal.unit)}</span>
++                        <span className="text-muted-foreground">{t(($) => $.goals.of, { target: fmt(goal.target_value, goal.unit) })}</span>
++                      </div>
++                      <ProgressBar goal={goal} />
++                    </td>
++                    <td className="px-3 py-2.5">
++                      <div className="flex flex-col items-start gap-1">
++                        <HealthPill goal={goal} />
++                        <PaceText goal={goal} />
++                      </div>
++                    </td>
++                    <td className="px-3 py-2.5 text-caption">
++                      {goal.measured_by === "script" ? t(($) => $.goals.measured_script) : t(($) => $.goals.measured_manual)}
++                    </td>
++                    <td className="px-3 py-2.5 text-caption text-muted-foreground">
++                      {t(($) => $.goals.work_count, { count: goal.links.length })}
++                    </td>
++                  </tr>
++                ))}
++              </tbody>
++            </table>
++          </div>
++        )}
++      </div>
++    </div>
++  );
++}
++
++function Tile({ label, value, tone }: { label: string; value: number; tone: string }) {
++  return (
++    <div className="flex flex-col gap-1 rounded-md border bg-card px-3.5 py-3">
++      <span className="text-caption text-muted-foreground">{label}</span>
++      <span className={cn("text-xl font-semibold", tone)}>{value}</span>
++    </div>
++  );
++}
++
++function NewGoalForm({ goals, onDone }: { goals: Goal[]; onDone: () => void }) {
++  const { t } = useT("projects");
++  const create = useCreateGoal();
++  const [title, setTitle] = useState("");
++  const [target, setTarget] = useState("");
++  const [unit, setUnit] = useState("");
++  const [due, setDue] = useState("");
++  const [parent, setParent] = useState("");
++  const [direction, setDirection] = useState<"increase" | "decrease">("increase");
++  const [start, setStart] = useState("0");
++  const valid = title.trim() !== "" && target.trim() !== "" && !Number.isNaN(Number(target));
++
++  return (
++    <form
++      className="flex flex-col gap-3 rounded-md border p-4"
++      onSubmit={(e) => {
++        e.preventDefault();
++        if (!valid) return;
++        create.mutate(
++          {
++            title: title.trim(),
++            target_value: Number(target),
++            start_value: Number(start) || 0,
++            unit: unit.trim(),
++            due_date: due || null,
++            parent_id: parent || null,
++            direction,
++          },
++          { onSuccess: onDone },
++        );
++      }}
++    >
++      <div className="grid gap-3 md:grid-cols-3">
++        <label className="flex flex-col gap-1 text-caption md:col-span-3">
++          {t(($) => $.goals.field_title)}
++          <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
++        </label>
++        <label className="flex flex-col gap-1 text-caption">
++          {t(($) => $.goals.field_start)}
++          <Input inputMode="decimal" value={start} onChange={(e) => setStart(e.target.value)} />
++        </label>
++        <label className="flex flex-col gap-1 text-caption">
++          {t(($) => $.goals.field_target)}
++          <Input inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)} required />
++        </label>
++        <label className="flex flex-col gap-1 text-caption">
++          {t(($) => $.goals.field_unit)}
++          <Input value={unit} onChange={(e) => setUnit(e.target.value)} />
++        </label>
++        <label className="flex flex-col gap-1 text-caption">
++          {t(($) => $.goals.field_due)}
++          <Input type="date" value={due} onChange={(e) => setDue(e.target.value)} />
++        </label>
++        <label className="flex flex-col gap-1 text-caption">
++          {t(($) => $.goals.field_direction)}
++          <select
++            className="h-8 rounded-md border bg-background px-2 text-body"
++            value={direction}
++            onChange={(e) => setDirection(e.target.value as "increase" | "decrease")}
++          >
++            <option value="increase">{t(($) => $.goals.direction_increase)}</option>
++            <option value="decrease">{t(($) => $.goals.direction_decrease)}</option>
++          </select>
++        </label>
++        <label className="flex flex-col gap-1 text-caption">
++          {t(($) => $.goals.field_parent)}
++          <select className="h-8 rounded-md border bg-background px-2 text-body" value={parent} onChange={(e) => setParent(e.target.value)}>
++            <option value="">{t(($) => $.goals.no_parent)}</option>
++            {goals.map((g) => (
++              <option key={g.id} value={g.id}>
++                {g.title}
++              </option>
++            ))}
++          </select>
++        </label>
++      </div>
++      <div className="flex gap-2">
++        <Button type="submit" disabled={!valid || create.isPending} aria-busy={create.isPending}>
++          {t(($) => $.goals.create)}
++        </Button>
++        <Button type="button" variant="outline" onClick={onDone}>
++          {t(($) => $.goals.cancel)}
++        </Button>
++      </div>
++    </form>
++  );
++}
++
++function GoalChart({ goal, history }: { goal: Goal; history: { value: number; created_at: string }[] }) {
++  const { t } = useT("projects");
++  const startT = Date.parse(goal.created_at);
++  const endT = goal.due_date ? Date.parse(goal.due_date) + 86_400_000 : Date.now();
++  const span = Math.max(1, endT - startT);
++  const lo = Math.min(goal.start_value, goal.target_value, ...history.map((h) => h.value));
++  const hi = Math.max(goal.start_value, goal.target_value, ...history.map((h) => h.value));
++  const range = hi - lo || 1;
++  const x = (ts: number) => Math.max(0, Math.min(600, ((ts - startT) / span) * 600));
++  const y = (v: number) => 200 - ((v - lo) / range) * 190 - 5;
++  const points = [{ value: goal.start_value, created_at: goal.created_at }, ...history]
++    .map((h) => `${x(Date.parse(h.created_at)).toFixed(1)},${y(h.value).toFixed(1)}`)
++    .join(" ");
++  return (
++    <figure className="flex flex-col gap-1">
++      <svg
++        viewBox="0 0 600 200"
++        preserveAspectRatio="none"
++        className="h-48 w-full border-b border-l"
++        role="img"
++        aria-label={t(($) => $.goals.chart_label)}
++      >
++        <line x1="0" y1={y(goal.start_value)} x2="600" y2={y(goal.target_value)} className="stroke-muted-foreground" strokeWidth="1.5" strokeDasharray="6 6" />
++        <polyline points={points} fill="none" className={cn("stroke-current", goal.health === "off_track" ? "text-red-600" : goal.health === "at_risk" ? "text-amber-500" : "text-emerald-600")} strokeWidth="2.5" />
++      </svg>
++      <figcaption className="flex justify-between text-caption text-muted-foreground">
++        <span>{goal.created_at.slice(0, 10)}</span>
++        <span>{t(($) => $.goals.chart_needed)}</span>
++        <span>{goal.due_date ?? ""}</span>
++      </figcaption>
++    </figure>
++  );
++}
++
++function LinkedIssue({ id }: { id: string }) {
++  const wsId = useWorkspaceId();
++  const paths = useWorkspacePaths();
++  const { data: issue } = useQuery(issueDetailOptions(wsId, id));
++  if (!issue) return null;
++  return (
++    <li className="flex items-center gap-2 border-b py-2 text-body last:border-0">
++      <span className="w-20 shrink-0 text-caption font-medium text-muted-foreground">{issue.identifier}</span>
++      <AppLink href={paths.issueDetail(issue.id)} className="min-w-0 flex-1 truncate hover:underline">
++        {issue.title}
++      </AppLink>
++      <span className="text-caption text-muted-foreground">{issue.status}</span>
++    </li>
++  );
++}
++
++function GoalDetailView({ goalId }: { goalId: string }) {
++  const { t } = useT("projects");
++  const wsId = useWorkspaceId();
++  const paths = useWorkspacePaths();
++  const { data } = useQuery(goalDetailOptions(wsId, goalId));
++  const addValue = useAddGoalValue();
++  const [value, setValue] = useState("");
++  const [note, setNote] = useState("");
++  if (!data) return null;
++  const { goal, history } = data;
++
++  return (
++    <div className="flex min-h-0 flex-1 flex-col">
++      <PageHeader>
++        <AppLink href={paths.goals()} className="text-body text-muted-foreground hover:text-foreground">
++          {t(($) => $.goals.title)}
++        </AppLink>
++        <span className="text-muted-foreground">/</span>
++        <h1 className="truncate text-body font-semibold">{goal.title}</h1>
++      </PageHeader>
++      <div className={cn(PAGE_RAIL, PAGE_GUTTER, "flex max-w-5xl flex-col gap-5 overflow-y-auto py-5")}>
++        <div className="flex flex-wrap items-center gap-3">
++          <HealthPill goal={goal} />
++          {goal.due_date && <span className="text-caption text-muted-foreground">{t(($) => $.goals.due, { date: goal.due_date })}</span>}
++        </div>
++        <div className="flex flex-wrap items-baseline gap-2">
++          <span className="text-3xl font-bold">{fmt(goal.current_value, goal.unit)}</span>
++          <span className="text-muted-foreground">{t(($) => $.goals.of, { target: fmt(goal.target_value, goal.unit) })}</span>
++          <span className="ml-auto">
++            <PaceText goal={goal} />
++          </span>
++        </div>
++        <GoalChart goal={goal} history={history} />
++
++        <form
++          className="flex flex-wrap items-end gap-2 rounded-md border p-3"
++          onSubmit={(e) => {
++            e.preventDefault();
++            const v = Number(value);
++            if (value.trim() === "" || Number.isNaN(v)) return;
++            addValue.mutate({ id: goal.id, value: v, note }, { onSuccess: () => { setValue(""); setNote(""); } });
++          }}
++        >
++          <label className="flex flex-col gap-1 text-caption">
++            {t(($) => $.goals.enter_number)}
++            <Input inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} className="w-32" />
++          </label>
++          <label className="flex min-w-48 flex-1 flex-col gap-1 text-caption">
++            {t(($) => $.goals.note)}
++            <Input value={note} onChange={(e) => setNote(e.target.value)} />
++          </label>
++          <Button type="submit" disabled={addValue.isPending} aria-busy={addValue.isPending}>
++            {t(($) => $.goals.save_number)}
++          </Button>
++        </form>
++
++        <section className="flex flex-col gap-1">
++          <h2 className="text-body font-semibold">{t(($) => $.goals.work_title)}</h2>
++          {goal.links.filter((l) => l.target_type === "issue").length === 0 ? (
++            <p className="text-caption text-muted-foreground">{t(($) => $.goals.no_work)}</p>
++          ) : (
++            <ul>
++              {goal.links
++                .filter((l) => l.target_type === "issue")
++                .map((l) => (
++                  <LinkedIssue key={l.target_id} id={l.target_id} />
++                ))}
++            </ul>
++          )}
++        </section>
++
++        <section className="flex flex-col gap-1">
++          <h2 className="text-body font-semibold">{t(($) => $.goals.history_title)}</h2>
++          <ul className="flex flex-col gap-1 text-caption text-muted-foreground">
++            {[...history].reverse().map((h) => (
++              <li key={h.id}>
++                {h.created_at.slice(0, 16).replace("T", " ")} · {fmt(h.value, goal.unit)}
++                {h.note ? ` · ${h.note}` : ""}
++              </li>
++            ))}
++            <li>{t(($) => $.goals.created_on, { date: goal.created_at.slice(0, 10) })}</li>
++          </ul>
++        </section>
++      </div>
++    </div>
++  );
++}
+diff --git a/packages/views/goals/index.ts b/packages/views/goals/index.ts
+new file mode 100644
+index 000000000..6e340cdff
+--- /dev/null
++++ b/packages/views/goals/index.ts
+@@ -0,0 +1 @@
++export { GoalsPage } from "./goals-page";
+diff --git a/packages/views/layout/app-sidebar.test.tsx b/packages/views/layout/app-sidebar.test.tsx
+index 480387986..2053cbf47 100644
+--- a/packages/views/layout/app-sidebar.test.tsx
++++ b/packages/views/layout/app-sidebar.test.tsx
+@@ -145,6 +145,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
+     agents: () => "/acme/agents",
+     squads: () => "/acme/squads",
+     usage: () => "/acme/usage",
++    goals: () => "/acme/goals",
+     runtimes: () => "/acme/runtimes",
+     skills: () => "/acme/skills",
+     settings: () => "/acme/settings",
+diff --git a/packages/views/layout/app-sidebar.tsx b/packages/views/layout/app-sidebar.tsx
+index 2f0656fc7..b01f855e9 100644
+--- a/packages/views/layout/app-sidebar.tsx
++++ b/packages/views/layout/app-sidebar.tsx
+@@ -118,6 +118,7 @@ type NavKey =
+   | "myIssues"
+   | "issues"
+   | "projects"
++  | "goals"
+   | "autopilots"
+   | "agents"
+   | "squads"
+@@ -134,6 +135,7 @@ type NavLabelKey =
+   | "my_issues"
+   | "issues"
+   | "projects"
++  | "goals"
+   | "autopilots"
+   | "agents"
+   | "squads"
+@@ -154,6 +156,7 @@ const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+ const workNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+   { key: "issues", labelKey: "issues" },
+   { key: "projects", labelKey: "projects" },
++  { key: "goals", labelKey: "goals" },
+   { key: "autopilots", labelKey: "autopilots" },
+ ];
+ 
+diff --git a/packages/views/layout/global-shortcuts.chat.test.tsx b/packages/views/layout/global-shortcuts.chat.test.tsx
+index 54edb5ab8..2d1836c77 100644
+--- a/packages/views/layout/global-shortcuts.chat.test.tsx
++++ b/packages/views/layout/global-shortcuts.chat.test.tsx
+@@ -39,6 +39,7 @@ vi.mock("@multica/core/paths", () => ({
+     agents: () => "/acme/agents",
+     squads: () => "/acme/squads",
+     usage: () => "/acme/usage",
++    goals: () => "/acme/goals",
+     runtimes: () => "/acme/runtimes",
+     skills: () => "/acme/skills",
+     settings: () => "/acme/settings",
+diff --git a/packages/views/layout/global-shortcuts.history.test.tsx b/packages/views/layout/global-shortcuts.history.test.tsx
+index 7a07cda07..792da2e31 100644
+--- a/packages/views/layout/global-shortcuts.history.test.tsx
++++ b/packages/views/layout/global-shortcuts.history.test.tsx
+@@ -24,6 +24,7 @@ vi.mock("@multica/core/paths", () => ({
+     agents: () => "/w/agents",
+     squads: () => "/w/squads",
+     usage: () => "/w/usage",
++    goals: () => "/w/goals",
+     runtimes: () => "/w/runtimes",
+     skills: () => "/w/skills",
+     settings: () => "/w/settings",
+diff --git a/packages/views/layout/route-icon-components.tsx b/packages/views/layout/route-icon-components.tsx
+index 702e7592c..8b600c1e7 100644
+--- a/packages/views/layout/route-icon-components.tsx
++++ b/packages/views/layout/route-icon-components.tsx
+@@ -4,6 +4,7 @@ import {
+   CircleUser,
+   ListTodo,
+   FolderKanban,
++  Target,
+   Zap,
+   Bot,
+   Users,
+@@ -37,6 +38,7 @@ export const ROUTE_ICON_COMPONENTS: Record<RouteIconName, IconComponent> = {
+   CircleUser,
+   ListTodo,
+   FolderKanban,
++  Target,
+   Zap,
+   Bot,
+   Users,
+diff --git a/packages/views/locales/en/layout.json b/packages/views/locales/en/layout.json
+index 76abed8af..c8304df6b 100644
+--- a/packages/views/locales/en/layout.json
++++ b/packages/views/locales/en/layout.json
+@@ -11,7 +11,8 @@
+     "usage": "Analytics",
+     "runtimes": "Runtimes",
+     "skills": "Skills",
+-    "settings": "Settings"
++    "settings": "Settings",
++    "goals": "Goals"
+   },
+   "tab": {
+     "issue": "Issue",
+diff --git a/packages/views/locales/en/projects.json b/packages/views/locales/en/projects.json
+index ecb8aa14d..f67c10097 100644
+--- a/packages/views/locales/en/projects.json
++++ b/packages/views/locales/en/projects.json
+@@ -182,5 +182,54 @@
+     "direction_desc": "Descending",
+     "section_columns": "Columns",
+     "view": "View"
++  },
++  "goals": {
++    "title": "Goals",
++    "subtitle": "Results with a number and a deadline. Link the work that moves them.",
++    "new_goal": "New goal",
++    "empty": "No goals yet. Add the results you want, with a number and a deadline.",
++    "col_goal": "Goal",
++    "col_progress": "Progress",
++    "col_health": "Health",
++    "col_measured": "Measured by",
++    "col_work": "Work",
++    "due": "Due {{date}}",
++    "of": "of {{target}}",
++    "pace": "needs {{needed}}/wk, doing {{actual}}/wk",
++    "update_due": "Update due",
++    "measured_script": "Script",
++    "measured_manual": "Manual",
++    "work_count": "{{count}} linked",
++    "field_title": "Result",
++    "field_start": "Start value",
++    "field_target": "Target",
++    "field_unit": "Unit",
++    "field_due": "Due date",
++    "field_direction": "Better when",
++    "direction_increase": "Higher",
++    "direction_decrease": "Lower",
++    "field_parent": "Parent goal",
++    "no_parent": "None",
++    "create": "Create goal",
++    "cancel": "Cancel",
++    "chart_label": "Actual values against the line needed to reach the target",
++    "chart_needed": "Dashed: needed to reach the target",
++    "enter_number": "New value",
++    "note": "Note",
++    "save_number": "Save",
++    "work_title": "Work moving this goal",
++    "no_work": "No work linked yet.",
++    "history_title": "History",
++    "created_on": "Created {{date}}",
++    "health": {
++      "on_track": "On track",
++      "at_risk": "At risk",
++      "off_track": "Off track",
++      "no_target_date": "No due date",
++      "planned": "Planned",
++      "achieved": "Achieved",
++      "missed": "Missed",
++      "cancelled": "Cancelled"
++    }
+   }
+ }
+diff --git a/packages/views/locales/fr/layout.json b/packages/views/locales/fr/layout.json
+index a9837df86..af912f632 100644
+--- a/packages/views/locales/fr/layout.json
++++ b/packages/views/locales/fr/layout.json
+@@ -11,7 +11,8 @@
+     "usage": "Statistiques",
+     "runtimes": "Runtimes",
+     "skills": "Skills",
+-    "settings": "Paramètres"
++    "settings": "Paramètres",
++    "goals": "Objectifs"
+   },
+   "tab": {
+     "issue": "Tâche",
+diff --git a/packages/views/locales/fr/projects.json b/packages/views/locales/fr/projects.json
+index f1978fa49..729b102e4 100644
+--- a/packages/views/locales/fr/projects.json
++++ b/packages/views/locales/fr/projects.json
+@@ -182,5 +182,54 @@
+     "direction_desc": "Décroissant",
+     "section_columns": "Colonnes",
+     "view": "Vue"
++  },
++  "goals": {
++    "title": "Objectifs",
++    "subtitle": "Des résultats chiffrés avec une échéance. Liez le travail qui les fait avancer.",
++    "new_goal": "Nouvel objectif",
++    "empty": "Aucun objectif. Ajoutez les résultats visés, avec un chiffre et une échéance.",
++    "col_goal": "Objectif",
++    "col_progress": "Progression",
++    "col_health": "État",
++    "col_measured": "Mesuré par",
++    "col_work": "Travail",
++    "due": "Échéance {{date}}",
++    "of": "sur {{target}}",
++    "pace": "il faut {{needed}}/sem., rythme {{actual}}/sem.",
++    "update_due": "Mise à jour attendue",
++    "measured_script": "Script",
++    "measured_manual": "Manuel",
++    "work_count": "{{count}} lié(s)",
++    "field_title": "Résultat",
++    "field_start": "Valeur de départ",
++    "field_target": "Cible",
++    "field_unit": "Unité",
++    "field_due": "Échéance",
++    "field_direction": "Mieux si",
++    "direction_increase": "Plus haut",
++    "direction_decrease": "Plus bas",
++    "field_parent": "Objectif parent",
++    "no_parent": "Aucun",
++    "create": "Créer l’objectif",
++    "cancel": "Annuler",
++    "chart_label": "Valeurs réelles comparées à la ligne nécessaire pour atteindre la cible",
++    "chart_needed": "Pointillés : rythme nécessaire",
++    "enter_number": "Nouvelle valeur",
++    "note": "Note",
++    "save_number": "Enregistrer",
++    "work_title": "Travail qui fait avancer cet objectif",
++    "no_work": "Aucun travail lié.",
++    "history_title": "Historique",
++    "created_on": "Créé le {{date}}",
++    "health": {
++      "on_track": "En bonne voie",
++      "at_risk": "À risque",
++      "off_track": "En retard",
++      "no_target_date": "Sans échéance",
++      "planned": "Prévu",
++      "achieved": "Atteint",
++      "missed": "Manqué",
++      "cancelled": "Annulé"
++    }
+   }
+ }
+diff --git a/packages/views/locales/ja/layout.json b/packages/views/locales/ja/layout.json
+index 2b566c01d..7f17e4f78 100644
+--- a/packages/views/locales/ja/layout.json
++++ b/packages/views/locales/ja/layout.json
+@@ -11,7 +11,8 @@
+     "usage": "分析",
+     "runtimes": "ランタイム",
+     "skills": "スキル",
+-    "settings": "設定"
++    "settings": "設定",
++    "goals": "目標"
+   },
+   "tab": {
+     "issue": "タスク",
+diff --git a/packages/views/locales/ja/projects.json b/packages/views/locales/ja/projects.json
+index b4730e602..d93dd9152 100644
+--- a/packages/views/locales/ja/projects.json
++++ b/packages/views/locales/ja/projects.json
+@@ -180,5 +180,54 @@
+     "direction_desc": "降順",
+     "section_columns": "列",
+     "view": "ビュー"
++  },
++  "goals": {
++    "title": "目標",
++    "subtitle": "数値と期限のある成果。前進させる作業を紐づけます。",
++    "new_goal": "新しい目標",
++    "empty": "目標はまだありません。数値と期限付きで目指す成果を追加してください。",
++    "col_goal": "目標",
++    "col_progress": "進捗",
++    "col_health": "状態",
++    "col_measured": "計測方法",
++    "col_work": "作業",
++    "due": "期限 {{date}}",
++    "of": "/ {{target}}",
++    "pace": "必要 {{needed}}/週、実績 {{actual}}/週",
++    "update_due": "更新が必要",
++    "measured_script": "スクリプト",
++    "measured_manual": "手動",
++    "work_count": "{{count}} 件紐づけ",
++    "field_title": "成果",
++    "field_start": "開始値",
++    "field_target": "目標値",
++    "field_unit": "単位",
++    "field_due": "期限",
++    "field_direction": "良い方向",
++    "direction_increase": "高いほど良い",
++    "direction_decrease": "低いほど良い",
++    "field_parent": "親目標",
++    "no_parent": "なし",
++    "create": "目標を作成",
++    "cancel": "キャンセル",
++    "chart_label": "目標達成に必要なラインと実績値の比較",
++    "chart_needed": "破線：必要なペース",
++    "enter_number": "新しい値",
++    "note": "メモ",
++    "save_number": "保存",
++    "work_title": "この目標を前進させる作業",
++    "no_work": "紐づいた作業はまだありません。",
++    "history_title": "履歴",
++    "created_on": "{{date}} に作成",
++    "health": {
++      "on_track": "順調",
++      "at_risk": "注意",
++      "off_track": "遅れ",
++      "no_target_date": "期限なし",
++      "planned": "予定",
++      "achieved": "達成",
++      "missed": "未達",
++      "cancelled": "中止"
++    }
+   }
+ }
+diff --git a/packages/views/locales/ko/layout.json b/packages/views/locales/ko/layout.json
+index a277f707f..d28ca179d 100644
+--- a/packages/views/locales/ko/layout.json
++++ b/packages/views/locales/ko/layout.json
+@@ -11,7 +11,8 @@
+     "usage": "분석",
+     "runtimes": "런타임",
+     "skills": "스킬",
+-    "settings": "설정"
++    "settings": "설정",
++    "goals": "목표"
+   },
+   "tab": {
+     "issue": "태스크",
+diff --git a/packages/views/locales/ko/projects.json b/packages/views/locales/ko/projects.json
+index acc280157..faced7d59 100644
+--- a/packages/views/locales/ko/projects.json
++++ b/packages/views/locales/ko/projects.json
+@@ -180,5 +180,54 @@
+     "direction_desc": "내림차순",
+     "section_columns": "열",
+     "view": "보기"
++  },
++  "goals": {
++    "title": "목표",
++    "subtitle": "숫자와 기한이 있는 결과. 이를 움직이는 작업을 연결하세요.",
++    "new_goal": "새 목표",
++    "empty": "아직 목표가 없습니다. 숫자와 기한이 있는 결과를 추가하세요.",
++    "col_goal": "목표",
++    "col_progress": "진행",
++    "col_health": "상태",
++    "col_measured": "측정 방식",
++    "col_work": "작업",
++    "due": "기한 {{date}}",
++    "of": "/ {{target}}",
++    "pace": "필요 {{needed}}/주, 현재 {{actual}}/주",
++    "update_due": "업데이트 필요",
++    "measured_script": "스크립트",
++    "measured_manual": "수동",
++    "work_count": "{{count}}개 연결됨",
++    "field_title": "결과",
++    "field_start": "시작 값",
++    "field_target": "목표 값",
++    "field_unit": "단위",
++    "field_due": "기한",
++    "field_direction": "좋은 방향",
++    "direction_increase": "높을수록",
++    "direction_decrease": "낮을수록",
++    "field_parent": "상위 목표",
++    "no_parent": "없음",
++    "create": "목표 만들기",
++    "cancel": "취소",
++    "chart_label": "목표 달성에 필요한 선과 실제 값 비교",
++    "chart_needed": "점선: 필요한 속도",
++    "enter_number": "새 값",
++    "note": "메모",
++    "save_number": "저장",
++    "work_title": "이 목표를 움직이는 작업",
++    "no_work": "연결된 작업이 없습니다.",
++    "history_title": "기록",
++    "created_on": "{{date}} 생성",
++    "health": {
++      "on_track": "순조",
++      "at_risk": "위험",
++      "off_track": "지연",
++      "no_target_date": "기한 없음",
++      "planned": "예정",
++      "achieved": "달성",
++      "missed": "미달",
++      "cancelled": "취소됨"
++    }
+   }
+ }
+diff --git a/packages/views/locales/zh-Hans/layout.json b/packages/views/locales/zh-Hans/layout.json
+index b68080c43..1c3864013 100644
+--- a/packages/views/locales/zh-Hans/layout.json
++++ b/packages/views/locales/zh-Hans/layout.json
+@@ -11,7 +11,8 @@
+     "usage": "统计",
+     "runtimes": "运行时",
+     "skills": "Skills",
+-    "settings": "设置"
++    "settings": "设置",
++    "goals": "目标"
+   },
+   "tab": {
+     "issue": "任务",
+diff --git a/packages/views/locales/zh-Hans/projects.json b/packages/views/locales/zh-Hans/projects.json
+index b8b6d8772..cd7a5f117 100644
+--- a/packages/views/locales/zh-Hans/projects.json
++++ b/packages/views/locales/zh-Hans/projects.json
+@@ -180,5 +180,54 @@
+     "direction_desc": "降序",
+     "section_columns": "列",
+     "view": "视图"
++  },
++  "goals": {
++    "title": "目标",
++    "subtitle": "有数字、有截止日期的结果。关联推动它们的工作。",
++    "new_goal": "新建目标",
++    "empty": "还没有目标。添加你想要的结果，带上数字和截止日期。",
++    "col_goal": "目标",
++    "col_progress": "进度",
++    "col_health": "状态",
++    "col_measured": "度量方式",
++    "col_work": "工作",
++    "due": "截止 {{date}}",
++    "of": "/ {{target}}",
++    "pace": "需要 {{needed}}/周，实际 {{actual}}/周",
++    "update_due": "需要更新",
++    "measured_script": "脚本",
++    "measured_manual": "手动",
++    "work_count": "已关联 {{count}} 项",
++    "field_title": "结果",
++    "field_start": "起始值",
++    "field_target": "目标值",
++    "field_unit": "单位",
++    "field_due": "截止日期",
++    "field_direction": "越…越好",
++    "direction_increase": "越高越好",
++    "direction_decrease": "越低越好",
++    "field_parent": "上级目标",
++    "no_parent": "无",
++    "create": "创建目标",
++    "cancel": "取消",
++    "chart_label": "实际值与达成目标所需进度线对比",
++    "chart_needed": "虚线：所需进度",
++    "enter_number": "新数值",
++    "note": "备注",
++    "save_number": "保存",
++    "work_title": "推动此目标的工作",
++    "no_work": "尚未关联工作。",
++    "history_title": "历史",
++    "created_on": "创建于 {{date}}",
++    "health": {
++      "on_track": "正常",
++      "at_risk": "有风险",
++      "off_track": "落后",
++      "no_target_date": "无截止日期",
++      "planned": "计划中",
++      "achieved": "已达成",
++      "missed": "未达成",
++      "cancelled": "已取消"
++    }
+   }
+ }
+diff --git a/packages/views/locales/zh-Hant/layout.json b/packages/views/locales/zh-Hant/layout.json
+index 70741113f..e92e6a391 100644
+--- a/packages/views/locales/zh-Hant/layout.json
++++ b/packages/views/locales/zh-Hant/layout.json
+@@ -11,7 +11,8 @@
+     "usage": "統計",
+     "runtimes": "執行時",
+     "skills": "Skills",
+-    "settings": "設定"
++    "settings": "設定",
++    "goals": "目標"
+   },
+   "tab": {
+     "issue": "任務",
+diff --git a/packages/views/locales/zh-Hant/projects.json b/packages/views/locales/zh-Hant/projects.json
+index 4ba3e4269..7cd2e370f 100644
+--- a/packages/views/locales/zh-Hant/projects.json
++++ b/packages/views/locales/zh-Hant/projects.json
+@@ -180,5 +180,54 @@
+     "direction_desc": "降序",
+     "section_columns": "列",
+     "view": "檢視"
++  },
++  "goals": {
++    "title": "目標",
++    "subtitle": "有數字、有截止日期的結果。關聯推動它們的工作。",
++    "new_goal": "新建目標",
++    "empty": "還沒有目標。新增你想要的結果，帶上數字和截止日期。",
++    "col_goal": "目標",
++    "col_progress": "進度",
++    "col_health": "狀態",
++    "col_measured": "度量方式",
++    "col_work": "工作",
++    "due": "截止 {{date}}",
++    "of": "/ {{target}}",
++    "pace": "需要 {{needed}}/週，實際 {{actual}}/週",
++    "update_due": "需要更新",
++    "measured_script": "腳本",
++    "measured_manual": "手動",
++    "work_count": "已關聯 {{count}} 項",
++    "field_title": "結果",
++    "field_start": "起始值",
++    "field_target": "目標值",
++    "field_unit": "單位",
++    "field_due": "截止日期",
++    "field_direction": "越…越好",
++    "direction_increase": "越高越好",
++    "direction_decrease": "越低越好",
++    "field_parent": "上層目標",
++    "no_parent": "無",
++    "create": "建立目標",
++    "cancel": "取消",
++    "chart_label": "實際值與達成目標所需進度線對比",
++    "chart_needed": "虛線：所需進度",
++    "enter_number": "新數值",
++    "note": "備註",
++    "save_number": "儲存",
++    "work_title": "推動此目標的工作",
++    "no_work": "尚未關聯工作。",
++    "history_title": "歷史",
++    "created_on": "建立於 {{date}}",
++    "health": {
++      "on_track": "正常",
++      "at_risk": "有風險",
++      "off_track": "落後",
++      "no_target_date": "無截止日期",
++      "planned": "規劃中",
++      "achieved": "已達成",
++      "missed": "未達成",
++      "cancelled": "已取消"
++    }
+   }
+ }
+diff --git a/packages/views/package.json b/packages/views/package.json
+index 74635305c..242de2608 100644
+--- a/packages/views/package.json
++++ b/packages/views/package.json
+@@ -20,6 +20,7 @@
+     "./issues/utils/sort": "./issues/utils/sort.ts",
+     "./common/task-transcript": "./common/task-transcript/index.ts",
+     "./projects/components": "./projects/components/index.ts",
++    "./goals": "./goals/index.ts",
+     "./autopilots/components": "./autopilots/components/index.ts",
+     "./modals/registry": "./modals/registry.tsx",
+     "./modals/create-issue": "./modals/create-issue.tsx",
+diff --git a/packages/views/search/use-root-model.ts b/packages/views/search/use-root-model.ts
+index dd7434bfd..010885a83 100644
+--- a/packages/views/search/use-root-model.ts
++++ b/packages/views/search/use-root-model.ts
+@@ -38,6 +38,7 @@ const PAGE_KEYWORDS: Record<WorkspacePageKey, string[]> = {
+   myIssues: ["my", "issues", "assigned", "mine", "我的", "任务"],
+   issues: ["issues", "tasks", "bugs", "任务"],
+   projects: ["projects", "kanban", "项目"],
++  goals: ["goals", "okr", "targets", "results", "目标"],
+   autopilots: ["autopilot", "autopilots", "automation", "schedule", "cron", "webhook", "自动化", "定时"],
+   agents: ["agents", "bots", "ai", "智能体"],
+   squads: ["squads", "teams", "小队", "团队"],
+-- 
+2.53.0
+

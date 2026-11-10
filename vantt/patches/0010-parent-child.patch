@@ -1,0 +1,222 @@
+From e6c8f930ae74f2a614793000efee9dce0059c7a0 Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:55:15 +0700
+Subject: [PATCH 10/11] feat(issues): show a sub-issue's parent on board cards
+ and list rows
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A chip with the parent's identifier and title (tooltip: Sub-issue of …) next
+to the identifier, so children are told apart from top-level issues at a
+glance. Parents keep their sub-issue progress ring.
+
+Patch-Id: parent-child
+---
+ .../views/issues/components/board-card.tsx    |  2 ++
+ packages/views/issues/components/list-row.tsx |  2 ++
+ .../components/parent-issue-chip.test.tsx     | 26 ++++++++++++++
+ .../issues/components/parent-issue-chip.tsx   | 34 +++++++++++++++++++
+ packages/views/locales/en/issues.json         |  3 ++
+ packages/views/locales/fr/issues.json         |  3 ++
+ packages/views/locales/ja/issues.json         |  3 ++
+ packages/views/locales/ko/issues.json         |  3 ++
+ packages/views/locales/zh-Hans/issues.json    |  3 ++
+ packages/views/locales/zh-Hant/issues.json    |  3 ++
+ 10 files changed, 82 insertions(+)
+ create mode 100644 packages/views/issues/components/parent-issue-chip.test.tsx
+ create mode 100644 packages/views/issues/components/parent-issue-chip.tsx
+
+diff --git a/packages/views/issues/components/board-card.tsx b/packages/views/issues/components/board-card.tsx
+index af6e2a2d8..e94a750f4 100644
+--- a/packages/views/issues/components/board-card.tsx
++++ b/packages/views/issues/components/board-card.tsx
+@@ -24,6 +24,7 @@ import { PriorityPicker, AssigneePicker, StartDatePicker, DueDatePicker } from "
+ import { useViewStore } from "@multica/core/issues/stores/view-store-context";
+ import { propertyIdFromViewKey } from "@multica/core/issues/stores/view-store";
+ import { ProgressRing } from "./progress-ring";
++import { ParentIssueChip } from "./parent-issue-chip";
+ import type { ChildProgress } from "./list-row";
+ import { IssueActionsContextMenu } from "../actions";
+ import { LabelChip } from "../../labels/label-chip";
+@@ -204,6 +205,7 @@ export const BoardCardContent = memo(function BoardCardContent({
+         <div className="flex items-center gap-1.5 min-w-0">
+           {priorityIconNode}
+           <p className="text-caption text-muted-foreground truncate">{issue.identifier}</p>
++          <ParentIssueChip parentId={issue.parent_issue_id} />
+           <IssueDuplicateOfMarker issue={issue} insideLink />
+         </div>
+         <IssueAgentActivityIndicator issueId={issue.id} />
+diff --git a/packages/views/issues/components/list-row.tsx b/packages/views/issues/components/list-row.tsx
+index 9b146c4ab..50391bf82 100644
+--- a/packages/views/issues/components/list-row.tsx
++++ b/packages/views/issues/components/list-row.tsx
+@@ -20,6 +20,7 @@ import { CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
+ import { ProjectIcon } from "../../projects/components/project-icon";
+ import { PriorityIcon } from "./priority-icon";
+ import { ProgressRing } from "./progress-ring";
++import { ParentIssueChip } from "./parent-issue-chip";
+ import { IssueActionsContextMenu } from "../actions";
+ import { LabelChip } from "../../labels/label-chip";
+ import { CustomStatusChip } from "./custom-status-chip";
+@@ -132,6 +133,7 @@ function ListRowContent({
+ 
+           <span className="flex min-w-0 flex-1 items-center gap-1.5">
+             <span className="truncate">{issue.title}</span>
++            <ParentIssueChip parentId={issue.parent_issue_id} />
+             {/* Keep custom names visible when this row appears outside a status section. */}
+             <CustomStatusChip status={issue.status} className="shrink-0" />
+             <IssueDuplicateOfMarker issue={issue} insideLink />
+diff --git a/packages/views/issues/components/parent-issue-chip.test.tsx b/packages/views/issues/components/parent-issue-chip.test.tsx
+new file mode 100644
+index 000000000..12db8b674
+--- /dev/null
++++ b/packages/views/issues/components/parent-issue-chip.test.tsx
+@@ -0,0 +1,26 @@
++import { cleanup, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { renderWithI18n } from "../../test/i18n";
++import { ParentIssueChip } from "./parent-issue-chip";
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("@multica/core/issues/queries", () => ({ issueDetailOptions: (_ws: string, id: string) => ({ queryKey: ["issue", id] }) }));
++vi.mock("@tanstack/react-query", () => ({
++  useQuery: (o: { queryKey: unknown[]; enabled?: boolean }) =>
++    o.enabled === false ? { data: undefined } : { data: { id: "p-1", identifier: "MOM-30", title: "E8 Landing v3" } },
++}));
++
++afterEach(cleanup);
++
++describe("ParentIssueChip", () => {
++  it("names the parent of a sub-issue", () => {
++    renderWithI18n(<ParentIssueChip parentId="p-1" />);
++    expect(screen.getByText("MOM-30")).toBeTruthy();
++    expect(screen.getByTitle("Sub-issue of MOM-30 · E8 Landing v3")).toBeTruthy();
++  });
++
++  it("shows nothing for a top-level issue", () => {
++    renderWithI18n(<ParentIssueChip parentId={null} />);
++    expect(screen.queryByText("MOM-30")).toBeNull();
++  });
++});
+diff --git a/packages/views/issues/components/parent-issue-chip.tsx b/packages/views/issues/components/parent-issue-chip.tsx
+new file mode 100644
+index 000000000..e27ec11d9
+--- /dev/null
++++ b/packages/views/issues/components/parent-issue-chip.tsx
+@@ -0,0 +1,34 @@
++"use client";
++
++import { useQuery } from "@tanstack/react-query";
++import { CornerDownRight } from "lucide-react";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { issueDetailOptions } from "@multica/core/issues/queries";
++import { cn } from "@multica/ui/lib/utils";
++import { useT } from "../../i18n";
++
++/**
++ * Which parent a sub-issue belongs to (vantt parent-child, design D9), shown on
++ * board cards and list rows next to the identifier. Reference: Jira's epic
++ * link on cards; Linear's parent label on sub-issues. Parents already show their
++ * sub-issue progress ring.
++ */
++export function ParentIssueChip({ parentId, className }: { parentId: string | null | undefined; className?: string }) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const { data: parent } = useQuery({ ...issueDetailOptions(wsId, parentId ?? ""), enabled: Boolean(parentId) });
++  if (!parentId || !parent) return null;
++  return (
++    <span
++      title={t(($) => $.parent_chip.title, { identifier: parent.identifier, title: parent.title })}
++      className={cn(
++        "inline-flex min-w-0 max-w-[180px] shrink items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-micro text-muted-foreground",
++        className,
++      )}
++    >
++      <CornerDownRight aria-hidden className="size-3 shrink-0" />
++      <span className="shrink-0">{parent.identifier}</span>
++      <span className="truncate">{parent.title}</span>
++    </span>
++  );
++}
+diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
+index e9d67648d..431eed87b 100644
+--- a/packages/views/locales/en/issues.json
++++ b/packages/views/locales/en/issues.json
+@@ -1801,5 +1801,8 @@
+   },
+   "hover_card": {
+     "created_updated": "created {{created}} · updated {{updated}}"
++  },
++  "parent_chip": {
++    "title": "Sub-issue of {{identifier}} · {{title}}"
+   }
+ }
+diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
+index cb0ae252b..89e1e5853 100644
+--- a/packages/views/locales/fr/issues.json
++++ b/packages/views/locales/fr/issues.json
+@@ -1800,5 +1800,8 @@
+   },
+   "hover_card": {
+     "created_updated": "a créé {{created}} · mis à jour {{updated}}"
++  },
++  "parent_chip": {
++    "title": "Sous-ticket de {{identifier}} · {{title}}"
+   }
+ }
+diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
+index 2ee49eeee..29a4d000f 100644
+--- a/packages/views/locales/ja/issues.json
++++ b/packages/views/locales/ja/issues.json
+@@ -1735,5 +1735,8 @@
+   },
+   "hover_card": {
+     "created_updated": "{{created}}に作成 · {{updated}}に更新"
++  },
++  "parent_chip": {
++    "title": "{{identifier}} のサブ課題 · {{title}}"
+   }
+ }
+diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
+index b775f8626..3746c7e8c 100644
+--- a/packages/views/locales/ko/issues.json
++++ b/packages/views/locales/ko/issues.json
+@@ -1735,5 +1735,8 @@
+   },
+   "hover_card": {
+     "created_updated": "{{created}} 생성 · {{updated}} 수정됨"
++  },
++  "parent_chip": {
++    "title": "{{identifier}}의 하위 이슈 · {{title}}"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
+index 4a39e6815..2584ea060 100644
+--- a/packages/views/locales/zh-Hans/issues.json
++++ b/packages/views/locales/zh-Hans/issues.json
+@@ -1735,5 +1735,8 @@
+   },
+   "hover_card": {
+     "created_updated": "创建于 {{created}} · 更新于 {{updated}}"
++  },
++  "parent_chip": {
++    "title": "{{identifier}} 的子事项 · {{title}}"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
+index fa5f4551f..fb320099a 100644
+--- a/packages/views/locales/zh-Hant/issues.json
++++ b/packages/views/locales/zh-Hant/issues.json
+@@ -1734,5 +1734,8 @@
+   },
+   "hover_card": {
+     "created_updated": "建立於 {{created}} · 更新於 {{updated}}"
++  },
++  "parent_chip": {
++    "title": "{{identifier}} 的子事項 · {{title}}"
+   }
+ }
+-- 
+2.53.0
+

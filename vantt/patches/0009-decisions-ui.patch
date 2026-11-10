@@ -1,0 +1,436 @@
+From f7b79d5fe7635b44e281a96ea32805777be8760b Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:52:40 +0700
+Subject: [PATCH 09/11] feat(decisions): decision panel on the issue page
+
+Open decisions show above the approval panel: the question, the options with
+the recommended one marked and preselected, an optional note, and Answer.
+Answering records the choice and posts it as a comment so the issue's agent
+wakes up. Core: @multica/core/decisions and client methods.
+
+Patch-Id: decisions-ui
+---
+ packages/core/api/client.ts                   |  18 +++
+ packages/core/decisions/index.ts              |  58 +++++++++
+ packages/core/package.json                    |   1 +
+ .../views/issues/components/issue-detail.tsx  |   2 +
+ packages/views/locales/en/issues.json         |   7 ++
+ packages/views/locales/fr/issues.json         |   7 ++
+ packages/views/locales/ja/issues.json         |   7 ++
+ packages/views/locales/ko/issues.json         |   7 ++
+ packages/views/locales/zh-Hans/issues.json    |   7 ++
+ packages/views/locales/zh-Hant/issues.json    |   7 ++
+ .../views/workflows/decision-panel.test.tsx   |  46 +++++++
+ packages/views/workflows/decision-panel.tsx   | 113 ++++++++++++++++++
+ 12 files changed, 280 insertions(+)
+ create mode 100644 packages/core/decisions/index.ts
+ create mode 100644 packages/views/workflows/decision-panel.test.tsx
+ create mode 100644 packages/views/workflows/decision-panel.tsx
+
+diff --git a/packages/core/api/client.ts b/packages/core/api/client.ts
+index 4e9981f7d..4f4b98fd0 100644
+--- a/packages/core/api/client.ts
++++ b/packages/core/api/client.ts
+@@ -4112,6 +4112,24 @@ export class ApiClient {
+   }
+ 
+   // Project resources
++  // vantt decisions (patch decisions-ui, F5).
++  async listIssueDecisions(issueId: string): Promise<{ decisions: import("../decisions").IssueDecision[] }> {
++    const raw = await this.fetch<{ decisions?: unknown }>(`/api/issues/${issueId}/decisions`);
++    const list = Array.isArray(raw?.decisions) ? (raw.decisions as import("../decisions").IssueDecision[]) : [];
++    return {
++      decisions: list
++        .filter((d) => typeof d?.id === "string" && typeof d?.question === "string")
++        .map((d) => ({ ...d, options: Array.isArray(d.options) ? d.options : [], answer_note: d.answer_note ?? "" })),
++    };
++  }
++
++  async answerIssueDecision(issueId: string, decisionId: string, optionId: string, note: string): Promise<unknown> {
++    return this.fetch(`/api/issues/${issueId}/decisions/${decisionId}/answer`, {
++      method: "POST",
++      body: JSON.stringify({ option_id: optionId, note }),
++    });
++  }
++
+   // vantt workflow-by-type (patch workflow-by-type-ui, F3).
+   async listProjectWorkflowRules(projectId: string): Promise<{ rules: { property_id: string; option_id: string; workflow_id: string }[] }> {
+     const raw = await this.fetch<{ rules?: unknown }>(`/api/projects/${projectId}/workflow-rules`);
+diff --git a/packages/core/decisions/index.ts b/packages/core/decisions/index.ts
+new file mode 100644
+index 000000000..ab2bfcbbc
+--- /dev/null
++++ b/packages/core/decisions/index.ts
+@@ -0,0 +1,58 @@
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import { api } from "../api";
++import { useWorkspaceId } from "../hooks";
++
++/**
++ * vantt decisions (patch decisions-ui, F5): a question on an issue with options
++ * for a person to pick, one recommended. Reference: Jira approvals.
++ */
++export interface DecisionOption {
++  id: string;
++  label: string;
++  description: string;
++  recommended: boolean;
++}
++
++export interface IssueDecision {
++  id: string;
++  issue_id: string;
++  question: string;
++  options: DecisionOption[];
++  status: "open" | "answered" | "cancelled";
++  due_date: string | null;
++  asked_by_type: string;
++  asked_by_id: string | null;
++  answer_option_id: string | null;
++  answer_note: string;
++  answered_by: string | null;
++  answered_at: string | null;
++  created_at: string;
++}
++
++export const decisionKeys = {
++  issue: (wsId: string, issueId: string) => ["decisions", wsId, issueId] as const,
++};
++
++// Plain options object so tests that mock react-query with only useQuery work.
++export function issueDecisionsOptions(wsId: string, issueId: string) {
++  return {
++    queryKey: decisionKeys.issue(wsId, issueId),
++    queryFn: () => api.listIssueDecisions(issueId),
++    select: (data: { decisions: IssueDecision[] }) => data.decisions,
++  };
++}
++
++/** Records the answer, then posts it as a comment so the issue's agent wakes up. */
++export function useAnswerDecision(issueId: string) {
++  const qc = useQueryClient();
++  const wsId = useWorkspaceId();
++  return useMutation({
++    mutationFn: async ({ decision, optionId, note }: { decision: IssueDecision; optionId: string; note: string }) => {
++      const answered = await api.answerIssueDecision(issueId, decision.id, optionId, note);
++      const label = decision.options.find((o) => o.id === optionId)?.label ?? optionId;
++      await api.createComment(issueId, `**${decision.question}** → ${label}${note ? `\n\n${note}` : ""}`);
++      return answered;
++    },
++    onSuccess: () => qc.invalidateQueries({ queryKey: decisionKeys.issue(wsId, issueId) }),
++  });
++}
+diff --git a/packages/core/package.json b/packages/core/package.json
+index e2ab6fb21..1774d4daa 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -40,6 +40,7 @@
+     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
+     "./goals": "./goals/index.ts",
+     "./workflow-rules": "./workflow-rules/index.ts",
++    "./decisions": "./decisions/index.ts",
+     "./issues": "./issues/index.ts",
+     "./issues/batch": "./issues/batch.ts",
+     "./issues/canonical-id": "./issues/canonical-id.ts",
+diff --git a/packages/views/issues/components/issue-detail.tsx b/packages/views/issues/components/issue-detail.tsx
+index d26686211..b7c55fd0e 100644
+--- a/packages/views/issues/components/issue-detail.tsx
++++ b/packages/views/issues/components/issue-detail.tsx
+@@ -15,6 +15,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+ import { AppLink, useBackOrReplace } from "../../navigation";
+ import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
+ import { ApprovalPanel } from "../../workflows/approval-panel";
++import { DecisionPanel } from "../../workflows/decision-panel";
+ import {
+   Archive,
+   Calendar,
+@@ -3353,6 +3354,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+               )
+             }
+           />
++          <DecisionPanel issue={issue} />
+           <ApprovalPanel issue={issue} onUpdateField={(updates) => handleUpdateField(updates)} />
+           <div id={descriptionSectionId}>
+           {titleLazy.active && (
+diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
+index 82d9d43bc..e9d67648d 100644
+--- a/packages/views/locales/en/issues.json
++++ b/packages/views/locales/en/issues.json
+@@ -1790,6 +1790,13 @@
+       "project_default": "Project workflow",
+       "cancel": "Cancel",
+       "save": "Save"
++    },
++    "decision": {
++      "title": "Decision for you",
++      "due": "Due {{date}}",
++      "recommended": "Recommended",
++      "note_placeholder": "Add a note (optional)",
++      "answer": "Answer: {{option}}"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
+index 8671e69c5..cb0ae252b 100644
+--- a/packages/views/locales/fr/issues.json
++++ b/packages/views/locales/fr/issues.json
+@@ -1789,6 +1789,13 @@
+       "project_default": "Workflow du projet",
+       "cancel": "Annuler",
+       "save": "Enregistrer"
++    },
++    "decision": {
++      "title": "Décision à prendre",
++      "due": "Échéance {{date}}",
++      "recommended": "Recommandé",
++      "note_placeholder": "Ajouter une note (facultatif)",
++      "answer": "Répondre : {{option}}"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
+index b36bb455c..2ee49eeee 100644
+--- a/packages/views/locales/ja/issues.json
++++ b/packages/views/locales/ja/issues.json
+@@ -1724,6 +1724,13 @@
+       "project_default": "プロジェクトのワークフロー",
+       "cancel": "キャンセル",
+       "save": "保存"
++    },
++    "decision": {
++      "title": "あなたの判断",
++      "due": "期限 {{date}}",
++      "recommended": "推奨",
++      "note_placeholder": "メモを追加（任意）",
++      "answer": "回答：{{option}}"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
+index 21e85caa2..b775f8626 100644
+--- a/packages/views/locales/ko/issues.json
++++ b/packages/views/locales/ko/issues.json
+@@ -1724,6 +1724,13 @@
+       "project_default": "프로젝트 워크플로",
+       "cancel": "취소",
+       "save": "저장"
++    },
++    "decision": {
++      "title": "결정이 필요합니다",
++      "due": "기한 {{date}}",
++      "recommended": "권장",
++      "note_placeholder": "메모 추가 (선택)",
++      "answer": "답변: {{option}}"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
+index 5dbf75414..4a39e6815 100644
+--- a/packages/views/locales/zh-Hans/issues.json
++++ b/packages/views/locales/zh-Hans/issues.json
+@@ -1724,6 +1724,13 @@
+       "project_default": "项目工作流",
+       "cancel": "取消",
+       "save": "保存"
++    },
++    "decision": {
++      "title": "等待你的决定",
++      "due": "截止 {{date}}",
++      "recommended": "推荐",
++      "note_placeholder": "添加备注（可选）",
++      "answer": "答复：{{option}}"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
+index 9fbdb5730..fa5f4551f 100644
+--- a/packages/views/locales/zh-Hant/issues.json
++++ b/packages/views/locales/zh-Hant/issues.json
+@@ -1723,6 +1723,13 @@
+       "project_default": "專案工作流程",
+       "cancel": "取消",
+       "save": "儲存"
++    },
++    "decision": {
++      "title": "等待你的決定",
++      "due": "截止 {{date}}",
++      "recommended": "推薦",
++      "note_placeholder": "新增備註（可選）",
++      "answer": "答覆：{{option}}"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/workflows/decision-panel.test.tsx b/packages/views/workflows/decision-panel.test.tsx
+new file mode 100644
+index 000000000..5e9f2fce1
+--- /dev/null
++++ b/packages/views/workflows/decision-panel.test.tsx
+@@ -0,0 +1,46 @@
++import { cleanup, fireEvent, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { Issue } from "@multica/core/types";
++import { renderWithI18n } from "../test/i18n";
++import { DecisionPanel } from "./decision-panel";
++
++const state = vi.hoisted(() => ({ mutate: vi.fn(), decisions: [] as unknown[] }));
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("@multica/core/auth", () => ({ useAuthStore: (s: (x: { user: { id: string } }) => unknown) => s({ user: { id: "owner-1" } }) }));
++vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: state.decisions }) }));
++vi.mock("@multica/core/decisions", () => ({
++  issueDecisionsOptions: () => ({ queryKey: ["decisions"] }),
++  useAnswerDecision: () => ({ mutate: state.mutate, isPending: false }),
++}));
++
++const decision = {
++  id: "d-1", issue_id: "i-1", question: "Which payment provider?", status: "open", due_date: "2026-11-14",
++  asked_by_type: "agent", asked_by_id: null, answer_option_id: null, answer_note: "", answered_by: null, answered_at: null, created_at: "",
++  options: [
++    { id: "o-polar", label: "Polar", description: "VND payout", recommended: true },
++    { id: "o-dodo", label: "Dodo", description: "", recommended: false },
++  ],
++};
++
++afterEach(() => {
++  cleanup();
++  state.mutate.mockReset();
++});
++
++describe("DecisionPanel", () => {
++  it("preselects the recommended option and answers with the picked one", () => {
++    state.decisions = [decision];
++    renderWithI18n(<DecisionPanel issue={{ id: "i-1" } as Issue} />);
++    expect(screen.getByText("Recommended")).toBeTruthy();
++    fireEvent.click(screen.getByRole("radio", { name: /Dodo/ }));
++    fireEvent.click(screen.getByRole("button", { name: "Answer: Dodo" }));
++    expect(state.mutate).toHaveBeenCalledWith({ decision, optionId: "o-dodo", note: "" });
++  });
++
++  it("shows nothing without open decisions", () => {
++    state.decisions = [{ ...decision, status: "answered" }];
++    renderWithI18n(<DecisionPanel issue={{ id: "i-1" } as Issue} />);
++    expect(screen.queryByText("Which payment provider?")).toBeNull();
++  });
++});
+diff --git a/packages/views/workflows/decision-panel.tsx b/packages/views/workflows/decision-panel.tsx
+new file mode 100644
+index 000000000..e43f41b21
+--- /dev/null
++++ b/packages/views/workflows/decision-panel.tsx
+@@ -0,0 +1,113 @@
++"use client";
++
++import { useState } from "react";
++import { useQuery } from "@tanstack/react-query";
++import { MessageCircleQuestion } from "lucide-react";
++import { useAuthStore } from "@multica/core/auth";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { issueDecisionsOptions, useAnswerDecision, type IssueDecision } from "@multica/core/decisions";
++import type { Issue } from "@multica/core/types";
++import { Button } from "@multica/ui/components/ui/button";
++import { Input } from "@multica/ui/components/ui/input";
++import { cn } from "@multica/ui/lib/utils";
++import { useT } from "../i18n";
++
++/**
++ * Open decisions on an issue (vantt decisions-ui, design D4): the question, the
++ * options with the recommended one marked, and Answer. The answer is posted as
++ * a comment, which wakes the issue's agent. Reference: Jira approvals.
++ */
++export function DecisionPanel({ issue }: { issue: Issue }) {
++  const wsId = useWorkspaceId();
++  const { data: decisions = [] } = useQuery(issueDecisionsOptions(wsId, issue.id));
++  const open = decisions.filter((d) => d.status === "open");
++  if (open.length === 0) return null;
++  return (
++    <>
++      {open.map((d) => (
++        <DecisionCard key={d.id} issueId={issue.id} decision={d} />
++      ))}
++    </>
++  );
++}
++
++function DecisionCard({ issueId, decision }: { issueId: string; decision: IssueDecision }) {
++  const { t } = useT("issues");
++  const isMember = useAuthStore((s) => Boolean(s.user?.id));
++  const answer = useAnswerDecision(issueId);
++  const recommended = decision.options.find((o) => o.recommended)?.id ?? decision.options[0]?.id ?? "";
++  const [picked, setPicked] = useState(recommended);
++  const [note, setNote] = useState("");
++  const pickedLabel = decision.options.find((o) => o.id === picked)?.label ?? "";
++
++  return (
++    <section
++      aria-label={t(($) => $.workflows.decision.title)}
++      className="mb-4 flex flex-col gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-body dark:border-amber-500/40 dark:bg-amber-500/10"
++    >
++      <div className="flex flex-wrap items-center gap-2">
++        <MessageCircleQuestion aria-hidden className="size-4 shrink-0 text-amber-700 dark:text-amber-400" />
++        <span className="text-caption font-semibold uppercase tracking-wide text-amber-900 dark:text-amber-200">
++          {t(($) => $.workflows.decision.title)}
++        </span>
++        {decision.due_date && (
++          <span className="text-caption text-amber-800 dark:text-amber-300">{t(($) => $.workflows.decision.due, { date: decision.due_date })}</span>
++        )}
++      </div>
++      <p className="font-medium">{decision.question}</p>
++      <div role="radiogroup" aria-label={decision.question} className="flex flex-col gap-2">
++        {decision.options.map((o) => {
++          const selected = o.id === picked;
++          return (
++            <button
++              key={o.id}
++              type="button"
++              role="radio"
++              aria-checked={selected}
++              onClick={() => setPicked(o.id)}
++              className={cn(
++                "flex items-start gap-3 rounded-md border bg-background px-3 py-2.5 text-left",
++                selected ? "border-foreground ring-1 ring-foreground" : "border-border",
++              )}
++            >
++              <span
++                aria-hidden
++                className={cn("mt-1 size-3.5 shrink-0 rounded-full border-2 border-foreground", selected ? "bg-foreground" : "bg-background")}
++              />
++              <span className="flex min-w-0 flex-col gap-0.5">
++                <span className="flex flex-wrap items-center gap-2">
++                  <span className="font-medium">{o.label}</span>
++                  {o.recommended && (
++                    <span className="rounded-full bg-foreground px-2 py-0.5 text-caption font-medium text-background">
++                      {t(($) => $.workflows.decision.recommended)}
++                    </span>
++                  )}
++                </span>
++                {o.description && <span className="text-caption text-muted-foreground">{o.description}</span>}
++              </span>
++            </button>
++          );
++        })}
++      </div>
++      {isMember && (
++        <div className="flex flex-wrap items-center gap-2">
++          <Input
++            value={note}
++            onChange={(e) => setNote(e.target.value)}
++            placeholder={t(($) => $.workflows.decision.note_placeholder)}
++            aria-label={t(($) => $.workflows.decision.note_placeholder)}
++            className="min-w-48 flex-1 bg-background"
++          />
++          <Button
++            type="button"
++            disabled={!picked || answer.isPending}
++            aria-busy={answer.isPending}
++            onClick={() => answer.mutate({ decision, optionId: picked, note: note.trim() })}
++          >
++            {t(($) => $.workflows.decision.answer, { option: pickedLabel })}
++          </Button>
++        </div>
++      )}
++    </section>
++  );
++}
+-- 
+2.53.0
+

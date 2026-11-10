@@ -1,0 +1,822 @@
+From 4ad15e287f1d384b86bffdd5e0c2cf4af6c3534a Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:50:37 +0700
+Subject: [PATCH 08/11] feat(decisions): structured decisions on issues
+
+Table issue_decision (add-only, no foreign keys): a question, 2-8 options
+(at most one recommended), due date, who asked (member or agent), and the
+answer. API: list/create on an issue, answer (people only) and cancel,
+plus GET /api/issues/decisions/open for the workspace. Waiting is enforced by
+the workflow gate; clients post the answer as a comment so the usual
+triggers wake the agent. Workspace deletion removes decisions.
+
+Patch-Id: decisions
+---
+ server/cmd/server/router.go                   |   5 +
+ server/internal/handler/vantt_decision.go     | 244 +++++++++++++++++
+ .../internal/handler/vantt_decision_test.go   |  84 ++++++
+ .../handler/workspace_delete_manifest_test.go |   1 +
+ .../9007_vantt_issue_decision.down.sql        |   1 +
+ .../9007_vantt_issue_decision.up.sql          |  18 ++
+ ..._vantt_issue_decision_issue_index.down.sql |   1 +
+ ...08_vantt_issue_decision_issue_index.up.sql |   1 +
+ server/pkg/db/generated/issue_decision.sql.go | 259 ++++++++++++++++++
+ server/pkg/db/generated/models.go             |  17 ++
+ .../pkg/db/generated/workspace_delete.sql.go  |   3 +
+ server/pkg/db/queries/issue_decision.sql      |  35 +++
+ server/pkg/db/queries/workspace_delete.sql    |   3 +
+ 13 files changed, 672 insertions(+)
+ create mode 100644 server/internal/handler/vantt_decision.go
+ create mode 100644 server/internal/handler/vantt_decision_test.go
+ create mode 100644 server/migrations/9007_vantt_issue_decision.down.sql
+ create mode 100644 server/migrations/9007_vantt_issue_decision.up.sql
+ create mode 100644 server/migrations/9008_vantt_issue_decision_issue_index.down.sql
+ create mode 100644 server/migrations/9008_vantt_issue_decision_issue_index.up.sql
+ create mode 100644 server/pkg/db/generated/issue_decision.sql.go
+ create mode 100644 server/pkg/db/queries/issue_decision.sql
+
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 4d6c9bcc1..0c102801d 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -2034,6 +2034,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 				r.Get("/search", h.SearchIssues)
+ 				r.Get("/child-progress", h.ChildIssueProgress)
+ 				r.Get("/children", h.ListChildrenByParents)
++				r.Get("/decisions/open", h.ListOpenDecisions) // vantt decisions
+ 				r.Get("/grouped", h.ListGroupedIssues)
+ 				r.Get("/", h.ListIssues)
+ 				// POST twin of GET /api/issues for oversized filter sets
+@@ -2054,6 +2055,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 					r.Get("/comments", h.ListComments)
+ 					r.Get("/timeline", h.ListTimeline)
+ 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
++					r.Get("/decisions", h.ListIssueDecisions) // vantt decisions
++					r.Post("/decisions", h.CreateIssueDecision)
++					r.Post("/decisions/{decisionId}/answer", h.AnswerIssueDecision)
++					r.Post("/decisions/{decisionId}/cancel", h.CancelIssueDecision)
+ 					r.Get("/subscribers", h.ListIssueSubscribers)
+ 					r.Post("/subscribe", h.SubscribeToIssue)
+ 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
+diff --git a/server/internal/handler/vantt_decision.go b/server/internal/handler/vantt_decision.go
+new file mode 100644
+index 000000000..ca6dd1342
+--- /dev/null
++++ b/server/internal/handler/vantt_decision.go
+@@ -0,0 +1,244 @@
++package handler
++
++// vantt decisions (patch decisions, F5): a question on an issue with options for
++// a person to pick, one recommended. Reference: Jira approvals; Paperclip
++// decisions. Waiting is enforced by the workflow (the issue sits in a step a
++// person handles, patch owner-gates); answering records the choice, and the
++// client posts it as a comment so the usual comment triggers wake the agent.
++
++import (
++	"encoding/json"
++	"io"
++	"net/http"
++	"strings"
++	"time"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/util"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++type DecisionOption struct {
++	ID          string `json:"id"`
++	Label       string `json:"label"`
++	Description string `json:"description"`
++	Recommended bool   `json:"recommended"`
++}
++
++type DecisionResponse struct {
++	ID             string           `json:"id"`
++	IssueID        string           `json:"issue_id"`
++	Question       string           `json:"question"`
++	Options        []DecisionOption `json:"options"`
++	Status         string           `json:"status"`
++	DueDate        *string          `json:"due_date"`
++	AskedByType    string           `json:"asked_by_type"`
++	AskedByID      *string          `json:"asked_by_id"`
++	AnswerOptionID *string          `json:"answer_option_id"`
++	AnswerNote     string           `json:"answer_note"`
++	AnsweredBy     *string          `json:"answered_by"`
++	AnsweredAt     *string          `json:"answered_at"`
++	CreatedAt      string           `json:"created_at"`
++}
++
++func decisionToResponse(d db.IssueDecision) DecisionResponse {
++	var options []DecisionOption
++	_ = json.Unmarshal(d.Options, &options)
++	if options == nil {
++		options = []DecisionOption{}
++	}
++	var answeredAt *string
++	if d.AnsweredAt.Valid {
++		s := timestampToString(d.AnsweredAt)
++		answeredAt = &s
++	}
++	return DecisionResponse{
++		ID: uuidToString(d.ID), IssueID: uuidToString(d.IssueID), Question: d.Question, Options: options,
++		Status: d.Status, DueDate: dateToPtr(d.DueDate), AskedByType: d.AskedByType, AskedByID: uuidToPtr(d.AskedByID),
++		AnswerOptionID: textToPtr(d.AnswerOptionID), AnswerNote: d.AnswerNote, AnsweredBy: uuidToPtr(d.AnsweredBy),
++		AnsweredAt: answeredAt, CreatedAt: timestampToString(d.CreatedAt),
++	}
++}
++
++func (h *Handler) ListIssueDecisions(w http.ResponseWriter, r *http.Request) {
++	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
++	if !ok {
++		return
++	}
++	rows, err := h.Queries.ListIssueDecisions(r.Context(), db.ListIssueDecisionsParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID})
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list decisions")
++		return
++	}
++	out := make([]DecisionResponse, 0, len(rows))
++	for _, d := range rows {
++		out = append(out, decisionToResponse(d))
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"decisions": out})
++}
++
++// ListOpenDecisions lists every open decision in the workspace (for the morning brief).
++func (h *Handler) ListOpenDecisions(w http.ResponseWriter, r *http.Request) {
++	wsID := h.resolveWorkspaceID(r)
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
++		return
++	}
++	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
++	if !ok {
++		return
++	}
++	rows, err := h.Queries.ListOpenIssueDecisions(r.Context(), wsUUID)
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list decisions")
++		return
++	}
++	out := make([]DecisionResponse, 0, len(rows))
++	for _, d := range rows {
++		out = append(out, decisionToResponse(d))
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"decisions": out})
++}
++
++type CreateDecisionRequest struct {
++	Question string           `json:"question"`
++	Options  []DecisionOption `json:"options"`
++	DueDate  *string          `json:"due_date"`
++}
++
++// CreateIssueDecision opens a decision; members and agents may ask.
++func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
++	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
++	if !ok {
++		return
++	}
++	userID, ok := requireUserID(w, r)
++	if !ok {
++		return
++	}
++	var req CreateDecisionRequest
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	req.Question = strings.TrimSpace(req.Question)
++	if req.Question == "" || len(req.Options) < 2 || len(req.Options) > 8 {
++		writeError(w, http.StatusBadRequest, "a decision needs a question and 2 to 8 options")
++		return
++	}
++	recommended := 0
++	for i := range req.Options {
++		req.Options[i].Label = strings.TrimSpace(req.Options[i].Label)
++		if req.Options[i].Label == "" {
++			writeError(w, http.StatusBadRequest, "every option needs a label")
++			return
++		}
++		req.Options[i].ID = uuid.NewString()
++		if req.Options[i].Recommended {
++			recommended++
++		}
++	}
++	if recommended > 1 {
++		writeError(w, http.StatusBadRequest, "at most one option is recommended")
++		return
++	}
++	var due pgtype.Date
++	if req.DueDate != nil && *req.DueDate != "" {
++		d, err := time.Parse("2006-01-02", *req.DueDate)
++		if err != nil {
++			writeError(w, http.StatusBadRequest, "due_date must be YYYY-MM-DD")
++			return
++		}
++		due = pgtype.Date{Time: d, Valid: true}
++	}
++	options, _ := json.Marshal(req.Options)
++	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
++	asker, _ := util.ParseUUID(actorID)
++	d, err := h.Queries.CreateIssueDecision(r.Context(), db.CreateIssueDecisionParams{
++		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Question: req.Question, Options: options,
++		DueDate: due, AskedByType: actorType, AskedByID: asker,
++	})
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to create decision")
++		return
++	}
++	writeJSON(w, http.StatusCreated, decisionToResponse(d))
++}
++
++type AnswerDecisionRequest struct {
++	OptionID string `json:"option_id"`
++	Note     string `json:"note"`
++}
++
++// AnswerIssueDecision records a person's choice. Agents cannot answer.
++func (h *Handler) AnswerIssueDecision(w http.ResponseWriter, r *http.Request) {
++	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
++	if !ok {
++		return
++	}
++	userID, ok := requireUserID(w, r)
++	if !ok {
++		return
++	}
++	if actorType, _ := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID)); actorType != "member" {
++		writeError(w, http.StatusForbidden, "only a person answers a decision")
++		return
++	}
++	decisionID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "decisionId"), "decision id")
++	if !ok {
++		return
++	}
++	cur, err := h.Queries.GetIssueDecision(r.Context(), db.GetIssueDecisionParams{ID: decisionID, WorkspaceID: issue.WorkspaceID})
++	if err != nil || cur.IssueID != issue.ID {
++		writeError(w, http.StatusNotFound, "decision not found")
++		return
++	}
++	var req AnswerDecisionRequest
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	known := false
++	for _, o := range decisionToResponse(cur).Options {
++		known = known || o.ID == req.OptionID
++	}
++	if !known {
++		writeError(w, http.StatusBadRequest, "option_id is not one of the decision's options")
++		return
++	}
++	answerer, _ := util.ParseUUID(userID)
++	d, err := h.Queries.AnswerIssueDecision(r.Context(), db.AnswerIssueDecisionParams{
++		ID: decisionID, WorkspaceID: issue.WorkspaceID, AnswerOptionID: pgtype.Text{String: req.OptionID, Valid: true},
++		AnswerNote: strings.TrimSpace(req.Note), AnsweredBy: answerer,
++	})
++	if err != nil {
++		writeError(w, http.StatusConflict, "decision is no longer open")
++		return
++	}
++	writeJSON(w, http.StatusOK, decisionToResponse(d))
++}
++
++func (h *Handler) CancelIssueDecision(w http.ResponseWriter, r *http.Request) {
++	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
++	if !ok {
++		return
++	}
++	decisionID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "decisionId"), "decision id")
++	if !ok {
++		return
++	}
++	cur, err := h.Queries.GetIssueDecision(r.Context(), db.GetIssueDecisionParams{ID: decisionID, WorkspaceID: issue.WorkspaceID})
++	if err != nil || cur.IssueID != issue.ID {
++		writeError(w, http.StatusNotFound, "decision not found")
++		return
++	}
++	d, err := h.Queries.CancelIssueDecision(r.Context(), db.CancelIssueDecisionParams{ID: decisionID, WorkspaceID: issue.WorkspaceID})
++	if err != nil {
++		writeError(w, http.StatusConflict, "decision is no longer open")
++		return
++	}
++	writeJSON(w, http.StatusOK, decisionToResponse(d))
++}
+diff --git a/server/internal/handler/vantt_decision_test.go b/server/internal/handler/vantt_decision_test.go
+new file mode 100644
+index 000000000..f6998a5e5
+--- /dev/null
++++ b/server/internal/handler/vantt_decision_test.go
+@@ -0,0 +1,84 @@
++package handler
++
++import (
++	"net/http"
++	"testing"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++func decisionRequest(method, path string, body any, kv ...string) *http.Request {
++	return withURLParams(newRequest(method, path+"?workspace_id="+testWorkspaceID, body), kv...)
++}
++
++func TestDecisionAskAnswer(t *testing.T) {
++	issueID := dbfx.Issue(t, "needs a decision", testutil.Cols{"status": "todo"})
++
++	var d DecisionResponse
++	testutil.Call(t, testHandler.CreateIssueDecision, decisionRequest("POST", "/api/issues/"+issueID+"/decisions", map[string]any{
++		"question": "Which payment provider?",
++		"options": []map[string]any{
++			{"label": "Polar", "description": "VND payout", "recommended": true},
++			{"label": "Dodo"},
++		},
++		"due_date": "2026-11-14",
++	}, "id", issueID)).Want(http.StatusCreated).JSON(&d)
++	if d.Status != "open" || len(d.Options) != 2 || d.Options[0].ID == "" || !d.Options[0].Recommended {
++		t.Fatalf("decision = %+v", d)
++	}
++
++	var open struct {
++		Decisions []DecisionResponse `json:"decisions"`
++	}
++	testutil.Call(t, testHandler.ListOpenDecisions, newRequest("GET", "/api/issues/decisions/open?workspace_id="+testWorkspaceID, nil)).
++		Want(http.StatusOK).JSON(&open)
++	found := false
++	for _, o := range open.Decisions {
++		found = found || o.ID == d.ID
++	}
++	if !found {
++		t.Fatal("open decision not listed")
++	}
++
++	// An unknown option is refused; a known one answers it.
++	testutil.Call(t, testHandler.AnswerIssueDecision, decisionRequest("POST", "/api/issues/"+issueID+"/decisions/"+d.ID+"/answer",
++		map[string]any{"option_id": "nope"}, "id", issueID, "decisionId", d.ID)).Want(http.StatusBadRequest)
++	var answered DecisionResponse
++	testutil.Call(t, testHandler.AnswerIssueDecision, decisionRequest("POST", "/api/issues/"+issueID+"/decisions/"+d.ID+"/answer",
++		map[string]any{"option_id": d.Options[0].ID, "note": "go"}, "id", issueID, "decisionId", d.ID)).Want(http.StatusOK).JSON(&answered)
++	if answered.Status != "answered" || answered.AnswerOptionID == nil || *answered.AnswerOptionID != d.Options[0].ID || answered.AnswerNote != "go" {
++		t.Fatalf("answered = %+v", answered)
++	}
++	// Answering twice is a conflict.
++	testutil.Call(t, testHandler.AnswerIssueDecision, decisionRequest("POST", "/api/issues/"+issueID+"/decisions/"+d.ID+"/answer",
++		map[string]any{"option_id": d.Options[1].ID}, "id", issueID, "decisionId", d.ID)).Want(http.StatusConflict)
++}
++
++func TestDecisionValidationAndAgents(t *testing.T) {
++	issueID := dbfx.Issue(t, "bad decision", testutil.Cols{"status": "todo"})
++	testutil.Call(t, testHandler.CreateIssueDecision, decisionRequest("POST", "/api/issues/"+issueID+"/decisions",
++		map[string]any{"question": "One option?", "options": []map[string]any{{"label": "Only"}}}, "id", issueID)).Want(http.StatusBadRequest)
++	testutil.Call(t, testHandler.CreateIssueDecision, decisionRequest("POST", "/api/issues/"+issueID+"/decisions",
++		map[string]any{"question": "Two recommended?", "options": []map[string]any{{"label": "A", "recommended": true}, {"label": "B", "recommended": true}}}, "id", issueID)).Want(http.StatusBadRequest)
++
++	// An agent may ask but not answer.
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	taskID := runningTask(t, agentID, issueID, "todo")
++	ask := decisionRequest("POST", "/api/issues/"+issueID+"/decisions",
++		map[string]any{"question": "Polar or Dodo?", "options": []map[string]any{{"label": "Polar"}, {"label": "Dodo"}}}, "id", issueID)
++	ask.Header.Set("X-Actor-Source", "task_token")
++	ask.Header.Set("X-Agent-ID", agentID)
++	ask.Header.Set("X-Task-ID", taskID)
++	var d DecisionResponse
++	testutil.Call(t, testHandler.CreateIssueDecision, ask).Want(http.StatusCreated).JSON(&d)
++	if d.AskedByType != "agent" {
++		t.Fatalf("asked_by_type = %s", d.AskedByType)
++	}
++	answer := decisionRequest("POST", "/api/issues/"+issueID+"/decisions/"+d.ID+"/answer",
++		map[string]any{"option_id": d.Options[0].ID}, "id", issueID, "decisionId", d.ID)
++	answer.Header.Set("X-Actor-Source", "task_token")
++	answer.Header.Set("X-Agent-ID", agentID)
++	answer.Header.Set("X-Task-ID", taskID)
++	testutil.Call(t, testHandler.AnswerIssueDecision, answer).Want(http.StatusForbidden)
++}
+diff --git a/server/internal/handler/workspace_delete_manifest_test.go b/server/internal/handler/workspace_delete_manifest_test.go
+index 362a7b7cf..671310cb9 100644
+--- a/server/internal/handler/workspace_delete_manifest_test.go
++++ b/server/internal/handler/workspace_delete_manifest_test.go
+@@ -121,6 +121,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
+ 	"goal_link":                          workspaceDelete,
+ 	"goal_value":                         workspaceDelete,
+ 	"project_workflow_rule":              workspaceDelete,
++	"issue_decision":                     workspaceDelete,
+ 	"quick_action":                       workspaceDelete,
+ 	"runtime_profile":                    workspaceDelete,
+ 	"schema_migrations":                  workspaceDeleteKeep,
+diff --git a/server/migrations/9007_vantt_issue_decision.down.sql b/server/migrations/9007_vantt_issue_decision.down.sql
+new file mode 100644
+index 000000000..aee8ef1d6
+--- /dev/null
++++ b/server/migrations/9007_vantt_issue_decision.down.sql
+@@ -0,0 +1 @@
++DROP TABLE IF EXISTS issue_decision;
+diff --git a/server/migrations/9007_vantt_issue_decision.up.sql b/server/migrations/9007_vantt_issue_decision.up.sql
+new file mode 100644
+index 000000000..5b9e50639
+--- /dev/null
++++ b/server/migrations/9007_vantt_issue_decision.up.sql
+@@ -0,0 +1,18 @@
++-- vantt decisions (patch decisions, F5): a question on an issue with options for
++-- a person to pick, one of them recommended. No foreign keys.
++CREATE TABLE IF NOT EXISTS issue_decision (
++    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    issue_id         UUID NOT NULL,
++    workspace_id     UUID NOT NULL,
++    question         TEXT NOT NULL,
++    options          JSONB NOT NULL DEFAULT '[]',
++    status           TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'answered', 'cancelled')),
++    due_date         DATE,
++    asked_by_type    TEXT NOT NULL,
++    asked_by_id      UUID,
++    answer_option_id TEXT,
++    answer_note      TEXT NOT NULL DEFAULT '',
++    answered_by      UUID,
++    answered_at      TIMESTAMPTZ,
++    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
++);
+diff --git a/server/migrations/9008_vantt_issue_decision_issue_index.down.sql b/server/migrations/9008_vantt_issue_decision_issue_index.down.sql
+new file mode 100644
+index 000000000..f3d3be061
+--- /dev/null
++++ b/server/migrations/9008_vantt_issue_decision_issue_index.down.sql
+@@ -0,0 +1 @@
++DROP INDEX CONCURRENTLY IF EXISTS idx_issue_decision_issue;
+diff --git a/server/migrations/9008_vantt_issue_decision_issue_index.up.sql b/server/migrations/9008_vantt_issue_decision_issue_index.up.sql
+new file mode 100644
+index 000000000..b67521801
+--- /dev/null
++++ b/server/migrations/9008_vantt_issue_decision_issue_index.up.sql
+@@ -0,0 +1 @@
++CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_issue_decision_issue ON issue_decision (workspace_id, issue_id, created_at);
+diff --git a/server/pkg/db/generated/issue_decision.sql.go b/server/pkg/db/generated/issue_decision.sql.go
+new file mode 100644
+index 000000000..271af512c
+--- /dev/null
++++ b/server/pkg/db/generated/issue_decision.sql.go
+@@ -0,0 +1,259 @@
++// Code generated by sqlc. DO NOT EDIT.
++// versions:
++//   sqlc v1.31.1
++// source: issue_decision.sql
++
++package db
++
++import (
++	"context"
++
++	"github.com/jackc/pgx/v5/pgtype"
++)
++
++const answerIssueDecision = `-- name: AnswerIssueDecision :one
++UPDATE issue_decision SET
++    status = 'answered',
++    answer_option_id = $3,
++    answer_note = $4,
++    answered_by = $5,
++    answered_at = now()
++WHERE id = $1 AND workspace_id = $2 AND status = 'open'
++RETURNING id, issue_id, workspace_id, question, options, status, due_date, asked_by_type, asked_by_id, answer_option_id, answer_note, answered_by, answered_at, created_at
++`
++
++type AnswerIssueDecisionParams struct {
++	ID             pgtype.UUID `json:"id"`
++	WorkspaceID    pgtype.UUID `json:"workspace_id"`
++	AnswerOptionID pgtype.Text `json:"answer_option_id"`
++	AnswerNote     string      `json:"answer_note"`
++	AnsweredBy     pgtype.UUID `json:"answered_by"`
++}
++
++func (q *Queries) AnswerIssueDecision(ctx context.Context, arg AnswerIssueDecisionParams) (IssueDecision, error) {
++	row := q.db.QueryRow(ctx, answerIssueDecision,
++		arg.ID,
++		arg.WorkspaceID,
++		arg.AnswerOptionID,
++		arg.AnswerNote,
++		arg.AnsweredBy,
++	)
++	var i IssueDecision
++	err := row.Scan(
++		&i.ID,
++		&i.IssueID,
++		&i.WorkspaceID,
++		&i.Question,
++		&i.Options,
++		&i.Status,
++		&i.DueDate,
++		&i.AskedByType,
++		&i.AskedByID,
++		&i.AnswerOptionID,
++		&i.AnswerNote,
++		&i.AnsweredBy,
++		&i.AnsweredAt,
++		&i.CreatedAt,
++	)
++	return i, err
++}
++
++const cancelIssueDecision = `-- name: CancelIssueDecision :one
++UPDATE issue_decision SET status = 'cancelled'
++WHERE id = $1 AND workspace_id = $2 AND status = 'open'
++RETURNING id, issue_id, workspace_id, question, options, status, due_date, asked_by_type, asked_by_id, answer_option_id, answer_note, answered_by, answered_at, created_at
++`
++
++type CancelIssueDecisionParams struct {
++	ID          pgtype.UUID `json:"id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) CancelIssueDecision(ctx context.Context, arg CancelIssueDecisionParams) (IssueDecision, error) {
++	row := q.db.QueryRow(ctx, cancelIssueDecision, arg.ID, arg.WorkspaceID)
++	var i IssueDecision
++	err := row.Scan(
++		&i.ID,
++		&i.IssueID,
++		&i.WorkspaceID,
++		&i.Question,
++		&i.Options,
++		&i.Status,
++		&i.DueDate,
++		&i.AskedByType,
++		&i.AskedByID,
++		&i.AnswerOptionID,
++		&i.AnswerNote,
++		&i.AnsweredBy,
++		&i.AnsweredAt,
++		&i.CreatedAt,
++	)
++	return i, err
++}
++
++const createIssueDecision = `-- name: CreateIssueDecision :one
++
++INSERT INTO issue_decision (issue_id, workspace_id, question, options, due_date, asked_by_type, asked_by_id)
++VALUES ($1, $2, $3, $4, $5, $6, $7)
++RETURNING id, issue_id, workspace_id, question, options, status, due_date, asked_by_type, asked_by_id, answer_option_id, answer_note, answered_by, answered_at, created_at
++`
++
++type CreateIssueDecisionParams struct {
++	IssueID     pgtype.UUID `json:"issue_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++	Question    string      `json:"question"`
++	Options     []byte      `json:"options"`
++	DueDate     pgtype.Date `json:"due_date"`
++	AskedByType string      `json:"asked_by_type"`
++	AskedByID   pgtype.UUID `json:"asked_by_id"`
++}
++
++// vantt decisions (patch decisions, F5).
++func (q *Queries) CreateIssueDecision(ctx context.Context, arg CreateIssueDecisionParams) (IssueDecision, error) {
++	row := q.db.QueryRow(ctx, createIssueDecision,
++		arg.IssueID,
++		arg.WorkspaceID,
++		arg.Question,
++		arg.Options,
++		arg.DueDate,
++		arg.AskedByType,
++		arg.AskedByID,
++	)
++	var i IssueDecision
++	err := row.Scan(
++		&i.ID,
++		&i.IssueID,
++		&i.WorkspaceID,
++		&i.Question,
++		&i.Options,
++		&i.Status,
++		&i.DueDate,
++		&i.AskedByType,
++		&i.AskedByID,
++		&i.AnswerOptionID,
++		&i.AnswerNote,
++		&i.AnsweredBy,
++		&i.AnsweredAt,
++		&i.CreatedAt,
++	)
++	return i, err
++}
++
++const getIssueDecision = `-- name: GetIssueDecision :one
++SELECT id, issue_id, workspace_id, question, options, status, due_date, asked_by_type, asked_by_id, answer_option_id, answer_note, answered_by, answered_at, created_at FROM issue_decision
++WHERE id = $1 AND workspace_id = $2
++`
++
++type GetIssueDecisionParams struct {
++	ID          pgtype.UUID `json:"id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) GetIssueDecision(ctx context.Context, arg GetIssueDecisionParams) (IssueDecision, error) {
++	row := q.db.QueryRow(ctx, getIssueDecision, arg.ID, arg.WorkspaceID)
++	var i IssueDecision
++	err := row.Scan(
++		&i.ID,
++		&i.IssueID,
++		&i.WorkspaceID,
++		&i.Question,
++		&i.Options,
++		&i.Status,
++		&i.DueDate,
++		&i.AskedByType,
++		&i.AskedByID,
++		&i.AnswerOptionID,
++		&i.AnswerNote,
++		&i.AnsweredBy,
++		&i.AnsweredAt,
++		&i.CreatedAt,
++	)
++	return i, err
++}
++
++const listIssueDecisions = `-- name: ListIssueDecisions :many
++SELECT id, issue_id, workspace_id, question, options, status, due_date, asked_by_type, asked_by_id, answer_option_id, answer_note, answered_by, answered_at, created_at FROM issue_decision
++WHERE issue_id = $1 AND workspace_id = $2
++ORDER BY created_at ASC
++`
++
++type ListIssueDecisionsParams struct {
++	IssueID     pgtype.UUID `json:"issue_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) ListIssueDecisions(ctx context.Context, arg ListIssueDecisionsParams) ([]IssueDecision, error) {
++	rows, err := q.db.Query(ctx, listIssueDecisions, arg.IssueID, arg.WorkspaceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	items := []IssueDecision{}
++	for rows.Next() {
++		var i IssueDecision
++		if err := rows.Scan(
++			&i.ID,
++			&i.IssueID,
++			&i.WorkspaceID,
++			&i.Question,
++			&i.Options,
++			&i.Status,
++			&i.DueDate,
++			&i.AskedByType,
++			&i.AskedByID,
++			&i.AnswerOptionID,
++			&i.AnswerNote,
++			&i.AnsweredBy,
++			&i.AnsweredAt,
++			&i.CreatedAt,
++		); err != nil {
++			return nil, err
++		}
++		items = append(items, i)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	return items, nil
++}
++
++const listOpenIssueDecisions = `-- name: ListOpenIssueDecisions :many
++SELECT id, issue_id, workspace_id, question, options, status, due_date, asked_by_type, asked_by_id, answer_option_id, answer_note, answered_by, answered_at, created_at FROM issue_decision
++WHERE workspace_id = $1 AND status = 'open'
++ORDER BY created_at ASC
++`
++
++func (q *Queries) ListOpenIssueDecisions(ctx context.Context, workspaceID pgtype.UUID) ([]IssueDecision, error) {
++	rows, err := q.db.Query(ctx, listOpenIssueDecisions, workspaceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	items := []IssueDecision{}
++	for rows.Next() {
++		var i IssueDecision
++		if err := rows.Scan(
++			&i.ID,
++			&i.IssueID,
++			&i.WorkspaceID,
++			&i.Question,
++			&i.Options,
++			&i.Status,
++			&i.DueDate,
++			&i.AskedByType,
++			&i.AskedByID,
++			&i.AnswerOptionID,
++			&i.AnswerNote,
++			&i.AnsweredBy,
++			&i.AnsweredAt,
++			&i.CreatedAt,
++		); err != nil {
++			return nil, err
++		}
++		items = append(items, i)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	return items, nil
++}
+diff --git a/server/pkg/db/generated/models.go b/server/pkg/db/generated/models.go
+index 8c6825841..dde447a83 100644
+--- a/server/pkg/db/generated/models.go
++++ b/server/pkg/db/generated/models.go
+@@ -919,6 +919,23 @@ type IssueChildEvent struct {
+ 	ProcessedAt  pgtype.Timestamptz `json:"processed_at"`
+ }
+ 
++type IssueDecision struct {
++	ID             pgtype.UUID        `json:"id"`
++	IssueID        pgtype.UUID        `json:"issue_id"`
++	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
++	Question       string             `json:"question"`
++	Options        []byte             `json:"options"`
++	Status         string             `json:"status"`
++	DueDate        pgtype.Date        `json:"due_date"`
++	AskedByType    string             `json:"asked_by_type"`
++	AskedByID      pgtype.UUID        `json:"asked_by_id"`
++	AnswerOptionID pgtype.Text        `json:"answer_option_id"`
++	AnswerNote     string             `json:"answer_note"`
++	AnsweredBy     pgtype.UUID        `json:"answered_by"`
++	AnsweredAt     pgtype.Timestamptz `json:"answered_at"`
++	CreatedAt      pgtype.Timestamptz `json:"created_at"`
++}
++
+ type IssueDependency struct {
+ 	ID               pgtype.UUID `json:"id"`
+ 	IssueID          pgtype.UUID `json:"issue_id"`
+diff --git a/server/pkg/db/generated/workspace_delete.sql.go b/server/pkg/db/generated/workspace_delete.sql.go
+index ad9b77eaa..02e739038 100644
+--- a/server/pkg/db/generated/workspace_delete.sql.go
++++ b/server/pkg/db/generated/workspace_delete.sql.go
+@@ -425,6 +425,9 @@ deleted_goals AS (
+ deleted_project_workflow_rules AS (
+     DELETE FROM project_workflow_rule WHERE project_workflow_rule.workspace_id = $1
+ ),
++deleted_issue_decisions AS (
++    DELETE FROM issue_decision WHERE issue_decision.workspace_id = $1
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+diff --git a/server/pkg/db/queries/issue_decision.sql b/server/pkg/db/queries/issue_decision.sql
+new file mode 100644
+index 000000000..a7e6e066f
+--- /dev/null
++++ b/server/pkg/db/queries/issue_decision.sql
+@@ -0,0 +1,35 @@
++-- vantt decisions (patch decisions, F5).
++
++-- name: CreateIssueDecision :one
++INSERT INTO issue_decision (issue_id, workspace_id, question, options, due_date, asked_by_type, asked_by_id)
++VALUES ($1, $2, $3, $4, $5, $6, $7)
++RETURNING *;
++
++-- name: ListIssueDecisions :many
++SELECT * FROM issue_decision
++WHERE issue_id = $1 AND workspace_id = $2
++ORDER BY created_at ASC;
++
++-- name: ListOpenIssueDecisions :many
++SELECT * FROM issue_decision
++WHERE workspace_id = $1 AND status = 'open'
++ORDER BY created_at ASC;
++
++-- name: GetIssueDecision :one
++SELECT * FROM issue_decision
++WHERE id = $1 AND workspace_id = $2;
++
++-- name: AnswerIssueDecision :one
++UPDATE issue_decision SET
++    status = 'answered',
++    answer_option_id = $3,
++    answer_note = $4,
++    answered_by = $5,
++    answered_at = now()
++WHERE id = $1 AND workspace_id = $2 AND status = 'open'
++RETURNING *;
++
++-- name: CancelIssueDecision :one
++UPDATE issue_decision SET status = 'cancelled'
++WHERE id = $1 AND workspace_id = $2 AND status = 'open'
++RETURNING *;
+diff --git a/server/pkg/db/queries/workspace_delete.sql b/server/pkg/db/queries/workspace_delete.sql
+index 59555175e..732a25c93 100644
+--- a/server/pkg/db/queries/workspace_delete.sql
++++ b/server/pkg/db/queries/workspace_delete.sql
+@@ -438,6 +438,9 @@ deleted_goals AS (
+ deleted_project_workflow_rules AS (
+     DELETE FROM project_workflow_rule WHERE project_workflow_rule.workspace_id = $1
+ ),
++deleted_issue_decisions AS (
++    DELETE FROM issue_decision WHERE issue_decision.workspace_id = $1
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+-- 
+2.53.0
+
