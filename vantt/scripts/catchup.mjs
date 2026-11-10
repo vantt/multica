@@ -15,7 +15,7 @@
 //
 // Exit codes: 0 ok, 2 usage, 3 patch conflict, 5 patch test failed, 7 other error.
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -153,16 +153,17 @@ function main() {
 
   const from = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = `vantt/${tag}`;
-  // Fork files come from the current checkout (main), copied before switching.
+  // Fork files (tracked on the current branch, matching FORK_FILE) are copied before switching.
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'vantt-fork-'));
-  for (const rel of FORK_PATHS) if (existsSync(path.join(ROOT, rel))) cpSync(path.join(ROOT, rel), path.join(tmp, rel), { recursive: true });
+  const forkFiles = git(['ls-files', '--', ...FORK_PATHS]).split('\n').filter((f) => f && FORK_FILE.test(f));
+  for (const f of forkFiles) { mkdirSync(path.dirname(path.join(tmp, f)), { recursive: true }); cpSync(path.join(ROOT, f), path.join(tmp, f)); }
 
   log(`branch ${branch} from ${tag}`);
   git(['checkout', '--quiet', '-B', branch, tag]);
   // Upstream workflows never run on the fork's release branch; only vantt-* ones.
   for (const f of git(['ls-files', '.github/workflows']).split('\n').filter(Boolean)) git(['rm', '--quiet', f]);
-  for (const rel of FORK_PATHS) if (existsSync(path.join(tmp, rel))) cpSync(path.join(tmp, rel), path.join(ROOT, rel), { recursive: true });
-  for (const f of git(['ls-files', '--others', '--exclude-standard']).split('\n').filter(Boolean)) if (FORK_FILE.test(f)) git(['add', f]);
+  for (const f of forkFiles) { mkdirSync(path.dirname(path.join(ROOT, f)), { recursive: true }); cpSync(path.join(tmp, f), path.join(ROOT, f)); }
+  if (forkFiles.length) git(['add', '--', ...forkFiles]);
   git(['commit', '--quiet', '--allow-empty', '-m', 'chore(vantt): fork maintenance files; drop upstream workflows']);
   rmSync(tmp, { recursive: true, force: true });
 
