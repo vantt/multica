@@ -1705,6 +1705,28 @@
           "waiting": "返答待ち"
         }
       }
+    },
+    "approval": {
+      "prs_label": "プルリクエスト",
+      "approve_on_github": "GitHub で承認",
+      "pr_then_approve": "GitHub で自分のアカウントから PR を承認してから、ここで承認してください。",
+      "title": "あなたの承認待ち",
+      "gate_note": "エージェントはこの課題をこのステップから移動できません。",
+      "approve": "承認",
+      "send_back": "差し戻し",
+      "moves_to": "承認すると {{status}} に移動します",
+      "reason_label": "何を変更する必要がありますか？",
+      "send_back_to": "{{status}} に差し戻す",
+      "cancel": "キャンセル"
+    },
+    "rules": {
+      "label": "タイプ別",
+      "none": "すべてのタイプで同じ",
+      "help": "このプロパティがいずれかの値の課題は別のワークフローに従います。それ以外はプロジェクトのワークフローに従います。",
+      "choose_by": "ワークフローの選択基準",
+      "project_default": "プロジェクトのワークフロー",
+      "cancel": "キャンセル",
+      "save": "保存"
     }
   },
   "hover_card": {

@@ -82,6 +82,7 @@ import {
 } from "@multica/core/issues/mutations";
 import { useAttachLabelToIssue } from "@multica/core/labels";
 import { propertyListOptions } from "@multica/core/properties";
+import { ruleProperties, workflowRulesOptions } from "@multica/core/workflow-rules"; // vantt workflow-by-type
 import {
   ApiError,
   DuplicateIssueErrorBodySchema,
@@ -349,6 +350,9 @@ export function ManualCreatePanel({
   const queryClient = useQueryClient();
   const { categoryOf: draftStatusCategory, colorOf, iconOf } = useIssueStatuses(wsId);
   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId));
+  // vantt workflow-by-type: the property the project's rules read (Type) is always offered.
+  const { data: createRules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
+  const pinnedProperties = ruleProperties(createRules);
   const { data: parentIssue } = useQuery({
     ...issueDetailOptions(wsId, parentIssueId ?? ""),
     enabled: !!parentIssueId,
@@ -1183,7 +1187,8 @@ export function ManualCreatePanel({
                 .filter(
                   (property) =>
                     Object.prototype.hasOwnProperty.call(propertyValues, property.id) ||
-                    customPropertyPickerId === property.id,
+                    customPropertyPickerId === property.id ||
+                    (!property.archived && pinnedProperties.has(property.id)),
                 )
                 .map((property) => {
                   const value = propertyValues[property.id];
