@@ -12,6 +12,7 @@ import { Textarea } from "@multica/ui/components/ui/textarea";
 import { useStatusLabel } from "../issues/utils/status-label";
 import { useT } from "../i18n";
 import { stepHandlerActor } from "./step-handler";
+import { ApprovalPullRequests } from "./approval-prs"; // vantt approval-pr (D5b)
 
 /** Whether the viewer is the person a workflow step hands the issue to. */
 export function stepWaitsOnViewer(
@@ -81,6 +82,7 @@ export function ApprovalPanel({
         <span className="text-caption text-amber-800 dark:text-amber-300">{labelOf(issue.status)}</span>
       </div>
       <p className="text-caption text-amber-900 dark:text-amber-200">{t(($) => $.workflows.approval.gate_note)}</p>
+      <ApprovalPullRequests issue={issue} />
 
       {!sendingBack ? (
         <div className="flex flex-wrap items-center gap-2">
