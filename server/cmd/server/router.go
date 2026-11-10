@@ -2236,6 +2236,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Saved issue views (MUL-4796).
 			r.Get("/api/issue-view-preferences", h.GetIssueViewPreference)
 			r.Put("/api/issue-view-preferences", h.PutIssueViewPreference)
+			// vantt goals (patch goals, F2).
+			r.Route("/api/goals", func(r chi.Router) {
+				r.Get("/", h.ListGoals)
+				r.Post("/", h.CreateGoal)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetGoal)
+					r.Patch("/", h.UpdateGoal)
+					r.Delete("/", h.DeleteGoal)
+					r.Post("/values", h.AddGoalValue)
+					r.Put("/links", h.SetGoalLinks)
+				})
+			})
+
 			r.Route("/api/issue-views", func(r chi.Router) {
 				r.Get("/", h.ListIssueViews)
 				r.Post("/", h.CreateIssueView)
