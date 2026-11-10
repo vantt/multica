@@ -10,10 +10,11 @@ endpoint and the web settings footer, using the build args the images already ge
       NEXT_PUBLIC_APP_VERSION in the web build; both display-only (no semver checks). CI passes
       `v<tag>-vantt.N` to both, so **F0 needs no patch**.
 - [x] fgOPC `stack/env.example`: `MULTICA_BACKEND_IMAGE`, `MULTICA_WEB_IMAGE`, `MULTICA_IMAGE_TAG`.
-- [ ] Switch the owner instance (backup taken: ~/multica-spike/backups/pre-fork-20261110-151334.sql.gz) (fg-server, workspace opc-studio and others) to the fork
+- [x] Switch the owner instance (backup taken: ~/multica-spike/backups/pre-fork-20261110-151334.sql.gz) (fg-server, workspace opc-studio and others) to the fork
       images; back up the database first (`pg_dump`), note the old tag for rollback.
-- [ ] Smoke: login, list issues, run one agent task, `opc.mjs client plan` → 0 changes for
-      every client.
+- [x] Smoke (2026-11-10, v0.7.1-vantt.2): web 200, health ok, server_version v0.7.1-vantt.2,
+      CLI ok, `opc.mjs client plan` 0 changes (opc-studio, zalopay-smex), no backend errors.
+      Rollback: `~/multica-spike/.env.bak-pre-fork` + `compose.sh up -d backend frontend`.
 
 ## Done when
 Owner instance runs `v0.7.1-vantt.N`, everything behaves as before, version shows the fork.
