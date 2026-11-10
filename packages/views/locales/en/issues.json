@@ -1809,5 +1809,13 @@
     "status_bar": "Children by status: {{summary}}",
     "days": "{{count}}d",
     "days_title": "{{count}} days in {{status}}"
+  },
+  "board_lanes": {
+    "todo": "To do",
+    "in_progress": "In progress",
+    "awaiting_approval": "Awaiting approval",
+    "done": "Done",
+    "gate_hint": "Only the approver moves cards out of this column",
+    "drop_blocked": "This issue's workflow has no step in that column"
   }
 }
