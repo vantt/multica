@@ -51,9 +51,13 @@ owner) — without numbers; we add target/current/unit/direction/due.
 ## The repo is the source of truth (owner, 2026-11-10)
 Each project keeps goals, portfolio, plans and progress in its own git repo
 (`plans/goals.md`); Multica draws them. Two-way, repo wins:
-- `goal.source_ref` (e.g. `plans/goals.md#G1`) and `goal.pending` (edited in the UI, not yet
+- `goal.source_ref` (e.g. `vantt/app:plans/goals.md#G1`; older refs without the repo still read) and `goal.pending` (edited in the UI, not yet
   written back); `goal_value.synced` (false when a person entered it in the UI).
-- An agent (the PM) may create/update goals that carry `source_ref`, clear `pending`, add
+- A goal lives in a repo when it carries `source_ref`, or its linked projects all use one
+  GitHub repo (several projects may share a repo). Company goals, goals of projects without a
+  repo or of several repos live in Multica only (owner decision 2026-11-10).
+- An agent (the PM) may create/update goals that live in a repo (adopting a UI goal by
+  writing its `source_ref`), clear `pending`, add
   values with `recorded_at` (the repo row's date) and `POST /values/synced`. A person's
   edit or value on a repo goal sets `pending` / `synced=false`. A value sent with `recorded_at` is a
   mirror of a repo row (keeps the date, `synced`); any writer may send `pending: false` (the owner

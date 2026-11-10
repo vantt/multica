@@ -1,7 +1,7 @@
-From 6d16b71359b63c6b7fc91743fa072a0da89f1251 Mon Sep 17 00:00:00 2001
+From 65d1542f759359951ef164ca6971d0d217d3b38c Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:22:47 +0700
-Subject: [PATCH 03/11] feat(goals): goals with a number, a deadline, history
+Subject: [PATCH 03/15] feat(goals): goals with a number, a deadline, history
  and linked work
 
 Tables goal, goal_value, goal_link (add-only, no foreign keys). API under
@@ -14,8 +14,8 @@ numbers, needed and actual pace per week.
 Patch-Id: goals
 ---
  server/cmd/server/router.go                   |  14 +
- server/internal/handler/vantt_goal.go         | 691 ++++++++++++++++++
- server/internal/handler/vantt_goal_test.go    | 210 ++++++
+ server/internal/handler/vantt_goal.go         | 737 ++++++++++++++++++
+ server/internal/handler/vantt_goal_test.go    | 269 +++++++
  .../handler/workspace_delete_manifest_test.go |   3 +
  server/migrations/9001_vantt_goal.down.sql    |   3 +
  server/migrations/9001_vantt_goal.up.sql      |  49 ++
@@ -28,9 +28,9 @@ Patch-Id: goals
  server/pkg/db/generated/goal.sql.go           | 522 +++++++++++++
  server/pkg/db/generated/models.go             |  44 ++
  .../pkg/db/generated/workspace_delete.sql.go  |   9 +
- server/pkg/db/queries/goal.sql                |  84 +++
+ server/pkg/db/queries/goal.sql                |  84 ++
  server/pkg/db/queries/workspace_delete.sql    |   9 +
- 17 files changed, 1644 insertions(+)
+ 17 files changed, 1749 insertions(+)
  create mode 100644 server/internal/handler/vantt_goal.go
  create mode 100644 server/internal/handler/vantt_goal_test.go
  create mode 100644 server/migrations/9001_vantt_goal.down.sql
@@ -71,10 +71,10 @@ index 8b9bd7896..49a0f656b 100644
  				r.Post("/", h.CreateIssueView)
 diff --git a/server/internal/handler/vantt_goal.go b/server/internal/handler/vantt_goal.go
 new file mode 100644
-index 000000000..60d9dd0c0
+index 000000000..b769b18cb
 --- /dev/null
 +++ b/server/internal/handler/vantt_goal.go
-@@ -0,0 +1,691 @@
+@@ -0,0 +1,737 @@
 +package handler
 +
 +// vantt goals (patch goals, F2): results with a number and a deadline that work
@@ -456,6 +456,52 @@ index 000000000..60d9dd0c0
 +// goalWriter checks who may write a goal and reports whether the caller is an
 +// agent. Owners/admins always; an agent (the PM mirroring the repo) when the
 +// goal comes from the repo (source_ref).
++// goalRepoHome: a goal lives in a project repo when it came from one (source_ref) or
++// its linked projects all use one GitHub repo (several projects may share a repo,
++// e.g. a product, its architecture and its PM project). The PM agent may then write
++// it there. Company goals, goals of projects without a repo, or of several repos,
++// live in Multica only and stay with people.
++func (h *Handler) goalRepoHome(r *http.Request, wsUUID pgtype.UUID, g db.Goal) bool {
++	if g.SourceRef.Valid {
++		return true
++	}
++	links, err := h.goalLinksByGoal(r, wsUUID)
++	if err != nil {
++		return false
++	}
++	repos := map[string]bool{}
++	for _, l := range links[uuidToString(g.ID)] {
++		if l.TargetType != "project" {
++			continue
++		}
++		id, err := util.ParseUUID(l.TargetID)
++		if err != nil {
++			return false
++		}
++		res, err := h.Queries.ListProjectResources(r.Context(), id)
++		if err != nil {
++			return false
++		}
++		found := false
++		for _, pr := range res {
++			if pr.ResourceType != "github_repo" {
++				continue
++			}
++			var ref struct {
++				URL string `json:"url"`
++			}
++			if json.Unmarshal(pr.ResourceRef, &ref) == nil && ref.URL != "" {
++				repos[strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(ref.URL), "/"), ".git")] = true
++				found = true
++			}
++		}
++		if !found {
++			return false
++		}
++	}
++	return len(repos) == 1
++}
++
 +func (h *Handler) goalWriter(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, fromRepo bool) (agent bool, ok bool) {
 +	userID, ok := requireUserID(w, r)
 +	if !ok {
@@ -464,7 +510,7 @@ index 000000000..60d9dd0c0
 +	actorType, _ := h.resolveActor(r, userID, uuidToString(wsUUID))
 +	if actorType == "agent" {
 +		if !fromRepo {
-+			writeError(w, http.StatusForbidden, "agents only write goals that come from the project repo (source_ref)")
++			writeError(w, http.StatusForbidden, "agents only write goals that live in a project repo (source_ref, or linked to one project)")
 +			return true, false
 +		}
 +		return true, true
@@ -535,7 +581,7 @@ index 000000000..60d9dd0c0
 +	if !ok {
 +		return
 +	}
-+	agent, ok := h.goalWriter(w, r, wsUUID, g.SourceRef.Valid)
++	agent, ok := h.goalWriter(w, r, wsUUID, h.goalRepoHome(r, wsUUID, g))
 +	if !ok {
 +		return
 +	}
@@ -715,7 +761,7 @@ index 000000000..60d9dd0c0
 +	if !ok {
 +		return
 +	}
-+	if _, ok := h.goalWriter(w, r, wsUUID, g.SourceRef.Valid); !ok {
++	if _, ok := h.goalWriter(w, r, wsUUID, h.goalRepoHome(r, wsUUID, g)); !ok {
 +		return
 +	}
 +	var req GoalLinksRequest
@@ -768,10 +814,10 @@ index 000000000..60d9dd0c0
 +}
 diff --git a/server/internal/handler/vantt_goal_test.go b/server/internal/handler/vantt_goal_test.go
 new file mode 100644
-index 000000000..bc6ae2a49
+index 000000000..8df11e3d4
 --- /dev/null
 +++ b/server/internal/handler/vantt_goal_test.go
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,269 @@
 +package handler
 +
 +import (
@@ -964,6 +1010,65 @@ index 000000000..bc6ae2a49
 +	}
 +	testutil.Call(t, testHandler.MarkGoalValuesSynced, asAgent(withURLParam(goalRequest("POST", "/api/goals/"+g.ID+"/values/synced",
 +		map[string]any{"ids": []string{detail.History[1].ID}}), "id", g.ID))).Want(http.StatusNoContent)
++}
++
++// A goal a person creates in Multica lives in a repo once it is linked to exactly
++// one project: the PM may then adopt it (write source_ref). Company goals, or goals
++// of several projects, stay with people.
++func TestGoalRepoHomeByProjectLink(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	issueID := dbfx.Issue(t, "pm adopt", testutil.Cols{"status": "todo"})
++	taskID := runningTask(t, agentID, issueID, "todo")
++	asAgent := func(req *http.Request) *http.Request {
++		req.Header.Set("X-Actor-Source", "task_token")
++		req.Header.Set("X-Agent-ID", agentID)
++		req.Header.Set("X-Task-ID", taskID)
++		return req
++	}
++	p1 := dbfx.Project(t, "goal home one")
++	p2 := dbfx.Project(t, "goal home two")
++	p3 := dbfx.Project(t, "goal home three, same repo as one")
++	repo := func(project, url string) {
++		dbfx.Exec(t, `INSERT INTO project_resource (project_id, workspace_id, resource_type, resource_ref, label, position)
++			VALUES ($1, $2, 'github_repo', jsonb_build_object('url', $3::text), 'repo', 0)`, project, testWorkspaceID, url)
++	}
++	repo(p1, "https://github.com/vantt/app")
++	repo(p2, "https://github.com/vantt/other")
++	repo(p3, "https://github.com/vantt/app.git")
++	g := createGoalForTest(t, map[string]any{"title": "Company goal", "target_value": 1000})
++	adopt := func() *testutil.Response {
++		return testutil.Call(t, testHandler.UpdateGoal, asAgent(withURLParam(goalRequest("PATCH", "/api/goals/"+g.ID,
++			map[string]any{"source_ref": "vantt/app:plans/goals.md#G2", "pending": false}), "id", g.ID)))
++	}
++	link := func(ids ...string) {
++		links := []map[string]any{}
++		for _, id := range ids {
++			links = append(links, map[string]any{"target_type": "project", "target_id": id})
++		}
++		testutil.Call(t, testHandler.SetGoalLinks, withURLParam(goalRequest("PUT", "/api/goals/"+g.ID+"/links", map[string]any{"links": links}), "id", g.ID)).Want(http.StatusOK)
++	}
++	adopt().Want(http.StatusForbidden) // no project: company goal
++	link(p1, p2)
++	adopt().Want(http.StatusForbidden) // two repos
++	link(p1, p3)
++	adopt().Want(http.StatusOK) // two projects, one repo
++}
++
++func TestGoalWithoutRepoStaysWithPeople(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	issueID := dbfx.Issue(t, "pm no repo", testutil.Cols{"status": "todo"})
++	taskID := runningTask(t, agentID, issueID, "todo")
++	p := dbfx.Project(t, "no repo project")
++	g := createGoalForTest(t, map[string]any{"title": "No repo", "target_value": 3})
++	testutil.Call(t, testHandler.SetGoalLinks, withURLParam(goalRequest("PUT", "/api/goals/"+g.ID+"/links",
++		map[string]any{"links": []map[string]any{{"target_type": "project", "target_id": p}}}), "id", g.ID)).Want(http.StatusOK)
++	req := withURLParam(goalRequest("PATCH", "/api/goals/"+g.ID, map[string]any{"source_ref": "x:plans/goals.md#G1"}), "id", g.ID)
++	req.Header.Set("X-Actor-Source", "task_token")
++	req.Header.Set("X-Agent-ID", agentID)
++	req.Header.Set("X-Task-ID", taskID)
++	testutil.Call(t, testHandler.UpdateGoal, req).Want(http.StatusForbidden)
 +}
 +
 +// The owner running the repo sync by hand mirrors exactly like the PM.
