@@ -85,3 +85,23 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["packages/core/workflow-rules/index.ts", "packages/views/issues/utils/workflow-columns.ts", "packages/views/issues/utils/workflow-columns.test.ts"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run workflow-rules) && (cd packages/views && npx vitest run issues/utils workflows)"
+
+[[patches]]
+id = "decisions"
+name = "feat(decisions): structured decisions on issues"
+patch_file = "0008-decisions.patch"
+metadata_file = "0008-decisions.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/handler/vantt_decision.go", "server/cmd/server/router.go", "server/pkg/db/queries/workspace_delete.sql"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Decision|WorkspaceDeletion' -count=1"
+
+[[patches]]
+id = "decisions-ui"
+name = "feat(decisions): decision panel on the issue page"
+patch_file = "0009-decisions-ui.patch"
+metadata_file = "0009-decisions-ui.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/workflows/decision-panel.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/core/decisions/index.ts", "packages/core/api/client.ts"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows locales"
