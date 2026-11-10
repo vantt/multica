@@ -82,6 +82,7 @@
     "quick_create_unconfirmed": "Création avec un agent non confirmée",
     "autopilot_paused": "Automatisation en pause",
     "children_done": "Sous-tâches terminées",
+    "decision_requested": "Décision attendue",
     "autopilot_quota_exceeded": "Limite d'exécutions d'automatisation atteinte"
   },
   "labels": {
