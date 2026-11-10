@@ -1,4 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import { defaultWorkflow, useIssueWorkflows, useProjectWorkflow } from "@multica/core/issue-workflows";
+import { mergeRuleWorkflows, workflowRulesOptions } from "@multica/core/workflow-rules";
 import type { IssueStatus, IssueWorkflow } from "@multica/core/types";
 
 /**
@@ -33,7 +35,10 @@ export function useColumnWorkflow(
 ): { workflow: IssueWorkflow | null } {
   const { workflows } = useIssueWorkflows(wsId);
   const projectWorkflow = useProjectWorkflow(wsId, projectId);
+  // vantt board-columns: a project whose rules send some Types to other
+  // workflows shows their steps too, so every issue has a column.
+  const { data: rules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
   if (hasStatusFilter) return { workflow: null };
-  if (projectId) return { workflow: projectWorkflow };
+  if (projectId) return { workflow: mergeRuleWorkflows(projectWorkflow, rules ?? [], workflows) };
   return { workflow: defaultWorkflow(workflows) };
 }
