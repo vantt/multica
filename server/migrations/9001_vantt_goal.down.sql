@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS goal_link;
+DROP TABLE IF EXISTS goal_value;
+DROP TABLE IF EXISTS goal;
