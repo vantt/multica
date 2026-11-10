@@ -2034,6 +2034,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
 				r.Get("/children", h.ListChildrenByParents)
+				r.Get("/decisions/open", h.ListOpenDecisions) // vantt decisions
 				r.Get("/status-since", h.ListIssueStatusSince) // vantt board-age
 				r.Get("/grouped", h.ListGroupedIssues)
 				r.Get("/", h.ListIssues)
@@ -2055,6 +2056,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
+					r.Get("/decisions", h.ListIssueDecisions) // vantt decisions
+					r.Post("/decisions", h.CreateIssueDecision)
+					r.Post("/decisions/{decisionId}/answer", h.AnswerIssueDecision)
+					r.Post("/decisions/{decisionId}/cancel", h.CancelIssueDecision)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
