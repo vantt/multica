@@ -165,3 +165,13 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["packages/views/workflows/approval-prs.tsx", "packages/views/workflows/approval-panel.tsx"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows locales"
+
+[[patches]]
+id = "type-first"
+name = "feat(issues): the property a project's workflow depends on is always shown"
+patch_file = "0016-type-first.patch"
+metadata_file = "0016-type-first.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/core/workflow-rules/index.ts", "packages/views/modals/create-issue.tsx", "packages/views/issues/components/issue-detail.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run workflow-rules) && (cd packages/views && npx vitest run modals issues/components/issue-detail)"
