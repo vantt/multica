@@ -1,0 +1,256 @@
+From f7603a225bd34cdf0ab4a8a86faf62f62b17ae95 Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:09:03 +0700
+Subject: [PATCH] feat(workflow): agents cannot move an issue out of a step a
+ person handles
+
+A step whose handler resolves to a member is an owner gate. An agent actor
+(task token) changing the status or the project of an issue in such a step
+gets 403 {code: owner_gate}; the batch endpoint skips the issue. Members are
+unaffected; agents still move issues into the gate.
+
+Patch-Id: owner-gates
+---
+ server/internal/handler/issue.go              |  11 ++
+ .../internal/handler/issue_workflow_entry.go  |  31 +++++
+ .../handler/vantt_owner_gates_test.go         | 113 ++++++++++++++++++
+ .../internal/issueworkflow/issueworkflow.go   |  25 ++++
+ 4 files changed, 180 insertions(+)
+ create mode 100644 server/internal/handler/vantt_owner_gates_test.go
+
+diff --git a/server/internal/handler/issue.go b/server/internal/handler/issue.go
+index 8229e8082..a4a91c999 100644
+--- a/server/internal/handler/issue.go
++++ b/server/internal/handler/issue.go
+@@ -4018,6 +4018,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
+ 	// A handoff assignee passes the same gate as a hand-picked one.
+ 	// An agent's run may only move the issue from the step it works on.
+ 	callerType, _ := h.resolveActor(r, userID, workspaceID)
++	if err := h.refuseAgentLeavingGate(r.Context(), prevIssue, params, callerType); err != nil {
++		if writeIssueWorkflowError(w, err) {
++			return
++		}
++		slog.Error("update issue: owner gate", append(logger.RequestAttrs(r), "error", err)...)
++		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
++		return
++	}
+ 	callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
+ 	handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
+ 	if err != nil {
+@@ -4856,6 +4864,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
+ 		// not list the batch status is skipped like the other per-item guards;
+ 		// entering a handoff step reassigns this issue to the step's handler.
+ 		callerType, _ := h.resolveActor(r, userID, workspaceID)
++		if h.refuseAgentLeavingGate(r.Context(), prevIssue, params, callerType) != nil {
++			continue
++		}
+ 		callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
+ 		handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, callerRun)
+ 		if err != nil {
+diff --git a/server/internal/handler/issue_workflow_entry.go b/server/internal/handler/issue_workflow_entry.go
+index 9c199cfbb..342747059 100644
+--- a/server/internal/handler/issue_workflow_entry.go
++++ b/server/internal/handler/issue_workflow_entry.go
+@@ -130,6 +130,15 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+ 		})
+ 		return true
+ 	}
++	var gate *issueworkflow.GateError
++	if errors.As(err, &gate) {
++		writeJSON(w, http.StatusForbidden, map[string]any{
++			"error":  gate.Error(),
++			"code":   "owner_gate",
++			"status": gate.Status,
++		})
++		return true
++	}
+ 	var moved *issueworkflow.StepMovedError
+ 	if errors.As(err, &moved) {
+ 		writeJSON(w, http.StatusConflict, map[string]any{
+@@ -143,6 +152,28 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+ 	return false
+ }
+ 
++// refuseAgentLeavingGate stops an agent from moving an issue out of a step a
++// person handles, by changing its status or its project. Members are not
++// affected (vantt owner-gates).
++func (h *Handler) refuseAgentLeavingGate(ctx context.Context, prev db.Issue, params db.UpdateIssueParams, callerType string) error {
++	if callerType != "agent" {
++		return nil
++	}
++	statusChanging := params.Status.Valid && params.Status.String != prev.Status
++	projectMoving := params.ProjectID != prev.ProjectID
++	if !statusChanging && !projectMoving {
++		return nil
++	}
++	def, project, err := issueworkflow.ForProject(ctx, h.Queries, prev.WorkspaceID, prev.ProjectID)
++	if err != nil {
++		return err
++	}
++	if issueworkflow.PersonGate(def, prev.Status, project, prev.CreatorType, prev.CreatorID) {
++		return &issueworkflow.GateError{Status: prev.Status}
++	}
++	return nil
++}
++
+ // agentRunOnIssue returns the calling agent's run when it works on this issue,
+ // nil for members and for runs on other issues. The task id is the
+ // server-trusted X-Task-ID resolveActor vouched for.
+diff --git a/server/internal/handler/vantt_owner_gates_test.go b/server/internal/handler/vantt_owner_gates_test.go
+new file mode 100644
+index 000000000..e772cc3fb
+--- /dev/null
++++ b/server/internal/handler/vantt_owner_gates_test.go
+@@ -0,0 +1,113 @@
++package handler
++
++import (
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++// vantt owner-gates: a step whose handler is a person is a gate. An agent may
++// not move the issue out of it, by status or by project; a member may.
++
++func ownerGateProject(t *testing.T, agentID string) string {
++	t.Helper()
++	projectID := deliveryProject(t, "Owner gate project "+workflowTestSuffix(), agentID)
++	setColumnHandoff(t, projectID, "in_review", map[string]any{
++		"handler": map[string]any{"type": "member", "id": testUserID}, "instructions": "Approve the PR.",
++	}).Want(http.StatusOK)
++	return projectID
++}
++
++func runningTask(t *testing.T, agentID, issueID, step string) string {
++	t.Helper()
++	var runtimeID string
++	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID)
++	return dbfx.Task(t, agentID, testutil.Cols{
++		"issue_id": issueID, "runtime_id": runtimeID, "status": "running", "started_at": time.Now(), "workflow_step": step,
++	})
++}
++
++func TestAgentCannotLeaveOwnerGate(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID := ownerGateProject(t, agentID)
++	issueID := dbfx.Issue(t, "gated", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	// A run of the agent on this issue, even one started for this very step.
++	taskID := runningTask(t, agentID, issueID, "in_review")
++
++	body := agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "done"}).Want(http.StatusForbidden).Map()
++	if body["code"] != "owner_gate" || body["status"] != "in_review" {
++		t.Fatalf("refusal = %v", body)
++	}
++	if status, _, _ := issueStatusAndAssignee(t, issueID); status != "in_review" {
++		t.Fatalf("status = %q, the refused change must not apply", status)
++	}
++
++	// Moving it to another project is leaving the gate too.
++	other := createWorkflowTestProject(t, "Owner gate other "+workflowTestSuffix())
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"project_id": other}).Want(http.StatusForbidden)
++
++	// Other fields still change.
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"title": "gated, noted"}).Want(http.StatusOK)
++
++	// A member moves it on.
++	updateIssueForTest(t, issueID, map[string]any{"status": "done"}).Want(http.StatusOK)
++	if status, _, _ := issueStatusAndAssignee(t, issueID); status != "done" {
++		t.Fatalf("status after the member's move = %q, want done", status)
++	}
++}
++
++// An agent with no run on the issue (a board sync on another issue, say) is
++// refused the same way.
++func TestAgentFromAnotherIssueCannotLeaveOwnerGate(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID := ownerGateProject(t, agentID)
++	gated := dbfx.Issue(t, "gated elsewhere", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	elsewhere := dbfx.Issue(t, "sync run", testutil.Cols{"project_id": projectID, "status": "todo"})
++	taskID := runningTask(t, agentID, elsewhere, "todo")
++
++	agentUpdateIssue(t, gated, agentID, taskID, map[string]any{"status": "todo"}).Want(http.StatusForbidden)
++}
++
++// Steps an agent handles are not gates: agents keep moving their own work.
++func TestAgentStepIsNotAGate(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID := ownerGateProject(t, agentID)
++	issueID := dbfx.Issue(t, "agent step", testutil.Cols{"project_id": projectID, "status": "todo"})
++	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++	var taskID string
++	dbfx.QueryRow(t, `SELECT id::text FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, agentID).Scan(&taskID)
++	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, taskID)
++
++	// Into the gate is fine: that is how work reaches the owner.
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
++}
++
++// The batch endpoint skips a gated issue for an agent and applies the rest.
++func TestBatchSkipsOwnerGateForAgent(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID := ownerGateProject(t, agentID)
++	gated := dbfx.Issue(t, "batch gated", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	free := dbfx.Issue(t, "batch free", testutil.Cols{"project_id": projectID, "status": "backlog"})
++	taskID := runningTask(t, agentID, free, "backlog")
++
++	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
++		"issue_ids": []string{gated, free}, "updates": map[string]any{"status": "todo"},
++	})
++	req.Header.Set("X-Actor-Source", "task_token")
++	req.Header.Set("X-Agent-ID", agentID)
++	req.Header.Set("X-Task-ID", taskID)
++	testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
++
++	if status, _, _ := issueStatusAndAssignee(t, gated); status != "in_review" {
++		t.Fatalf("gated status = %q, the batch must skip it", status)
++	}
++	if status, _, _ := issueStatusAndAssignee(t, free); status != "todo" {
++		t.Fatalf("free status = %q, want todo", status)
++	}
++}
+diff --git a/server/internal/issueworkflow/issueworkflow.go b/server/internal/issueworkflow/issueworkflow.go
+index 414387fff..405978247 100644
+--- a/server/internal/issueworkflow/issueworkflow.go
++++ b/server/internal/issueworkflow/issueworkflow.go
+@@ -609,6 +609,31 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
+ 	return "", pgtype.UUID{}, false
+ }
+ 
++// GateError refuses an agent's move of an issue out of a step a person
++// handles: approvals and decisions waiting on someone stay with that person
++// (vantt owner-gates).
++type GateError struct {
++	Status string
++}
++
++func (e *GateError) Error() string {
++	return fmt.Sprintf("status %q is waiting for a person: only a member can move the issue out of it", e.Status)
++}
++
++// PersonGate reports whether status is a step of def whose handler resolves to
++// a member, the way ResolveHandler would hand the issue off on entering it.
++func PersonGate(def *Definition, status string, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID) bool {
++	if def == nil {
++		return false
++	}
++	step, ok := def.Step(status)
++	if !ok {
++		return false
++	}
++	assigneeType, _, ok := ResolveHandler(step, project, issueCreatorType, issueCreatorID)
++	return ok && assigneeType == HandlerMember
++}
++
+ // MoveTarget picks the status an issue keeps when it moves into a project
+ // using def: its current status when the workflow lists it, otherwise the
+ // first step of the same lifecycle category, otherwise the start status.
+-- 
+2.53.0
+

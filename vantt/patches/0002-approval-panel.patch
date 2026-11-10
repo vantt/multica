@@ -1,0 +1,419 @@
+From 7c41ad66cdc2c4c327885ad0580fb906f210516b Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:12:58 +0700
+Subject: [PATCH] feat(issues): approval panel for the person a workflow step
+ waits on
+
+While an issue sits in a step whose handler is the viewer (a member, or the
+creator when that is the viewer), the issue page shows an approval panel:
+Approve moves it to the step's next status, Send back asks what must change,
+posts it as a comment and moves it to the step's back status.
+
+Patch-Id: approval-panel
+---
+ .../views/issues/components/issue-detail.tsx  |   2 +
+ packages/views/locales/en/issues.json         |  10 ++
+ packages/views/locales/fr/issues.json         |  10 ++
+ packages/views/locales/ja/issues.json         |  10 ++
+ packages/views/locales/ko/issues.json         |  10 ++
+ packages/views/locales/zh-Hans/issues.json    |  10 ++
+ packages/views/locales/zh-Hant/issues.json    |  10 ++
+ .../views/workflows/approval-panel.test.tsx   | 100 +++++++++++++
+ packages/views/workflows/approval-panel.tsx   | 132 ++++++++++++++++++
+ 9 files changed, 294 insertions(+)
+ create mode 100644 packages/views/workflows/approval-panel.test.tsx
+ create mode 100644 packages/views/workflows/approval-panel.tsx
+
+diff --git a/packages/views/issues/components/issue-detail.tsx b/packages/views/issues/components/issue-detail.tsx
+index 44eb9b122..7b6d28de1 100644
+--- a/packages/views/issues/components/issue-detail.tsx
++++ b/packages/views/issues/components/issue-detail.tsx
+@@ -14,6 +14,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+ import { AppLink, useBackOrReplace } from "../../navigation";
+ import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
++import { ApprovalPanel } from "../../workflows/approval-panel";
+ import {
+   Archive,
+   Calendar,
+@@ -3313,6 +3314,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+               )
+             }
+           />
++          <ApprovalPanel issue={issue} onUpdateField={(updates) => handleUpdateField(updates)} />
+           <div id={descriptionSectionId}>
+           {titleLazy.active && (
+             <div className={titleLazy.ready ? undefined : "hidden"}>
+diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
+index e6f1ead39..38bab5787 100644
+--- a/packages/views/locales/en/issues.json
++++ b/packages/views/locales/en/issues.json
+@@ -1768,6 +1768,16 @@
+           "waiting": "Waiting on reporter"
+         }
+       }
++    },
++    "approval": {
++      "title": "Waiting for your approval",
++      "gate_note": "Agents cannot move this issue out of this step.",
++      "approve": "Approve",
++      "send_back": "Send back",
++      "moves_to": "Approve moves it to {{status}}",
++      "reason_label": "What needs to change?",
++      "send_back_to": "Send back to {{status}}",
++      "cancel": "Cancel"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
+index 5736941ad..803799de0 100644
+--- a/packages/views/locales/fr/issues.json
++++ b/packages/views/locales/fr/issues.json
+@@ -1767,6 +1767,16 @@
+           "waiting": "En attente du retour"
+         }
+       }
++    },
++    "approval": {
++      "title": "En attente de votre approbation",
++      "gate_note": "Les agents ne peuvent pas faire sortir ce ticket de cette étape.",
++      "approve": "Approuver",
++      "send_back": "Renvoyer",
++      "moves_to": "Approuver le passe à {{status}}",
++      "reason_label": "Que faut-il changer ?",
++      "send_back_to": "Renvoyer à {{status}}",
++      "cancel": "Annuler"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
+index c49521b00..1e0c997e5 100644
+--- a/packages/views/locales/ja/issues.json
++++ b/packages/views/locales/ja/issues.json
+@@ -1702,6 +1702,16 @@
+           "waiting": "返答待ち"
+         }
+       }
++    },
++    "approval": {
++      "title": "あなたの承認待ち",
++      "gate_note": "エージェントはこの課題をこのステップから移動できません。",
++      "approve": "承認",
++      "send_back": "差し戻し",
++      "moves_to": "承認すると {{status}} に移動します",
++      "reason_label": "何を変更する必要がありますか？",
++      "send_back_to": "{{status}} に差し戻す",
++      "cancel": "キャンセル"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
+index 628c0a6a9..7e565c124 100644
+--- a/packages/views/locales/ko/issues.json
++++ b/packages/views/locales/ko/issues.json
+@@ -1702,6 +1702,16 @@
+           "waiting": "회신 대기"
+         }
+       }
++    },
++    "approval": {
++      "title": "승인 대기 중",
++      "gate_note": "에이전트는 이 이슈를 이 단계에서 옮길 수 없습니다.",
++      "approve": "승인",
++      "send_back": "되돌려 보내기",
++      "moves_to": "승인하면 {{status}}(으)로 이동합니다",
++      "reason_label": "무엇을 바꿔야 하나요?",
++      "send_back_to": "{{status}}(으)로 되돌려 보내기",
++      "cancel": "취소"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
+index e077c849e..d6c7f5453 100644
+--- a/packages/views/locales/zh-Hans/issues.json
++++ b/packages/views/locales/zh-Hans/issues.json
+@@ -1702,6 +1702,16 @@
+           "waiting": "等待反馈"
+         }
+       }
++    },
++    "approval": {
++      "title": "等待你的审批",
++      "gate_note": "智能体无法将此事项移出此步骤。",
++      "approve": "批准",
++      "send_back": "退回",
++      "moves_to": "批准后移至 {{status}}",
++      "reason_label": "需要修改什么？",
++      "send_back_to": "退回到 {{status}}",
++      "cancel": "取消"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
+index 1dbd9f591..3d085280e 100644
+--- a/packages/views/locales/zh-Hant/issues.json
++++ b/packages/views/locales/zh-Hant/issues.json
+@@ -1701,6 +1701,16 @@
+           "waiting": "等待反饋"
+         }
+       }
++    },
++    "approval": {
++      "title": "等待你的審批",
++      "gate_note": "智慧代理無法將此事項移出此步驟。",
++      "approve": "批准",
++      "send_back": "退回",
++      "moves_to": "批准後移至 {{status}}",
++      "reason_label": "需要修改什麼？",
++      "send_back_to": "退回到 {{status}}",
++      "cancel": "取消"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/workflows/approval-panel.test.tsx b/packages/views/workflows/approval-panel.test.tsx
+new file mode 100644
+index 000000000..6c193534b
+--- /dev/null
++++ b/packages/views/workflows/approval-panel.test.tsx
+@@ -0,0 +1,100 @@
++import { cleanup, fireEvent, screen } from "@testing-library/react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import type { Issue, IssueWorkflow } from "@multica/core/types";
++import { renderWithI18n } from "../test/i18n";
++import { ApprovalPanel } from "./approval-panel";
++
++const state = vi.hoisted(() => ({
++  viewer: "owner-1",
++  workflow: null as IssueWorkflow | null,
++  comment: vi.fn(),
++}));
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace-1" }));
++vi.mock("@multica/core/auth", () => ({
++  useAuthStore: (select: (s: { user: { id: string } }) => unknown) => select({ user: { id: state.viewer } }),
++}));
++vi.mock("@multica/core/issues/mutations", () => ({
++  useCreateComment: () => ({
++    mutate: (vars: { content: string }, opts?: { onSuccess?: () => void }) => {
++      state.comment(vars.content);
++      opts?.onSuccess?.();
++    },
++    isPending: false,
++  }),
++}));
++vi.mock("@multica/core/issue-workflows", async (importOriginal) => {
++  const real = await importOriginal<typeof import("@multica/core/issue-workflows")>();
++  return {
++    workflowStep: real.workflowStep,
++    workflowNextStatus: real.workflowNextStatus,
++    useProjectWithWorkflow: () => ({ project: { lead_type: null, lead_id: null }, workflow: state.workflow }),
++  };
++});
++vi.mock("../issues/utils/status-label", () => ({ useStatusLabel: () => (key: string) => key }));
++
++function delivery(): IssueWorkflow {
++  return {
++    id: "wf-1",
++    workspace_id: "workspace-1",
++    name: "delivery",
++    description: "",
++    is_default: false,
++    owner_id: null,
++    steps: [
++      { status_key: "todo", handler: { type: "agent", id: "agent-1" }, instructions: "" },
++      {
++        status_key: "in_review",
++        handler: { type: "member", id: "owner-1" },
++        instructions: "",
++        next_status_key: "release",
++        back_status_key: "build",
++      },
++      { status_key: "release", handler: { type: "agent", id: "agent-2" }, instructions: "" },
++    ],
++    project_ids: ["project-1"],
++    created_at: "",
++    updated_at: "",
++  };
++}
++
++const issue = (status: string) =>
++  ({ id: "issue-1", status, project_id: "project-1", creator_type: "agent", creator_id: "agent-1" }) as Issue;
++
++beforeEach(() => {
++  state.viewer = "owner-1";
++  state.workflow = delivery();
++  state.comment.mockReset();
++});
++afterEach(cleanup);
++
++describe("ApprovalPanel", () => {
++  it("approves into the step's next status", () => {
++    const onUpdate = vi.fn();
++    renderWithI18n(<ApprovalPanel issue={issue("in_review")} onUpdateField={onUpdate} />);
++    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
++    expect(onUpdate).toHaveBeenCalledWith({ status: "release" });
++  });
++
++  it("sends back with a reason as a comment, into the step's back status", () => {
++    const onUpdate = vi.fn();
++    renderWithI18n(<ApprovalPanel issue={issue("in_review")} onUpdateField={onUpdate} />);
++    fireEvent.click(screen.getByRole("button", { name: "Send back" }));
++    const submit = screen.getByRole("button", { name: "Send back to build" });
++    expect((submit as HTMLButtonElement).disabled).toBe(true);
++    fireEvent.change(screen.getByLabelText("What needs to change?"), { target: { value: "Allow two machines" } });
++    fireEvent.click(submit);
++    expect(state.comment).toHaveBeenCalledWith("Allow two machines");
++    expect(onUpdate).toHaveBeenCalledWith({ status: "build" });
++  });
++
++  it("stays hidden for anyone but the step's person, and on agent steps", () => {
++    state.viewer = "someone-else";
++    const { unmount } = renderWithI18n(<ApprovalPanel issue={issue("in_review")} onUpdateField={vi.fn()} />);
++    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
++    unmount();
++    state.viewer = "owner-1";
++    renderWithI18n(<ApprovalPanel issue={issue("todo")} onUpdateField={vi.fn()} />);
++    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
++  });
++});
+diff --git a/packages/views/workflows/approval-panel.tsx b/packages/views/workflows/approval-panel.tsx
+new file mode 100644
+index 000000000..5764c6db6
+--- /dev/null
++++ b/packages/views/workflows/approval-panel.tsx
+@@ -0,0 +1,132 @@
++"use client";
++
++import { useState } from "react";
++import { Lock } from "lucide-react";
++import { useAuthStore } from "@multica/core/auth";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { useCreateComment } from "@multica/core/issues/mutations";
++import { useProjectWithWorkflow, workflowNextStatus, workflowStep } from "@multica/core/issue-workflows";
++import type { Issue, IssueWorkflowStep, UpdateIssueRequest } from "@multica/core/types";
++import { Button } from "@multica/ui/components/ui/button";
++import { Textarea } from "@multica/ui/components/ui/textarea";
++import { useStatusLabel } from "../issues/utils/status-label";
++import { useT } from "../i18n";
++import { stepHandlerActor } from "./step-handler";
++
++/** Whether the viewer is the person a workflow step hands the issue to. */
++export function stepWaitsOnViewer(
++  step: IssueWorkflowStep | undefined,
++  project: Parameters<typeof stepHandlerActor>[1],
++  issue: Pick<Issue, "creator_type" | "creator_id">,
++  viewerId: string | null | undefined,
++): boolean {
++  if (!step || !viewerId) return false;
++  if (step.handler.type === "creator") return issue.creator_type === "member" && issue.creator_id === viewerId;
++  const actor = stepHandlerActor(step, project);
++  return actor?.type === "member" && actor.id === viewerId;
++}
++
++/**
++ * Approval panel (vantt owner-gates, design D5b): shown while the issue sits in
++ * a workflow step a person handles and the viewer is that person. Approve moves
++ * it to the step's next status; Send back records why and moves it to the
++ * step's back status. Agents cannot move the issue out of such a step.
++ * Reference: Jira approvals (Approve / Decline).
++ */
++export function ApprovalPanel({
++  issue,
++  onUpdateField,
++}: {
++  issue: Issue;
++  onUpdateField: (updates: Partial<UpdateIssueRequest>) => void;
++}) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const viewerId = useAuthStore((s) => s.user?.id);
++  const labelOf = useStatusLabel(wsId);
++  const { project, workflow } = useProjectWithWorkflow(wsId, issue.project_id);
++  const createComment = useCreateComment(issue.id);
++  const [sendingBack, setSendingBack] = useState(false);
++  const [reason, setReason] = useState("");
++
++  const step = workflowStep(workflow, issue.status);
++  if (!workflow || !stepWaitsOnViewer(step, project, issue, viewerId)) return null;
++  const next = workflowNextStatus(workflow, issue.status);
++  const back = step?.back_status_key ?? "";
++  if (!next && !back) return null;
++
++  const sendBack = () => {
++    const note = reason.trim();
++    if (!note) return;
++    createComment.mutate(
++      { content: note },
++      {
++        onSuccess: () => {
++          onUpdateField({ status: back });
++          setSendingBack(false);
++          setReason("");
++        },
++      },
++    );
++  };
++
++  return (
++    <section
++      aria-label={t(($) => $.workflows.approval.title)}
++      className="mb-4 flex flex-col gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-body dark:border-amber-500/40 dark:bg-amber-500/10"
++    >
++      <div className="flex flex-wrap items-center gap-2">
++        <Lock aria-hidden className="size-4 shrink-0 text-amber-700 dark:text-amber-400" />
++        <span className="font-semibold text-amber-900 dark:text-amber-200">{t(($) => $.workflows.approval.title)}</span>
++        <span className="text-caption text-amber-800 dark:text-amber-300">{labelOf(issue.status)}</span>
++      </div>
++      <p className="text-caption text-amber-900 dark:text-amber-200">{t(($) => $.workflows.approval.gate_note)}</p>
++
++      {!sendingBack ? (
++        <div className="flex flex-wrap items-center gap-2">
++          {next && (
++            <Button type="button" onClick={() => onUpdateField({ status: next })}>
++              {t(($) => $.workflows.approval.approve)}
++            </Button>
++          )}
++          {back && (
++            <Button type="button" variant="outline" onClick={() => setSendingBack(true)}>
++              {t(($) => $.workflows.approval.send_back)}
++            </Button>
++          )}
++          {next && (
++            <span className="text-caption text-muted-foreground">
++              {t(($) => $.workflows.approval.moves_to, { status: labelOf(next) })}
++            </span>
++          )}
++        </div>
++      ) : (
++        <div className="flex flex-col gap-2">
++          <label htmlFor={`send-back-${issue.id}`} className="font-medium">
++            {t(($) => $.workflows.approval.reason_label)}
++          </label>
++          <Textarea
++            id={`send-back-${issue.id}`}
++            rows={3}
++            value={reason}
++            onChange={(e) => setReason(e.target.value)}
++            className="bg-background"
++          />
++          <div className="flex flex-wrap items-center gap-2">
++            <Button
++              type="button"
++              onClick={sendBack}
++              disabled={!reason.trim() || createComment.isPending}
++              aria-busy={createComment.isPending}
++            >
++              {t(($) => $.workflows.approval.send_back_to, { status: labelOf(back) })}
++            </Button>
++            <Button type="button" variant="outline" onClick={() => setSendingBack(false)}>
++              {t(($) => $.workflows.approval.cancel)}
++            </Button>
++          </div>
++        </div>
++      )}
++    </section>
++  );
++}
+-- 
+2.53.0
+
