@@ -1228,6 +1228,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			telegramOutbound.Register(bus)
 			h.TelegramOutbound = telegramOutbound
 
+			// vantt 0019: inbox notifications to members' DMs, decision buttons.
+			telegramPush := telegram.NewPusher(queries, box.Open, appURLFromEnv(), slog.Default())
+			telegramPush.Answer = h.AnswerDecisionAs
+			telegramPush.Register(bus)
+
 			// Per-installation inbound: the Supervisor builds + supervises one
 			// long-polling loop per active Telegram installation.
 			telegram.RegisterTelegram(channelRegistry, telegram.ChannelDeps{
@@ -1235,6 +1240,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				Logger:            slog.Default(),
 				RecentContextSize: telegram.DefaultRecentContextSize,
 				AcceptsMedia:      store != nil,
+				Callbacks:         telegramPush,
 			})
 
 			installSvc, ierr := telegram.NewInstallService(queries, pool, box, slog.Default())
