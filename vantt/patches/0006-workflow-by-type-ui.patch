@@ -1,0 +1,465 @@
+From 3fc7ab87c5191458819a933a3b38e84478168af7 Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:39:26 +0700
+Subject: [PATCH] feat(projects): edit workflows by Type in the project sidebar
+
+A "By Type" row under the project's workflow: summary of the rules, and for
+owners/admins a popover to pick the select property and, per option, the
+workflow its issues follow (or the project's workflow).
+
+Patch-Id: workflow-by-type-ui
+---
+ packages/core/api/client.ts                   |  18 +++
+ packages/core/package.json                    |   1 +
+ packages/core/workflow-rules/index.ts         |  36 +++++
+ packages/views/locales/en/issues.json         |   9 ++
+ packages/views/locales/fr/issues.json         |   9 ++
+ packages/views/locales/ja/issues.json         |   9 ++
+ packages/views/locales/ko/issues.json         |   9 ++
+ packages/views/locales/zh-Hans/issues.json    |   9 ++
+ packages/views/locales/zh-Hant/issues.json    |   9 ++
+ .../components/project-detail.test.tsx        |   1 +
+ .../projects/components/project-detail.tsx    |  12 ++
+ .../workflows/workflow-rules-row.test.tsx     |  40 ++++++
+ .../views/workflows/workflow-rules-row.tsx    | 129 ++++++++++++++++++
+ 13 files changed, 291 insertions(+)
+ create mode 100644 packages/core/workflow-rules/index.ts
+ create mode 100644 packages/views/workflows/workflow-rules-row.test.tsx
+ create mode 100644 packages/views/workflows/workflow-rules-row.tsx
+
+diff --git a/packages/core/api/client.ts b/packages/core/api/client.ts
+index a70e5111e..4e9981f7d 100644
+--- a/packages/core/api/client.ts
++++ b/packages/core/api/client.ts
+@@ -4112,6 +4112,24 @@ export class ApiClient {
+   }
+ 
+   // Project resources
++  // vantt workflow-by-type (patch workflow-by-type-ui, F3).
++  async listProjectWorkflowRules(projectId: string): Promise<{ rules: { property_id: string; option_id: string; workflow_id: string }[] }> {
++    const raw = await this.fetch<{ rules?: unknown }>(`/api/projects/${projectId}/workflow-rules`);
++    const rules = Array.isArray(raw?.rules)
++      ? (raw.rules as Record<string, unknown>[]).filter(
++          (r) => typeof r.property_id === "string" && typeof r.option_id === "string" && typeof r.workflow_id === "string",
++        )
++      : [];
++    return { rules: rules as { property_id: string; option_id: string; workflow_id: string }[] };
++  }
++
++  async setProjectWorkflowRules(
++    projectId: string,
++    rules: { property_id: string; option_id: string; workflow_id: string }[],
++  ): Promise<void> {
++    await this.fetch(`/api/projects/${projectId}/workflow-rules`, { method: "PUT", body: JSON.stringify({ rules }) });
++  }
++
+   // vantt goals (patch goals-ui, F2).
+   async listGoals(): Promise<{ goals: Goal[] }> {
+     const raw = await this.fetch<unknown>("/api/goals");
+diff --git a/packages/core/package.json b/packages/core/package.json
+index 84aaaaa46..718dd7458 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -39,6 +39,7 @@
+     "./issue-workflows/hooks": "./issue-workflows/hooks.ts",
+     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
+     "./goals": "./goals/index.ts",
++    "./workflow-rules": "./workflow-rules/index.ts",
+     "./issues": "./issues/index.ts",
+     "./issues/batch": "./issues/batch.ts",
+     "./issues/canonical-id": "./issues/canonical-id.ts",
+diff --git a/packages/core/workflow-rules/index.ts b/packages/core/workflow-rules/index.ts
+new file mode 100644
+index 000000000..082ebb9be
+--- /dev/null
++++ b/packages/core/workflow-rules/index.ts
+@@ -0,0 +1,36 @@
++import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
++import { api } from "../api";
++import { useWorkspaceId } from "../hooks";
++
++/**
++ * vantt workflow-by-type (patch workflow-by-type-ui, F3): in a project, issues
++ * whose select property has an option follow another workflow. Reference: Jira
++ * workflow schemes.
++ */
++export interface WorkflowRule {
++  property_id: string;
++  option_id: string;
++  workflow_id: string;
++}
++
++export const workflowRuleKeys = {
++  project: (wsId: string, projectId: string) => ["workflow-rules", wsId, projectId] as const,
++};
++
++export function workflowRulesOptions(wsId: string, projectId: string) {
++  return queryOptions({
++    queryKey: workflowRuleKeys.project(wsId, projectId),
++    queryFn: () => api.listProjectWorkflowRules(projectId),
++    select: (data) => data.rules,
++    staleTime: 60_000,
++  });
++}
++
++export function useSetWorkflowRules(projectId: string) {
++  const qc = useQueryClient();
++  const wsId = useWorkspaceId();
++  return useMutation({
++    mutationFn: (rules: WorkflowRule[]) => api.setProjectWorkflowRules(projectId, rules),
++    onSuccess: () => qc.invalidateQueries({ queryKey: workflowRuleKeys.project(wsId, projectId) }),
++  });
++}
+diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
+index 38bab5787..401b2e6c7 100644
+--- a/packages/views/locales/en/issues.json
++++ b/packages/views/locales/en/issues.json
+@@ -1778,6 +1778,15 @@
+       "reason_label": "What needs to change?",
+       "send_back_to": "Send back to {{status}}",
+       "cancel": "Cancel"
++    },
++    "rules": {
++      "label": "By Type",
++      "none": "Same for every Type",
++      "help": "Issues whose property has one of these values follow another workflow. Anything else follows the project's workflow.",
++      "choose_by": "Choose workflow by",
++      "project_default": "Project workflow",
++      "cancel": "Cancel",
++      "save": "Save"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
+index 803799de0..ad1cf242f 100644
+--- a/packages/views/locales/fr/issues.json
++++ b/packages/views/locales/fr/issues.json
+@@ -1777,6 +1777,15 @@
+       "reason_label": "Que faut-il changer ?",
+       "send_back_to": "Renvoyer à {{status}}",
+       "cancel": "Annuler"
++    },
++    "rules": {
++      "label": "Par type",
++      "none": "Identique pour chaque type",
++      "help": "Les tickets dont la propriété a l’une de ces valeurs suivent un autre workflow. Les autres suivent celui du projet.",
++      "choose_by": "Choisir le workflow selon",
++      "project_default": "Workflow du projet",
++      "cancel": "Annuler",
++      "save": "Enregistrer"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
+index 1e0c997e5..e4871c220 100644
+--- a/packages/views/locales/ja/issues.json
++++ b/packages/views/locales/ja/issues.json
+@@ -1712,6 +1712,15 @@
+       "reason_label": "何を変更する必要がありますか？",
+       "send_back_to": "{{status}} に差し戻す",
+       "cancel": "キャンセル"
++    },
++    "rules": {
++      "label": "タイプ別",
++      "none": "すべてのタイプで同じ",
++      "help": "このプロパティがいずれかの値の課題は別のワークフローに従います。それ以外はプロジェクトのワークフローに従います。",
++      "choose_by": "ワークフローの選択基準",
++      "project_default": "プロジェクトのワークフロー",
++      "cancel": "キャンセル",
++      "save": "保存"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
+index 7e565c124..f1d6af56a 100644
+--- a/packages/views/locales/ko/issues.json
++++ b/packages/views/locales/ko/issues.json
+@@ -1712,6 +1712,15 @@
+       "reason_label": "무엇을 바꿔야 하나요?",
+       "send_back_to": "{{status}}(으)로 되돌려 보내기",
+       "cancel": "취소"
++    },
++    "rules": {
++      "label": "유형별",
++      "none": "모든 유형에 동일",
++      "help": "속성이 이 값 중 하나인 이슈는 다른 워크플로를 따릅니다. 나머지는 프로젝트 워크플로를 따릅니다.",
++      "choose_by": "워크플로 선택 기준",
++      "project_default": "프로젝트 워크플로",
++      "cancel": "취소",
++      "save": "저장"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
+index d6c7f5453..18391312c 100644
+--- a/packages/views/locales/zh-Hans/issues.json
++++ b/packages/views/locales/zh-Hans/issues.json
+@@ -1712,6 +1712,15 @@
+       "reason_label": "需要修改什么？",
+       "send_back_to": "退回到 {{status}}",
+       "cancel": "取消"
++    },
++    "rules": {
++      "label": "按类型",
++      "none": "所有类型相同",
++      "help": "属性为以下值之一的事项遵循另一个工作流，其余遵循项目的工作流。",
++      "choose_by": "按此属性选择工作流",
++      "project_default": "项目工作流",
++      "cancel": "取消",
++      "save": "保存"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
+index 3d085280e..139a4a708 100644
+--- a/packages/views/locales/zh-Hant/issues.json
++++ b/packages/views/locales/zh-Hant/issues.json
+@@ -1711,6 +1711,15 @@
+       "reason_label": "需要修改什麼？",
+       "send_back_to": "退回到 {{status}}",
+       "cancel": "取消"
++    },
++    "rules": {
++      "label": "依類型",
++      "none": "所有類型相同",
++      "help": "屬性為以下值之一的事項遵循另一個工作流程，其餘遵循專案的工作流程。",
++      "choose_by": "依此屬性選擇工作流程",
++      "project_default": "專案工作流程",
++      "cancel": "取消",
++      "save": "儲存"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/projects/components/project-detail.test.tsx b/packages/views/projects/components/project-detail.test.tsx
+index 2a4933fcd..9c9fba72c 100644
+--- a/packages/views/projects/components/project-detail.test.tsx
++++ b/packages/views/projects/components/project-detail.test.tsx
+@@ -23,6 +23,7 @@ vi.mock("@multica/ui/lib/clipboard", () => ({
+ 
+ vi.mock("../../workflows/project-workflow-menu", () => ({ ProjectWorkflowMenu: () => null }));
+ vi.mock("../../workflows/project-workflow-row", () => ({ ProjectWorkflowControl: () => null }));
++vi.mock("../../workflows/workflow-rules-row", () => ({ WorkflowRulesControl: () => null }));
+ 
+ vi.mock("@tanstack/react-query", () => ({
+   useQuery: (options: { queryKey?: readonly unknown[] }) => {
+diff --git a/packages/views/projects/components/project-detail.tsx b/packages/views/projects/components/project-detail.tsx
+index be113f661..60350ebf1 100644
+--- a/packages/views/projects/components/project-detail.tsx
++++ b/packages/views/projects/components/project-detail.tsx
+@@ -29,6 +29,7 @@ import { ProjectResourcesSection } from "./project-resources-section";
+ import { ProjectStartDatePicker } from "./project-start-date-picker";
+ import { ProjectDueDatePicker } from "./project-due-date-picker";
+ import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
++import { WorkflowRulesControl } from "../../workflows/workflow-rules-row";
+ import { ProjectWorkflowMenu } from "../../workflows/project-workflow-menu";
+ import { IssueSurface } from "../../issues/surface/issue-surface";
+ import { Skeleton } from "@multica/ui/components/ui/skeleton";
+@@ -107,6 +108,16 @@ function ProjectWorkflowPropRow({ project }: { project: Project }) {
+   );
+ }
+ 
++// Workflows by Type (vantt workflow-by-type-ui).
++function ProjectWorkflowRulesPropRow({ project }: { project: Project }) {
++  const { t } = useT("issues");
++  return (
++    <PropRow label={t(($) => $.workflows.rules.label)}>
++      <WorkflowRulesControl project={project} />
++    </PropRow>
++  );
++}
++
+ // ProjectDetail
+ 
+ export function ProjectDetail({ projectId }: { projectId: string }) {
+@@ -426,6 +437,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
+             <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
+           </PropRow>
+           <ProjectWorkflowPropRow project={project} />
++          <ProjectWorkflowRulesPropRow project={project} />
+         </div>}
+       </div>
+ 
+diff --git a/packages/views/workflows/workflow-rules-row.test.tsx b/packages/views/workflows/workflow-rules-row.test.tsx
+new file mode 100644
+index 000000000..49f11382a
+--- /dev/null
++++ b/packages/views/workflows/workflow-rules-row.test.tsx
+@@ -0,0 +1,40 @@
++import { cleanup, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { Project } from "@multica/core/types";
++import { renderWithI18n } from "../test/i18n";
++import { WorkflowRulesControl } from "./workflow-rules-row";
++
++const state = vi.hoisted(() => ({ rules: [] as { property_id: string; option_id: string; workflow_id: string }[], admin: false }));
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("@tanstack/react-query", () => ({
++  useQuery: (o: { queryKey: readonly unknown[] }) =>
++    o.queryKey[0] === "workflow-rules"
++      ? { data: state.rules }
++      : { data: [{ id: "prop-1", name: "Type", type: "select", archived: false, config: { options: [{ id: "opt-copy", name: "Copy" }] } }] },
++}));
++vi.mock("@multica/core/workflow-rules", () => ({
++  workflowRulesOptions: () => ({ queryKey: ["workflow-rules"] }),
++  useSetWorkflowRules: () => ({ mutate: vi.fn(), isPending: false }),
++}));
++vi.mock("@multica/core/properties/queries", () => ({ propertyListOptions: () => ({ queryKey: ["properties"] }) }));
++vi.mock("@multica/core/issue-workflows", () => ({ useIssueWorkflows: () => ({ workflows: [{ id: "wf-content", name: "content" }] }) }));
++vi.mock("./permissions", () => ({ useWorkflowPermissions: () => ({ canManageProject: state.admin, isAdmin: state.admin }) }));
++
++afterEach(() => {
++  cleanup();
++  state.rules = [];
++});
++
++describe("WorkflowRulesControl", () => {
++  it("says every Type is the same when there are no rules", () => {
++    renderWithI18n(<WorkflowRulesControl project={{ id: "p-1" } as Project} />);
++    expect(screen.getByText("Same for every Type")).toBeTruthy();
++  });
++
++  it("summarises rules as option → workflow", () => {
++    state.rules = [{ property_id: "prop-1", option_id: "opt-copy", workflow_id: "wf-content" }];
++    renderWithI18n(<WorkflowRulesControl project={{ id: "p-1" } as Project} />);
++    expect(screen.getByText("Copy → content")).toBeTruthy();
++  });
++});
+diff --git a/packages/views/workflows/workflow-rules-row.tsx b/packages/views/workflows/workflow-rules-row.tsx
+new file mode 100644
+index 000000000..97a42e0ed
+--- /dev/null
++++ b/packages/views/workflows/workflow-rules-row.tsx
+@@ -0,0 +1,129 @@
++"use client";
++
++import { useEffect, useMemo, useState } from "react";
++import { useQuery } from "@tanstack/react-query";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { useIssueWorkflows } from "@multica/core/issue-workflows";
++import { propertyListOptions } from "@multica/core/properties/queries";
++import type { Project } from "@multica/core/types";
++import { useSetWorkflowRules, workflowRulesOptions, type WorkflowRule } from "@multica/core/workflow-rules";
++import { Button } from "@multica/ui/components/ui/button";
++import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
++import { useT } from "../i18n";
++import { useWorkflowPermissions } from "./permissions";
++
++/**
++ * Workflows by Type (vantt workflow-by-type-ui, design D6): in this project an
++ * issue whose select property (Type) has an option follows another workflow;
++ * anything else follows the project's workflow. Reference: Jira workflow schemes.
++ */
++export function WorkflowRulesControl({ project }: { project: Project }) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const { workflows } = useIssueWorkflows(wsId);
++  const { data: properties = [] } = useQuery(propertyListOptions(wsId));
++  const { data: rules = [] } = useQuery(workflowRulesOptions(wsId, project.id));
++  const { canManageProject, isAdmin } = useWorkflowPermissions(project);
++  const save = useSetWorkflowRules(project.id);
++  const selects = useMemo(() => properties.filter((p) => p.type === "select" && !p.archived), [properties]);
++  const [open, setOpen] = useState(false);
++  const [propertyId, setPropertyId] = useState("");
++  const [draft, setDraft] = useState<Record<string, string>>({});
++
++  useEffect(() => {
++    if (!open) return;
++    const pid = rules[0]?.property_id ?? selects.find((p) => p.name.toLowerCase() === "type")?.id ?? selects[0]?.id ?? "";
++    setPropertyId(pid);
++    setDraft(Object.fromEntries(rules.filter((r) => r.property_id === pid).map((r) => [r.option_id, r.workflow_id])));
++  }, [open, rules, selects]);
++
++  const property = selects.find((p) => p.id === propertyId);
++  const nameOfWorkflow = (id: string) => workflows.find((w) => w.id === id)?.name ?? "?";
++  const optionName = (r: WorkflowRule) =>
++    properties.find((p) => p.id === r.property_id)?.config.options?.find((o) => o.id === r.option_id)?.name ?? "?";
++
++  const summary =
++    rules.length === 0
++      ? t(($) => $.workflows.rules.none)
++      : rules.map((r) => `${optionName(r)} → ${nameOfWorkflow(r.workflow_id)}`).join(", ");
++
++  if (!(canManageProject || isAdmin)) {
++    return <span className="truncate text-caption text-muted-foreground">{summary}</span>;
++  }
++
++  return (
++    <Popover open={open} onOpenChange={setOpen}>
++      <PopoverTrigger
++        render={
++          <button type="button" className="-ml-1 min-w-0 truncate rounded-md px-1 py-0.5 text-left text-caption hover:bg-accent">
++            {summary}
++          </button>
++        }
++      />
++      <PopoverContent align="start" className="w-96 p-3">
++        <p className="mb-2 text-caption text-muted-foreground">{t(($) => $.workflows.rules.help)}</p>
++        <label className="mb-3 flex items-center gap-2 text-caption">
++          <span className="text-muted-foreground">{t(($) => $.workflows.rules.choose_by)}</span>
++          <select
++            className="h-8 flex-1 rounded-md border bg-background px-2 text-body"
++            value={propertyId}
++            onChange={(e) => {
++              setPropertyId(e.target.value);
++              setDraft({});
++            }}
++          >
++            {selects.map((p) => (
++              <option key={p.id} value={p.id}>
++                {p.name}
++              </option>
++            ))}
++          </select>
++        </label>
++        {property && (
++          <ul className="mb-3 flex max-h-72 flex-col gap-1.5 overflow-y-auto">
++            {(property.config.options ?? []).map((o) => (
++              <li key={o.id} className="flex items-center gap-2 text-caption">
++                <span className="w-36 truncate">{o.name}</span>
++                <span aria-hidden className="text-muted-foreground">→</span>
++                <select
++                  aria-label={o.name}
++                  className="h-7 flex-1 rounded-md border bg-background px-1.5 text-caption"
++                  value={draft[o.id] ?? ""}
++                  onChange={(e) => setDraft((d) => ({ ...d, [o.id]: e.target.value }))}
++                >
++                  <option value="">{t(($) => $.workflows.rules.project_default)}</option>
++                  {workflows.map((w) => (
++                    <option key={w.id} value={w.id}>
++                      {w.name}
++                    </option>
++                  ))}
++                </select>
++              </li>
++            ))}
++          </ul>
++        )}
++        <div className="flex justify-end gap-2">
++          <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
++            {t(($) => $.workflows.rules.cancel)}
++          </Button>
++          <Button
++            type="button"
++            size="sm"
++            disabled={save.isPending}
++            aria-busy={save.isPending}
++            onClick={() =>
++              save.mutate(
++                Object.entries(draft)
++                  .filter(([, wf]) => wf)
++                  .map(([option_id, workflow_id]) => ({ property_id: propertyId, option_id, workflow_id })),
++                { onSuccess: () => setOpen(false) },
++              )
++            }
++          >
++            {t(($) => $.workflows.rules.save)}
++          </Button>
++        </div>
++      </PopoverContent>
++    </Popover>
++  );
++}
+-- 
+2.53.0
+
