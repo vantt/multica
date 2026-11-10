@@ -1714,6 +1714,15 @@
       "reason_label": "需要修改什麼？",
       "send_back_to": "退回到 {{status}}",
       "cancel": "取消"
+    },
+    "rules": {
+      "label": "依類型",
+      "none": "所有類型相同",
+      "help": "屬性為以下值之一的事項遵循另一個工作流程，其餘遵循專案的工作流程。",
+      "choose_by": "依此屬性選擇工作流程",
+      "project_default": "專案工作流程",
+      "cancel": "取消",
+      "save": "儲存"
     }
   },
   "hover_card": {

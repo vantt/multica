@@ -1781,6 +1781,15 @@
       "reason_label": "What needs to change?",
       "send_back_to": "Send back to {{status}}",
       "cancel": "Cancel"
+    },
+    "rules": {
+      "label": "By Type",
+      "none": "Same for every Type",
+      "help": "Issues whose property has one of these values follow another workflow. Anything else follows the project's workflow.",
+      "choose_by": "Choose workflow by",
+      "project_default": "Project workflow",
+      "cancel": "Cancel",
+      "save": "Save"
     }
   },
   "hover_card": {
