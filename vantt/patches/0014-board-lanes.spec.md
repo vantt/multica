@@ -10,6 +10,7 @@ each holding several statuses (Backlog = built-in `backlog`, not yet committed, 
 To do (unstarted), In progress (started), **Awaiting approval** (every step a person
 handles that has a next status, from all the workflows; lock icon in the heading),
 Done (done and closed). Lanes without a visible status are not shown.
+- Lane headings wear Multica's own status icons (backlog, todo, in_progress, in_review for Awaiting approval, done), styled like status columns.
 - Cards name their real status (built-in statuses get a chip; custom ones already do)
   and their goal (linked to the issue, else its parent, else its project).
 - Awaiting approval lists the longest wait first.

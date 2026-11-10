@@ -1,4 +1,4 @@
-From 9899cf533a0ff8a6993baed30e4c441005d0b3c3 Mon Sep 17 00:00:00 2001
+From faad8f41a1bdff5667babc558b9630b4bfdc7838 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 18:29:32 +0700
 Subject: [PATCH 1/2] feat(boards): lanes for a board of several workflows
@@ -21,8 +21,8 @@ Patch-Id: board-lanes
 ---
  .../views/issues/components/board-card.tsx    |  15 +-
  .../views/issues/components/board-column.tsx  |   8 +
- .../issues/components/board-lanes.test.ts     |  84 ++++++++
- .../views/issues/components/board-lanes.tsx   | 196 ++++++++++++++++++
+ .../issues/components/board-lanes.test.ts     |  84 +++++++
+ .../views/issues/components/board-lanes.tsx   | 211 ++++++++++++++++++
  .../views/issues/components/board-view.tsx    |  90 ++++++--
  packages/views/issues/utils/drag-utils.ts     |  10 +-
  .../views/issues/utils/workflow-columns.ts    |  10 +-
@@ -32,7 +32,7 @@ Patch-Id: board-lanes
  packages/views/locales/ko/issues.json         |   9 +
  packages/views/locales/zh-Hans/issues.json    |   9 +
  packages/views/locales/zh-Hant/issues.json    |   9 +
- 13 files changed, 440 insertions(+), 27 deletions(-)
+ 13 files changed, 455 insertions(+), 27 deletions(-)
  create mode 100644 packages/views/issues/components/board-lanes.test.ts
  create mode 100644 packages/views/issues/components/board-lanes.tsx
 
@@ -216,10 +216,10 @@ index 000000000..a8d0cbbbb
 +});
 diff --git a/packages/views/issues/components/board-lanes.tsx b/packages/views/issues/components/board-lanes.tsx
 new file mode 100644
-index 000000000..f5e4fd89a
+index 000000000..caf4a3c34
 --- /dev/null
 +++ b/packages/views/issues/components/board-lanes.tsx
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,211 @@
 +"use client";
 +
 +import { createContext, useContext } from "react";
@@ -364,15 +364,30 @@ index 000000000..f5e4fd89a
 +  );
 +}
 +
++/** The built-in status whose Multica icon a lane wears. */
++const LANE_ICON: Record<Lane, string> = {
++  backlog: "backlog",
++  todo: "todo",
++  in_progress: "in_progress",
++  awaiting_approval: "in_review",
++  done: "done",
++};
++
++/** A lane's heading, styled like Multica's own status columns (same icon set). */
 +export function LaneHeading({ group, count }: { group: BoardColumnGroup; count: number }) {
 +  const { t } = useT("issues");
++  const { categoryOf, colorOf, iconOf } = useIssueStatuses(useWorkspaceId());
 +  const gate = group.lane === "awaiting_approval";
++  const icon = LANE_ICON[group.lane ?? "todo"];
 +  return (
-+    <span className="flex min-w-0 items-center gap-1.5" title={(group.statuses ?? []).join(", ")}>
-+      {gate && <Lock aria-label={t(($) => $.board_lanes.gate_hint)} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />}
-+      <span className={gate ? "truncate font-medium text-amber-800 dark:text-amber-300" : "truncate font-medium"}>{group.title}</span>
-+      <span className="text-muted-foreground tabular-nums">{count}</span>
-+    </span>
++    <div className="flex min-w-0 items-center gap-2" title={(group.statuses ?? []).join(", ")}>
++      <span className="inline-flex min-w-0 items-center gap-1.5 text-caption font-semibold">
++        <StatusIcon category={categoryOf(icon)} color={colorOf(icon)} icon={iconOf(icon)} status={icon} className="h-3 w-3 shrink-0" />
++        <span className="truncate">{group.title}</span>
++        {gate && <Lock aria-label={t(($) => $.board_lanes.gate_hint)} className="size-3 shrink-0 text-muted-foreground" />}
++      </span>
++      <span className="text-caption text-muted-foreground tabular-nums">{count}</span>
++    </div>
 +  );
 +}
 +
