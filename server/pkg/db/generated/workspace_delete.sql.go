@@ -425,6 +425,9 @@ deleted_goals AS (
 deleted_project_workflow_rules AS (
     DELETE FROM project_workflow_rule WHERE project_workflow_rule.workspace_id = $1
 ),
+deleted_issue_decisions AS (
+    DELETE FROM issue_decision WHERE issue_decision.workspace_id = $1
+),
 deleted_autopilot_collaborators AS (
     DELETE FROM autopilot_collaborator
     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
