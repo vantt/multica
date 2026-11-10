@@ -494,6 +494,8 @@ import {
   type IssueViewPreference,
   type CreateIssueViewRequest,
 } from "./schemas";
+import type { Goal, GoalDetail, GoalWriteRequest } from "../goals/types";
+import { EMPTY_GOAL_DETAIL, EMPTY_GOALS, GoalDetailSchema, ListGoalsSchema } from "../goals/schemas";
 
 /** Identifies the calling client to the server.
  *  Sent on every HTTP request as X-Client-Platform / X-Client-Version /
@@ -4126,6 +4128,29 @@ export class ApiClient {
     rules: { property_id: string; option_id: string; workflow_id: string }[],
   ): Promise<void> {
     await this.fetch(`/api/projects/${projectId}/workflow-rules`, { method: "PUT", body: JSON.stringify({ rules }) });
+  }
+
+  // vantt goals (patch goals-ui, F2).
+  async listGoals(): Promise<{ goals: Goal[] }> {
+    const raw = await this.fetch<unknown>("/api/goals");
+    return parseWithFallback(raw, ListGoalsSchema, EMPTY_GOALS, { endpoint: "GET /api/goals" });
+  }
+
+  async getGoal(id: string): Promise<GoalDetail | null> {
+    const raw = await this.fetch<unknown>(`/api/goals/${id}`);
+    return parseWithFallback(raw, GoalDetailSchema, EMPTY_GOAL_DETAIL, { endpoint: "GET /api/goals/:id" });
+  }
+
+  async createGoal(body: GoalWriteRequest): Promise<Goal> {
+    return this.fetch("/api/goals", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async updateGoal(id: string, body: GoalWriteRequest): Promise<Goal> {
+    return this.fetch(`/api/goals/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  }
+
+  async addGoalValue(id: string, value: number, note: string): Promise<Goal> {
+    return this.fetch(`/api/goals/${id}/values`, { method: "POST", body: JSON.stringify({ value, note }) });
   }
 
   async listProjectResources(

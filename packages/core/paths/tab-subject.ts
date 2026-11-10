@@ -82,6 +82,8 @@ export function parseTabSubject(url: string): TabSubject {
       return { kind: "page", page: "myIssues" };
     case "projects":
       return id ? { kind: "project", id } : { kind: "page", page: "projects" };
+    case "goals":
+      return { kind: "page", page: "goals" };
     case "autopilots":
       return id ? { kind: "autopilot", id } : { kind: "page", page: "autopilots" };
     case "agents":
