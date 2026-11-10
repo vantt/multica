@@ -1,0 +1,284 @@
+From 5bd23727da84bb1463077b25b1478a32701a7a01 Mon Sep 17 00:00:00 2001
+From: Van Tran <trantoanvan@outlook.com>
+Date: Tue, 10 Nov 2026 17:42:50 +0700
+Subject: [PATCH 1/2] feat(issues): when each open issue entered its status
+
+GET /api/issues/status-since[?project_id=] lists, for every issue not done or
+cancelled, its status and when it entered it (last status_changed activity,
+else creation). Core @multica/core/board-gates: the query, daysInColumn, and
+gateStatuses (steps a person approves). Reference: Jira's days in column.
+
+Patch-Id: status-age
+---
+ packages/core/api/client.ts                   |  8 +++
+ packages/core/board-gates/index.test.ts       | 27 ++++++++
+ packages/core/board-gates/index.ts            | 56 ++++++++++++++++
+ packages/core/package.json                    |  1 +
+ server/cmd/server/router.go                   |  1 +
+ server/internal/handler/vantt_status_since.go | 67 +++++++++++++++++++
+ .../handler/vantt_status_since_test.go        | 39 +++++++++++
+ 7 files changed, 199 insertions(+)
+ create mode 100644 packages/core/board-gates/index.test.ts
+ create mode 100644 packages/core/board-gates/index.ts
+ create mode 100644 server/internal/handler/vantt_status_since.go
+ create mode 100644 server/internal/handler/vantt_status_since_test.go
+
+diff --git a/packages/core/api/client.ts b/packages/core/api/client.ts
+index 4f4b98fd0..1eef04c11 100644
+--- a/packages/core/api/client.ts
++++ b/packages/core/api/client.ts
+@@ -4130,6 +4130,14 @@ export class ApiClient {
+     });
+   }
+ 
++  // vantt board-gates (design D3): when each open issue entered its status.
++  async listIssueStatusSince(projectId: string | null): Promise<{ issues: Record<string, import("../board-gates").StatusSince> }> {
++    const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
++    const raw = await this.fetch<{ issues?: unknown }>(`/api/issues/status-since${q}`);
++    const issues = raw?.issues && typeof raw.issues === "object" ? (raw.issues as Record<string, import("../board-gates").StatusSince>) : {};
++    return { issues };
++  }
++
+   // vantt workflow-by-type (patch workflow-by-type-ui, F3).
+   async listProjectWorkflowRules(projectId: string): Promise<{ rules: { property_id: string; option_id: string; workflow_id: string }[] }> {
+     const raw = await this.fetch<{ rules?: unknown }>(`/api/projects/${projectId}/workflow-rules`);
+diff --git a/packages/core/board-gates/index.test.ts b/packages/core/board-gates/index.test.ts
+new file mode 100644
+index 000000000..a34d1dbdc
+--- /dev/null
++++ b/packages/core/board-gates/index.test.ts
+@@ -0,0 +1,27 @@
++import { describe, expect, it } from "vitest";
++import { daysInColumn, gateStatuses } from "./index";
++
++describe("daysInColumn", () => {
++  const now = Date.parse("2026-11-10T12:00:00Z");
++  it("counts whole days in the current status", () => {
++    expect(daysInColumn({ status: "in_review", since: "2026-11-05T11:00:00Z" }, "in_review", now)).toBe(5);
++    expect(daysInColumn({ status: "in_review", since: "2026-11-10T08:00:00Z" }, "in_review", now)).toBe(0);
++  });
++  it("is unknown once the issue moved or without an entry", () => {
++    expect(daysInColumn({ status: "todo", since: "2026-11-01T00:00:00Z" }, "in_review", now)).toBeNull();
++    expect(daysInColumn(undefined, "todo", now)).toBeNull();
++  });
++});
++
++describe("gateStatuses", () => {
++  it("lists steps a person approves, once, skipping blocked-style steps", () => {
++    const delivery = { steps: [
++      { status_key: "todo", handler: { type: "agent" }, next_status_key: "build" },
++      { status_key: "spec_approval", handler: { type: "member" }, next_status_key: "build" },
++      { status_key: "in_review", handler: { type: "member" }, next_status_key: "release" },
++      { status_key: "blocked", handler: { type: "member" }, next_status_key: null },
++    ] };
++    const content = { steps: [{ status_key: "in_review", handler: { type: "project_lead" }, next_status_key: "done" }] };
++    expect(gateStatuses([delivery, content])).toEqual(["spec_approval", "in_review"]);
++  });
++});
+diff --git a/packages/core/board-gates/index.ts b/packages/core/board-gates/index.ts
+new file mode 100644
+index 000000000..21a75bb75
+--- /dev/null
++++ b/packages/core/board-gates/index.ts
+@@ -0,0 +1,56 @@
++import { api } from "../api";
++
++/**
++ * vantt board-gates (design D3): days in column on board cards, and the steps a
++ * person approves, which a board of several workflows folds into one
++ * "Awaiting approval" column. Reference: Jira board ("days in column", column
++ * mapping several statuses).
++ */
++export interface StatusSince {
++  status: string;
++  since: string;
++}
++
++export const statusSinceKeys = {
++  scope: (wsId: string, projectId: string | null) => ["status-since", wsId, projectId ?? "all"] as const,
++};
++
++// Plain options object so tests that mock react-query with only useQuery work.
++export function statusSinceOptions(wsId: string, projectId: string | null) {
++  return {
++    queryKey: statusSinceKeys.scope(wsId, projectId),
++    queryFn: () => api.listIssueStatusSince(projectId),
++    select: (data: { issues: Record<string, StatusSince> }) => data.issues,
++    staleTime: 60_000,
++  };
++}
++
++/** Whole days an issue has sat in `status`; null when unknown or the issue moved since. */
++export function daysInColumn(entry: StatusSince | undefined, status: string, now: number = Date.now()): number | null {
++  if (!entry || entry.status !== status) return null;
++  const at = Date.parse(entry.since);
++  if (Number.isNaN(at)) return null;
++  return Math.max(0, Math.floor((now - at) / 86_400_000));
++}
++
++interface GateStep {
++  status_key: string;
++  handler: { type: string };
++  next_status_key?: string | null;
++}
++
++/**
++ * Approval steps: a person handles them (member, project lead or creator) and
++ * they lead somewhere (`next_status_key`). Blocked-style steps without a next
++ * status are not approvals.
++ */
++export function gateStatuses(workflows: readonly { steps: readonly GateStep[] }[]): string[] {
++  const out: string[] = [];
++  for (const wf of workflows) {
++    for (const step of wf.steps) {
++      const person = ["member", "project_lead", "creator"].includes(step.handler?.type);
++      if (person && step.next_status_key && !out.includes(step.status_key)) out.push(step.status_key);
++    }
++  }
++  return out;
++}
+diff --git a/packages/core/package.json b/packages/core/package.json
+index 1774d4daa..c02367b6e 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -41,6 +41,7 @@
+     "./goals": "./goals/index.ts",
+     "./workflow-rules": "./workflow-rules/index.ts",
+     "./decisions": "./decisions/index.ts",
++    "./board-gates": "./board-gates/index.ts",
+     "./issues": "./issues/index.ts",
+     "./issues/batch": "./issues/batch.ts",
+     "./issues/canonical-id": "./issues/canonical-id.ts",
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 0a1dcfc57..720f34575 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -2035,6 +2035,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 				r.Get("/child-progress", h.ChildIssueProgress)
+ 				r.Get("/children", h.ListChildrenByParents)
+ 				r.Get("/decisions/open", h.ListOpenDecisions) // vantt decisions
++				r.Get("/status-since", h.ListIssueStatusSince) // vantt board-age
+ 				r.Get("/grouped", h.ListGroupedIssues)
+ 				r.Get("/", h.ListIssues)
+ 				// POST twin of GET /api/issues for oversized filter sets
+diff --git a/server/internal/handler/vantt_status_since.go b/server/internal/handler/vantt_status_since.go
+new file mode 100644
+index 000000000..71efe997a
+--- /dev/null
++++ b/server/internal/handler/vantt_status_since.go
+@@ -0,0 +1,67 @@
++package handler
++
++import (
++	"net/http"
++	"time"
++
++	"github.com/jackc/pgx/v5/pgtype"
++)
++
++// vantt board-age (design D3): when each open issue entered its current status,
++// for the board's "days in column" badge. Taken from the activity log's last
++// status_changed entry, else the issue's creation. Reference: Jira's
++// "days in column" on board cards.
++
++type StatusSinceEntry struct {
++	Status string `json:"status"`
++	Since  string `json:"since"`
++}
++
++// ListIssueStatusSince serves GET /api/issues/status-since[?project_id=].
++// Only issues whose status is not done or cancelled are listed.
++func (h *Handler) ListIssueStatusSince(w http.ResponseWriter, r *http.Request) {
++	wsID := h.resolveWorkspaceID(r)
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
++		return
++	}
++	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
++	if !ok {
++		return
++	}
++	var project pgtype.UUID
++	if p := r.URL.Query().Get("project_id"); p != "" {
++		id, ok := parseUUIDOrBadRequest(w, p, "project_id")
++		if !ok {
++			return
++		}
++		project = id
++	}
++	rows, err := h.DB.Query(r.Context(), `
++		SELECT i.id::text, i.status, COALESCE(MAX(a.created_at), i.created_at)
++		FROM issue i
++		LEFT JOIN activity_log a ON a.issue_id = i.id AND a.action = 'status_changed'
++		WHERE i.workspace_id = $1
++		  AND ($2::uuid IS NULL OR i.project_id = $2)
++		  AND i.status NOT IN ('done', 'cancelled')
++		GROUP BY i.id, i.status, i.created_at`, wsUUID, project)
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list status times")
++		return
++	}
++	defer rows.Close()
++	out := map[string]StatusSinceEntry{}
++	for rows.Next() {
++		var id, status string
++		var since time.Time
++		if err := rows.Scan(&id, &status, &since); err != nil {
++			writeError(w, http.StatusInternalServerError, "failed to read status times")
++			return
++		}
++		out[id] = StatusSinceEntry{Status: status, Since: since.UTC().Format(time.RFC3339)}
++	}
++	if err := rows.Err(); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to read status times")
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"issues": out})
++}
+diff --git a/server/internal/handler/vantt_status_since_test.go b/server/internal/handler/vantt_status_since_test.go
+new file mode 100644
+index 000000000..756b514f7
+--- /dev/null
++++ b/server/internal/handler/vantt_status_since_test.go
+@@ -0,0 +1,39 @@
++package handler
++
++import (
++	"context"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++func TestIssueStatusSince(t *testing.T) {
++	moved := dbfx.Issue(t, "moved to review", testutil.Cols{"status": "in_review"})
++	fresh := dbfx.Issue(t, "never moved", testutil.Cols{"status": "todo"})
++	closed := dbfx.Issue(t, "closed", testutil.Cols{"status": "done"})
++	at := time.Now().Add(-72 * time.Hour).UTC().Truncate(time.Second)
++	if _, err := testPool.Exec(context.Background(),
++		`INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, created_at) VALUES ($1, $2, 'member', 'status_changed', $3)`,
++		testWorkspaceID, moved, at); err != nil {
++		t.Fatal(err)
++	}
++
++	var res struct {
++		Issues map[string]StatusSinceEntry `json:"issues"`
++	}
++	testutil.Call(t, testHandler.ListIssueStatusSince, newRequest("GET", "/api/issues/status-since?workspace_id="+testWorkspaceID, nil)).
++		Want(http.StatusOK).JSON(&res)
++	if got := res.Issues[moved]; got.Status != "in_review" || got.Since != at.Format(time.RFC3339) {
++		t.Fatalf("moved = %+v, want in_review at %s", got, at.Format(time.RFC3339))
++	}
++	if got, ok := res.Issues[fresh]; !ok || got.Since == "" {
++		t.Fatalf("fresh issue falls back to created_at, got %+v", got)
++	}
++	if _, ok := res.Issues[closed]; ok {
++		t.Fatal("done issues are not listed")
++	}
++	testutil.Call(t, testHandler.ListIssueStatusSince, newRequest("GET", "/api/issues/status-since?workspace_id="+testWorkspaceID+"&project_id=nope", nil)).
++		Want(http.StatusBadRequest)
++}
+-- 
+2.53.0
+
