@@ -1768,6 +1768,16 @@
           "waiting": "Waiting on reporter"
         }
       }
+    },
+    "approval": {
+      "title": "Waiting for your approval",
+      "gate_note": "Agents cannot move this issue out of this step.",
+      "approve": "Approve",
+      "send_back": "Send back",
+      "moves_to": "Approve moves it to {{status}}",
+      "reason_label": "What needs to change?",
+      "send_back_to": "Send back to {{status}}",
+      "cancel": "Cancel"
     }
   },
   "hover_card": {

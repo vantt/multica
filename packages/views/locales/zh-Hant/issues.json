@@ -1701,6 +1701,16 @@
           "waiting": "等待反饋"
         }
       }
+    },
+    "approval": {
+      "title": "等待你的審批",
+      "gate_note": "智慧代理無法將此事項移出此步驟。",
+      "approve": "批准",
+      "send_back": "退回",
+      "moves_to": "批准後移至 {{status}}",
+      "reason_label": "需要修改什麼？",
+      "send_back_to": "退回到 {{status}}",
+      "cancel": "取消"
     }
   },
   "hover_card": {
