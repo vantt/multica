@@ -219,7 +219,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 		// handoff when no assignee was picked. (MUL-7420)
 		if req.ProjectID != nil && *req.ProjectID != "" {
 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
-				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
+				if def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, projectUUID, nil); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
 						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID)); ok {
 							candidate.AssigneeType = pgtype.Text{String: t, Valid: true}
