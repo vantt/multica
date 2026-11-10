@@ -20,7 +20,9 @@ Done (done and closed). Lanes without a visible status are not shown.
   takes the lane's first status its own workflow allows (the Type rule's workflow,
   else the project's); no such status → refused with a toast.
 - "+" in a lane creates in its first status; none in Awaiting approval.
-- A board of one workflow is unchanged (one column per step, D3b).
+- Automatic (D3d): the lanes show only while the cards on the board (after filters)
+  follow several workflows; when they follow one (e.g. Filter → Type = Tech · *), the
+  board shows that workflow's steps as columns, as a board of one workflow does (D3b).
 Reference: Jira board column mapping (several statuses per column), days in column.
 
 Fixes the deviation in 0007: that patch showed every status of every workflow as its

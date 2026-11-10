@@ -1,4 +1,4 @@
-From 9d66d12b9c04eeb632bb6aa475326febd5e52c71 Mon Sep 17 00:00:00 2001
+From 530c70d3a9949937252947e4d80c8821b49e6581 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 18:29:38 +0700
 Subject: [PATCH 2/2] feat(issues): pull requests in the approval panel

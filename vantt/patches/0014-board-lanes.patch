@@ -1,4 +1,4 @@
-From 049b404f23b2304d46160442b92961ecf8c0f6c3 Mon Sep 17 00:00:00 2001
+From 7dd093ba153068501c21244e6583bb688c76ba0a Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 18:29:32 +0700
 Subject: [PATCH 1/2] feat(boards): lanes for a board of several workflows
@@ -23,7 +23,7 @@ Patch-Id: board-lanes
  .../views/issues/components/board-column.tsx  |   8 +
  .../issues/components/board-lanes.test.ts     |  83 ++++++++
  .../views/issues/components/board-lanes.tsx   | 194 ++++++++++++++++++
- .../views/issues/components/board-view.tsx    |  45 +++-
+ .../views/issues/components/board-view.tsx    |  90 ++++++--
  packages/views/issues/utils/drag-utils.ts     |  10 +-
  .../views/issues/utils/workflow-columns.ts    |  10 +-
  packages/views/locales/en/issues.json         |   8 +
@@ -32,7 +32,7 @@ Patch-Id: board-lanes
  packages/views/locales/ko/issues.json         |   8 +
  packages/views/locales/zh-Hans/issues.json    |   8 +
  packages/views/locales/zh-Hant/issues.json    |   8 +
- 13 files changed, 400 insertions(+), 13 deletions(-)
+ 13 files changed, 431 insertions(+), 27 deletions(-)
  create mode 100644 packages/views/issues/components/board-lanes.test.ts
  create mode 100644 packages/views/issues/components/board-lanes.tsx
 
@@ -414,10 +414,26 @@ index 000000000..2c8f025c5
 +  );
 +}
 diff --git a/packages/views/issues/components/board-view.tsx b/packages/views/issues/components/board-view.tsx
-index 5e0346a92..43e36b6d2 100644
+index 5e0346a92..c52d431d7 100644
 --- a/packages/views/issues/components/board-view.tsx
 +++ b/packages/views/issues/components/board-view.tsx
-@@ -75,6 +75,8 @@ import {
+@@ -21,6 +21,7 @@ import type {
+   Issue,
+   IssueAssigneeType,
+   IssueStatus,
++  IssueWorkflow,
+   Project,
+   IssueProperty,
+ } from "@multica/core/types";
+@@ -33,6 +34,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
+ import { BoardColumn, BOARD_CARD_WIDTH, type BoardColumnGroup } from "./board-column";
+ import { BoardWorkflowContext, type BoardWorkflowContextValue } from "./board-workflow-context";
+ import {
++  defaultWorkflow,
+   resolveProjectWorkflow,
+   stepHandsOff,
+   useIssueWorkflows,
+@@ -75,6 +77,8 @@ import {
    projectGroupId,
  } from "../utils/drag-utils";
  import { useStatusLabel } from "../utils/status-label";
@@ -426,21 +442,51 @@ index 5e0346a92..43e36b6d2 100644
  
  function isStatusGroup(
    group: BoardColumnGroup,
-@@ -447,9 +449,26 @@ function BoardViewImpl({
+@@ -447,12 +451,59 @@ function BoardViewImpl({
        ]),
      ) as Record<string, IssueGroupPageState>;
    }, [groupBranches]);
 +  // vantt board-lanes (D3d Automatic): several workflows -> four lanes.
 +  const boardLanes = useBoardLanes(boardWsId, projectId);
-+  const laneMode = grouping === "status" && boardLanes !== null;
++  // Project workflows (MUL-7420): a card can only move to a status its
++  // project's workflow lists, and a project board names each step's handler.
++  const { workflows } = useIssueWorkflows(boardWsId);
++  const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
++  const workflowOfIssue = useCallback(
++    (issue: Issue | null | undefined) => {
++      if (!issue?.project_id) return null;
++      if (boardLanes?.workflowOf && issue.project_id === projectId) return boardLanes.workflowOf(issue); // vantt board-lanes
++      return resolveProjectWorkflow(
++        workflows,
++        workspaceProjects?.find((p) => p.id === issue.project_id),
++      );
++    },
++    [workflows, workspaceProjects, boardLanes, projectId],
++  );
++  // Automatic columns (D3d): the workflows of the cards on the board (after
++  // filters). Several -> four lanes; one -> that workflow's steps.
++  const inUse = useMemo(() => {
++    const ids = new Map<string, IssueWorkflow>();
++    for (const issue of issues) {
++      const wf = workflowOfIssue(issue) ?? defaultWorkflow(workflows);
++      if (wf) ids.set(wf.id, wf);
++    }
++    return [...ids.values()];
++  }, [issues, workflowOfIssue, workflows]);
++  const laneMode = grouping === "status" && boardLanes !== null && inUse.length > 1;
++  const boardStatuses = useMemo(() => {
++    if (!boardLanes || inUse.length !== 1) return visibleStatuses;
++    const keys = new Set(inUse[0]!.steps.map((step) => step.status_key));
++    return visibleStatuses.filter((status) => keys.has(status));
++  }, [boardLanes, inUse, visibleStatuses]);
 +  const { data: statusSince } = useQuery({ ...statusSinceOptions(boardWsId, projectId ?? null), enabled: laneMode });
 +  const laneGroups = useMemo(
 +    () =>
 +      laneMode
-+        ? buildLaneGroups(visibleStatuses, catalog.categoryOf, boardLanes!.gates, (lane: Lane) => t(($) => $.board_lanes[lane]), statusSince)
++        ? buildLaneGroups(boardStatuses, catalog.categoryOf, boardLanes!.gates, (lane: Lane) => t(($) => $.board_lanes[lane]), statusSince)
 +        : null,
 +    // eslint-disable-next-line react-hooks/exhaustive-deps
-+    [laneMode, visibleStatuses, catalog, boardLanes?.gates.join(","), statusSince, t],
++    [laneMode, boardStatuses, catalog, boardLanes?.gates.join(","), statusSince, t],
 +  );
 +  const pagination = useMemo(
 +    () => (laneGroups ? { ...(groupPagination ?? {}), ...lanePages(laneGroups, statusPagination) } : groupPagination),
@@ -452,8 +498,12 @@ index 5e0346a92..43e36b6d2 100644
 +        laneGroups ??
          hydratedAssigneeGroups ??
          hydratedProjectGroups ??
-         buildGroups(issues, visibleStatuses, grouping, {
-@@ -462,10 +481,10 @@ function BoardViewImpl({
+-        buildGroups(issues, visibleStatuses, grouping, {
++        buildGroups(issues, boardStatuses, grouping, {
+           getActorName,
+           groupingProperty,
+           projectMap,
+@@ -462,10 +513,10 @@ function BoardViewImpl({
          });
        return built.map((group) => ({
          ...group,
@@ -462,26 +512,32 @@ index 5e0346a92..43e36b6d2 100644
        }));
      },
 -    [hydratedAssigneeGroups, hydratedProjectGroups, issues, visibleStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
-+    [laneGroups, pagination, hydratedAssigneeGroups, hydratedProjectGroups, issues, visibleStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
++    [laneGroups, pagination, hydratedAssigneeGroups, hydratedProjectGroups, issues, boardStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
    );
    const groupIds = useMemo(
      () => new Set(groups.map((group) => group.id)),
-@@ -496,12 +515,13 @@ function BoardViewImpl({
-   const workflowOfIssue = useCallback(
-     (issue: Issue | null | undefined) => {
-       if (!issue?.project_id) return null;
-+      if (boardLanes?.workflowOf && issue.project_id === projectId) return boardLanes.workflowOf(issue); // vantt board-lanes
-       return resolveProjectWorkflow(
-         workflows,
-         workspaceProjects?.find((p) => p.id === issue.project_id),
-       );
-     },
+@@ -489,20 +540,6 @@ function BoardViewImpl({
+     anchors: ReturnType<typeof getMoveAnchors>;
+   } | null>(null);
+ 
+-  // Project workflows (MUL-7420): a card can only move to a status its
+-  // project's workflow lists, and a project board names each step's handler.
+-  const { workflows } = useIssueWorkflows(boardWsId);
+-  const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
+-  const workflowOfIssue = useCallback(
+-    (issue: Issue | null | undefined) => {
+-      if (!issue?.project_id) return null;
+-      return resolveProjectWorkflow(
+-        workflows,
+-        workspaceProjects?.find((p) => p.id === issue.project_id),
+-      );
+-    },
 -    [workflows, workspaceProjects],
-+    [workflows, workspaceProjects, boardLanes, projectId],
-   );
+-  );
    const scopeProject = projectId ? workspaceProjects?.find((p) => p.id === projectId) ?? null : null;
    const activeWorkflow = workflowOfIssue(activeIssue);
-@@ -602,7 +622,11 @@ function BoardViewImpl({
+   const activeProject = activeIssue?.project_id
+@@ -602,7 +639,11 @@ function BoardViewImpl({
          const activeCol = findColumn(prev, activeId, groupIds);
          const overCol = findColumn(prev, overId, groupIds);
          if (!activeCol || !overCol || activeCol === overCol) return prev;
@@ -494,7 +550,7 @@ index 5e0346a92..43e36b6d2 100644
          if (targetStatus && catalog.entryOf(targetStatus)?.archived_at) return prev;
          if (targetStatus && !workflowAllowsStatus(workflowOfIssue(issueMapRef.current.get(activeId)), targetStatus)) {
            return prev;
-@@ -667,9 +691,14 @@ function BoardViewImpl({
+@@ -667,9 +708,14 @@ function BoardViewImpl({
          resetColumns();
          return;
        }
@@ -510,7 +566,7 @@ index 5e0346a92..43e36b6d2 100644
          return;
        }
  
-@@ -813,6 +842,7 @@ function BoardViewImpl({
+@@ -813,6 +859,7 @@ function BoardViewImpl({
  
    return (
      <BoardWorkflowContext.Provider value={boardWorkflow}>
@@ -518,7 +574,7 @@ index 5e0346a92..43e36b6d2 100644
      <DndContext
        sensors={sensors}
        collisionDetection={collisionDetection}
-@@ -866,7 +896,7 @@ function BoardViewImpl({
+@@ -866,7 +913,7 @@ function BoardViewImpl({
                  sortLabel={sortLabel}
                />
              ) : (
@@ -527,7 +583,7 @@ index 5e0346a92..43e36b6d2 100644
                  <ServerPaginatedBoardColumn
                    key={group.id}
                    group={group}
-@@ -874,7 +904,7 @@ function BoardViewImpl({
+@@ -874,7 +921,7 @@ function BoardViewImpl({
                    issueMap={issueMapRef.current}
                    childProgressMap={childProgressMap}
                    projectMap={projectMap}
@@ -536,7 +592,7 @@ index 5e0346a92..43e36b6d2 100644
                    projectId={projectId}
                    onCreateIssue={onCreateIssue}
                    sortLabel={sortLabel}
-@@ -922,6 +952,7 @@ function BoardViewImpl({
+@@ -922,6 +969,7 @@ function BoardViewImpl({
          ) : null}
        </DragOverlay>
      </DndContext>
