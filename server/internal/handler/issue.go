@@ -4018,6 +4018,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// A handoff assignee passes the same gate as a hand-picked one.
 	// An agent's run may only move the issue from the step it works on.
 	callerType, _ := h.resolveActor(r, userID, workspaceID)
+	if err := h.refuseAgentLeavingGate(r.Context(), prevIssue, params, callerType); err != nil {
+		if writeIssueWorkflowError(w, err) {
+			return
+		}
+		slog.Error("update issue: owner gate", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return
+	}
 	callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
 	handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
 	if err != nil {
@@ -4856,6 +4864,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// not list the batch status is skipped like the other per-item guards;
 		// entering a handoff step reassigns this issue to the step's handler.
 		callerType, _ := h.resolveActor(r, userID, workspaceID)
+		if h.refuseAgentLeavingGate(r.Context(), prevIssue, params, callerType) != nil {
+			continue
+		}
 		callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
 		handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, callerRun)
 		if err != nil {
