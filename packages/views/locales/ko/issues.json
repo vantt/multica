@@ -1738,5 +1738,10 @@
   },
   "parent_chip": {
     "title": "{{identifier}}의 하위 이슈 · {{title}}"
+  },
+  "child_panel": {
+    "status_bar": "상태별 하위 이슈: {{summary}}",
+    "days": "{{count}}일",
+    "days_title": "{{status}} 상태로 {{count}}일"
   }
 }
