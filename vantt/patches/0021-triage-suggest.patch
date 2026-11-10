@@ -1,0 +1,1123 @@
+From 59259bae4d650d46efad336aac19e331e2dd1c76 Mon Sep 17 00:00:00 2001
+From: Van Tran <trantoanvan@outlook.com>
+Date: Tue, 10 Nov 2026 23:52:57 +0700
+Subject: [PATCH] feat(triage): suggest a new issue's project and Type with a
+ fast decision model
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Cloudflare Workers AI's Clef (Jev's "System One" shape: choice questions,
+calibrated probabilities) answers in about 200 ms. Learned from OpenMausBot's
+decider: fail open (no key, timeout 1.5 s, HTTP error or an answer that does
+not validate = no suggestion), the top option's probability must reach 0.6,
+and the log line holds the choice, probability, margin, latency and a state
+hash, never the issue text or the token. From Linear's Triage Intelligence:
+project and team-like fields, workspace history as context, the workspace's
+own guidance, auto-apply only where chosen.
+
+Everything offered is read from the workspace on every call: projects (name,
+description, recent issue titles) and the property the workflow rules use,
+else one named Type (its options, its description as guidance, recent issues
+per option). Nothing about options is built in.
+
+- POST /api/issues/triage-suggest {title, description, project_id, has_type}
+  returns only the fields the model is sure of (often none).
+- A chat /issue (origin *_chat) with no project gets project and Type when
+  sure, plus a line "_Clef xếp: <project> 87% · <Type> 91%_"; any refusal
+  creates the issue as typed.
+- MULTICA_CLOUDFLARE_AI_ACCOUNT_ID + MULTICA_CLOUDFLARE_AI_TOKEN turn it on;
+  MULTICA_TRIAGE_FORM=off / MULTICA_TRIAGE_CHAT=off switch a job off.
+- Opt-in live eval (TRIAGE_LIVE_EVAL=1) against a workspace's issues or a
+  fixture of requests.
+
+Patch-Id: triage-suggest
+---
+ server/cmd/server/router.go                   |  12 +-
+ server/internal/handler/vantt_triage.go       |  54 ++++
+ server/internal/handler/vantt_triage_test.go  | 135 +++++++++
+ server/internal/triage/chat.go                |  73 +++++
+ server/internal/triage/clef.go                | 229 +++++++++++++++
+ server/internal/triage/clef_test.go           |  90 ++++++
+ server/internal/triage/eval_test.go           | 106 +++++++
+ server/internal/triage/suggest.go             | 274 ++++++++++++++++++
+ .../internal/triage/testdata/opc-studio.json  |  20 ++
+ 9 files changed, 992 insertions(+), 1 deletion(-)
+ create mode 100644 server/internal/handler/vantt_triage.go
+ create mode 100644 server/internal/handler/vantt_triage_test.go
+ create mode 100644 server/internal/triage/chat.go
+ create mode 100644 server/internal/triage/clef.go
+ create mode 100644 server/internal/triage/clef_test.go
+ create mode 100644 server/internal/triage/eval_test.go
+ create mode 100644 server/internal/triage/suggest.go
+ create mode 100644 server/internal/triage/testdata/opc-studio.json
+
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 8a6e5dc2c..ccd0906b3 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -36,6 +36,7 @@ import (
+ 	"github.com/multica-ai/multica/server/internal/integrations/lark"
+ 	"github.com/multica-ai/multica/server/internal/integrations/slack"
+ 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
++	"github.com/multica-ai/multica/server/internal/triage"
+ 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
+ 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+ 	"github.com/multica-ai/multica/server/internal/middleware"
+@@ -536,7 +537,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 	// connection of its own outside the per-installation supervisor. The Router
+ 	// is the single shared inbound handler injected into every Channel.
+ 	channelRegistry := channel.NewRegistry()
+-	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{
++	// vantt 0021: chat /issue gets project and Type when the model is sure;
++	// the create form asks POST /api/issues/triage-suggest.
++	var chatIssues engine.IssueCreator = h.IssueService
++	if clef := triage.FromEnv(slog.Default()); clef != nil {
++		handler.Triage = &triage.Suggester{DB: pool, Client: clef}
++		chatIssues = &triage.ChatIssues{IssueCreator: h.IssueService, Suggester: handler.Triage}
++		slog.Info("triage suggestions enabled (Workers AI Clef)")
++	}
++	channelRouter := engine.NewRouter(chatIssues, h.TaskService, queries, engine.RouterConfig{
+ 		Logger: slog.Default(), Lifecycle: h,
+ 	})
+ 	// Debounce the per-session run trigger so a burst of messages collapses
+@@ -2042,6 +2051,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 				r.Get("/children", h.ListChildrenByParents)
+ 				r.Get("/decisions/open", h.ListOpenDecisions) // vantt decisions
+ 				r.Get("/status-since", h.ListIssueStatusSince) // vantt board-age
++				r.Post("/triage-suggest", h.TriageSuggest)     // vantt 0021
+ 				r.Get("/grouped", h.ListGroupedIssues)
+ 				r.Get("/", h.ListIssues)
+ 				// POST twin of GET /api/issues for oversized filter sets
+diff --git a/server/internal/handler/vantt_triage.go b/server/internal/handler/vantt_triage.go
+new file mode 100644
+index 000000000..2fc5be9ae
+--- /dev/null
++++ b/server/internal/handler/vantt_triage.go
+@@ -0,0 +1,54 @@
++package handler
++
++// vantt patch 0021 (triage-suggest): the create-issue form asks for a project
++// and Type suggestion while the person types (Linear's create-form
++// suggestions); see internal/triage.
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"strings"
++
++	"github.com/multica-ai/multica/server/internal/triage"
++)
++
++// Triage is set at boot when MULTICA_CLOUDFLARE_AI_* is configured; nil = off.
++var Triage *triage.Suggester
++
++type TriageSuggestRequest struct {
++	Title       string `json:"title"`
++	Description string `json:"description"`
++	ProjectID   string `json:"project_id"`
++	HasType     bool   `json:"has_type"`
++}
++
++// TriageSuggest (POST /api/issues/triage-suggest) answers 200 with only the
++// suggestions the model is sure of — often none. Off, failing or unsure all
++// look the same to the client: an empty object.
++func (h *Handler) TriageSuggest(w http.ResponseWriter, r *http.Request) {
++	if _, ok := requireUserID(w, r); !ok {
++		return
++	}
++	workspaceID := h.resolveWorkspaceID(r)
++	if workspaceID == "" {
++		writeError(w, http.StatusBadRequest, "workspace_id is required")
++		return
++	}
++	var req TriageSuggestRequest
++	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
++	if err != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	if Triage == nil || !triage.JobOn("form") || strings.TrimSpace(req.Title) == "" {
++		writeJSON(w, http.StatusOK, triage.Suggestion{})
++		return
++	}
++	ctx, cancel := context.WithTimeout(r.Context(), triage.DefaultTimeout)
++	defer cancel()
++	sug, _ := Triage.Suggest(ctx, "form", workspaceID, req.Title, req.Description,
++		triage.Need{Project: strings.TrimSpace(req.ProjectID) == "", Type: !req.HasType})
++	writeJSON(w, http.StatusOK, sug)
++}
+diff --git a/server/internal/handler/vantt_triage_test.go b/server/internal/handler/vantt_triage_test.go
+new file mode 100644
+index 000000000..be951f8d8
+--- /dev/null
++++ b/server/internal/handler/vantt_triage_test.go
+@@ -0,0 +1,135 @@
++package handler
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/service"
++	"github.com/multica-ai/multica/server/internal/testutil"
++	"github.com/multica-ai/multica/server/internal/triage"
++	"github.com/multica-ai/multica/server/internal/util"
++)
++
++// fakeClefPicking answers each question with the option whose text starts
++// with want[question] at probability p, so the test does not depend on how
++// many other projects the shared test workspace holds.
++func fakeClefPicking(t *testing.T, want map[string]string, p float64) *triage.Client {
++	t.Helper()
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var body struct {
++			Questions map[string]struct {
++				Criteria map[string]string `json:"criteria"`
++			} `json:"questions"`
++		}
++		_ = json.NewDecoder(r.Body).Decode(&body)
++		answers := map[string]any{}
++		for id, q := range body.Questions {
++			choice := ""
++			probs := map[string]float64{}
++			for k, text := range q.Criteria {
++				if strings.HasPrefix(text, want[id]) {
++					choice = k
++				}
++			}
++			for k := range q.Criteria {
++				if k == choice {
++					probs[k] = p
++				} else {
++					probs[k] = (1 - p) / float64(len(q.Criteria)-1)
++				}
++			}
++			answers[id] = map[string]any{"type": "choice", "choice": choice, "probabilities": probs}
++		}
++		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{"answers": answers}})
++	}))
++	t.Cleanup(srv.Close)
++	return triage.New("0123456789abcdef0123456789abcdef", "tok", srv.URL, nil)
++}
++
++func seedTriageWorkspace(t *testing.T) (projectID, propID, optionID string) {
++	t.Helper()
++	suffix := uuid.NewString()[:8]
++	dbfx.QueryRow(t, `INSERT INTO project (workspace_id, title, description) VALUES ($1, $2, 'Story app for developers') RETURNING id::text`,
++		testWorkspaceID, "Momentry "+suffix).Scan(&projectID)
++	var other string
++	dbfx.QueryRow(t, `INSERT INTO project (workspace_id, title, description) VALUES ($1, $2, 'Company blog') RETURNING id::text`,
++		testWorkspaceID, "Blog "+suffix).Scan(&other)
++	optionID = uuid.NewString()
++	cfg, _ := json.Marshal(map[string]any{"options": []map[string]string{
++		{"id": optionID, "name": "Tech · Bug " + suffix, "color": "#ef4444"},
++		{"id": uuid.NewString(), "name": "Marketing · Post " + suffix, "color": "#ec4899"},
++	}})
++	dbfx.QueryRow(t, `INSERT INTO issue_property (workspace_id, name, type, config, description) VALUES ($1, 'Type', 'select', $2, 'Kind of work') RETURNING id::text`,
++		testWorkspaceID, cfg).Scan(&propID)
++	t.Cleanup(func() {
++		testPool.Exec(context.Background(), `DELETE FROM issue_property WHERE id = $1`, propID)
++		testPool.Exec(context.Background(), `DELETE FROM issue WHERE project_id IN ($1, $2)`, projectID, other)
++		testPool.Exec(context.Background(), `DELETE FROM project WHERE id IN ($1, $2)`, projectID, other)
++	})
++	return projectID, propID, optionID
++}
++
++func TestTriageSuggestEndpointAndChat(t *testing.T) {
++	projectID, propID, optionID := seedTriageWorkspace(t)
++	var projectName string
++	dbfx.QueryRow(t, `SELECT title FROM project WHERE id = $1`, projectID).Scan(&projectName)
++	var optionName string
++	dbfx.QueryRow(t, `SELECT o->>'name' FROM issue_property, jsonb_array_elements(config->'options') o WHERE id = $1 AND o->>'id' = $2`, propID, optionID).Scan(&optionName)
++
++	prev := Triage
++	t.Cleanup(func() { Triage = prev })
++	Triage = &triage.Suggester{DB: testPool, Client: fakeClefPicking(t, map[string]string{"project": projectName, "type": optionName}, 0.9)}
++
++	call := func(body map[string]any) triage.Suggestion {
++		var s triage.Suggestion
++		testutil.Call(t, testHandler.TriageSuggest, newRequest("POST", "/api/issues/triage-suggest", body)).Want(http.StatusOK).JSON(&s)
++		return s
++	}
++	s := call(map[string]any{"title": "App crashes on long sessions"})
++	if s.Project == nil || s.Project.ID != projectID || s.Type == nil || s.Type.OptionID != optionID || s.Type.PropertyID != propID || s.Provider != "clef" {
++		t.Fatalf("suggestion = %+v", s)
++	}
++	// Fields the person already set are not asked for.
++	if s := call(map[string]any{"title": "x", "project_id": projectID, "has_type": true}); s.Project != nil || s.Type != nil {
++		t.Fatalf("asked for set fields: %+v", s)
++	}
++	// Unsure: nothing.
++	Triage.Client = fakeClefPicking(t, map[string]string{"project": projectName, "type": optionName}, 0.55)
++	if s := call(map[string]any{"title": "App crashes"}); s.Project != nil || s.Type != nil {
++		t.Fatalf("unsure suggested: %+v", s)
++	}
++
++	// Chat /issue: filled when sure, with the attribution line.
++	Triage.Client = fakeClefPicking(t, map[string]string{"project": projectName, "type": optionName}, 0.9)
++	chat := &triage.ChatIssues{IssueCreator: testHandler.IssueService, Suggester: Triage}
++	res, err := chat.Create(context.Background(), service.IssueCreateParams{
++		WorkspaceID: util.MustParseUUID(testWorkspaceID), Title: "App crashes on long sessions", Status: "todo", Priority: "none",
++		CreatorType: "member", CreatorID: util.MustParseUUID(testUserID),
++		OriginType: pgtype.Text{String: "telegram_chat", Valid: true},
++	}, service.IssueCreateOpts{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	var gotProject, gotType, desc string
++	dbfx.QueryRow(t, `SELECT coalesce(project_id::text, ''), coalesce(properties->>$2, ''), coalesce(description, '') FROM issue WHERE id = $1`,
++		util.UUIDToString(res.Issue.ID), propID).Scan(&gotProject, &gotType, &desc)
++	if gotProject != projectID || gotType != optionID || !strings.Contains(desc, fmt.Sprintf("Clef xếp: %s 90%%", projectName)) {
++		t.Fatalf("chat issue: project=%s type=%s desc=%q", gotProject, gotType, desc)
++	}
++	// Not from chat: untouched.
++	res, err = chat.Create(context.Background(), service.IssueCreateParams{
++		WorkspaceID: util.MustParseUUID(testWorkspaceID), Title: "Plain create", Status: "todo", Priority: "none",
++		CreatorType: "member", CreatorID: util.MustParseUUID(testUserID),
++	}, service.IssueCreateOpts{})
++	if err != nil || res.Issue.ProjectID.Valid {
++		t.Fatalf("plain create changed: %v %v", err, res.Issue.ProjectID)
++	}
++	testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, res.Issue.ID)
++}
+diff --git a/server/internal/triage/chat.go b/server/internal/triage/chat.go
+new file mode 100644
+index 000000000..d9e131fca
+--- /dev/null
++++ b/server/internal/triage/chat.go
+@@ -0,0 +1,73 @@
++package triage
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"strings"
++
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
++	"github.com/multica-ai/multica/server/internal/service"
++	"github.com/multica-ai/multica/server/internal/util"
++)
++
++// ChatIssues fills project and Type on an issue a chat `/issue` command
++// creates without them, when the model is sure (Linear: auto-apply per field,
++// chosen by the workspace; here for chat intake only). Anything else, or any
++// failure, creates the issue exactly as before.
++type ChatIssues struct {
++	// The chat router's issue service; every other method passes through.
++	engine.IssueCreator
++	Suggester *Suggester
++}
++
++func (c *ChatIssues) Create(ctx context.Context, p service.IssueCreateParams, opts service.IssueCreateOpts) (service.IssueCreateResult, error) {
++	if c.Suggester == nil || c.Suggester.Client == nil || !JobOn("chat") || p.ProjectID.Valid || !strings.HasSuffix(p.OriginType.String, "_chat") {
++		return c.IssueCreator.Create(ctx, p, opts)
++	}
++	tctx, cancel := context.WithTimeout(ctx, DefaultTimeout)
++	sug, _ := c.Suggester.Suggest(tctx, "chat", util.UUIDToString(p.WorkspaceID), p.Title, p.Description.String, Need{Project: true, Type: true})
++	cancel()
++	if sug.Project == nil && sug.Type == nil {
++		return c.IssueCreator.Create(ctx, p, opts)
++	}
++	filled := p
++	var note []string
++	if sug.Project != nil {
++		if id, err := util.ParseUUID(sug.Project.ID); err == nil {
++			filled.ProjectID = id
++			note = append(note, fmt.Sprintf("%s %d%%", sug.Project.Name, pct(sug.Project.Probability)))
++		}
++	}
++	if sug.Type != nil {
++		if prop, err := util.ParseUUID(sug.Type.PropertyID); err == nil {
++			props := map[pgtype.UUID]json.RawMessage{}
++			for k, v := range p.Properties {
++				props[k] = v
++			}
++			if _, set := props[prop]; !set {
++				raw, _ := json.Marshal(sug.Type.OptionID)
++				props[prop] = raw
++				filled.Properties = props
++				note = append(note, fmt.Sprintf("%s %d%%", sug.Type.Label, pct(sug.Type.Probability)))
++			}
++		}
++	}
++	// The suggestion stays visible on the issue (MausBot: "Picked by Clef · 94%").
++	line := "_Clef xếp: " + strings.Join(note, " · ") + "_"
++	desc := strings.TrimSpace(p.Description.String)
++	if desc != "" {
++		desc += "\n\n"
++	}
++	filled.Description = pgtype.Text{String: desc + line, Valid: true}
++	res, err := c.IssueCreator.Create(ctx, filled, opts)
++	if err != nil {
++		// A project whose workflow refuses the chat's status, or any other
++		// refusal: fall back to the issue as the person typed it.
++		return c.IssueCreator.Create(ctx, p, opts)
++	}
++	return res, nil
++}
++
++func pct(p float64) int { return int(p*100 + 0.5) }
+diff --git a/server/internal/triage/clef.go b/server/internal/triage/clef.go
+new file mode 100644
+index 000000000..944148060
+--- /dev/null
++++ b/server/internal/triage/clef.go
+@@ -0,0 +1,229 @@
++// Package triage suggests a new issue's project and Type with a fast decision
++// model (vantt patch 0021).
++//
++// Learned from OpenMausBot's decider (server/decider): Cloudflare's Clef on
++// Workers AI takes and returns Jev's "System One" shape — choice questions with
++// `instructions` + `criteria`, answers with a choice and calibrated
++// probabilities. It fails open (any problem = no suggestion), every answer is
++// validated, thresholds use the top option's probability, and a log line never
++// holds the issue text or the key. From Linear's Triage Intelligence: suggest
++// project and team-like fields, accept or dismiss, auto-apply only where a
++// workspace chose it.
++package triage
++
++import (
++	"bytes"
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"log/slog"
++	"math"
++	"net/http"
++	"os"
++	"regexp"
++	"strings"
++	"time"
++)
++
++const (
++	defaultBaseURL = "https://api.cloudflare.com/client/v4"
++	// ModelFast answers in well under a second; ModelCareful is for hard cases.
++	ModelFast    = "clef-flash"
++	ModelCareful = "clef"
++	// DefaultTimeout bounds one decision; the caller goes on without it.
++	DefaultTimeout = 1500 * time.Millisecond
++	// MinProbability: OpenMausBot's bench found answers at >= 0.6 right 92–99%
++	// of the time; below it there is no suggestion.
++	MinProbability = 0.6
++	maxOptions     = 255
++	sumTolerance   = 0.1
++)
++
++// Question is a choice question: option key → what it means.
++type Question struct {
++	Instructions string
++	Options      map[string]string
++}
++
++// Answer is a validated choice.
++type Answer struct {
++	Choice        string
++	PTop          float64
++	Margin        float64
++	Probabilities map[string]float64
++}
++
++// ErrOff means no account/token is configured: callers simply skip.
++var ErrOff = errors.New("triage: decision model not configured")
++
++// Client calls Clef on Workers AI.
++type Client struct {
++	accountID string
++	token     string
++	baseURL   string
++	http      *http.Client
++	logger    *slog.Logger
++}
++
++var accountRE = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
++
++// FromEnv reads MULTICA_CLOUDFLARE_AI_ACCOUNT_ID and MULTICA_CLOUDFLARE_AI_TOKEN
++// (MULTICA_CLOUDFLARE_AI_BASE_URL for tests). Nil when either is missing.
++func FromEnv(logger *slog.Logger) *Client {
++	acct := strings.TrimSpace(os.Getenv("MULTICA_CLOUDFLARE_AI_ACCOUNT_ID"))
++	token := strings.TrimSpace(os.Getenv("MULTICA_CLOUDFLARE_AI_TOKEN"))
++	if !accountRE.MatchString(acct) || token == "" {
++		return nil
++	}
++	return New(acct, token, os.Getenv("MULTICA_CLOUDFLARE_AI_BASE_URL"), logger)
++}
++
++func New(accountID, token, baseURL string, logger *slog.Logger) *Client {
++	if baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/"); baseURL == "" {
++		baseURL = defaultBaseURL
++	}
++	if logger == nil {
++		logger = slog.Default()
++	}
++	return &Client{
++		accountID: strings.ToLower(accountID), token: token, baseURL: baseURL, logger: logger,
++		// Never replay the token to wherever a redirect points.
++		http: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
++	}
++}
++
++type wireQuestion struct {
++	Type         string            `json:"type"`
++	Instructions string            `json:"instructions"`
++	Criteria     map[string]string `json:"criteria"`
++}
++
++type wireAnswer struct {
++	Type          string             `json:"type"`
++	Choice        string             `json:"choice"`
++	Probabilities map[string]float64 `json:"probabilities"`
++}
++
++type wireResponse struct {
++	Success *bool `json:"success"`
++	Result  struct {
++		Model   string                `json:"model"`
++		Answers map[string]wireAnswer `json:"answers"`
++		Usage   struct {
++			InputTokens int `json:"input_tokens"`
++		} `json:"usage"`
++	} `json:"result"`
++}
++
++// Choose asks every question at once. job names the caller in the log. Any
++// failure is an error and the caller goes on as if there were no model.
++func (c *Client) Choose(ctx context.Context, job, model string, state any, questions map[string]Question) (map[string]Answer, error) {
++	if c == nil {
++		return nil, ErrOff
++	}
++	if model == "" {
++		model = ModelFast
++	}
++	wire := map[string]wireQuestion{}
++	for id, q := range questions {
++		if len(q.Options) < 2 || len(q.Options) > maxOptions {
++			return nil, fmt.Errorf("triage: question %s needs 2-%d options", id, maxOptions)
++		}
++		wire[id] = wireQuestion{Type: "choice", Instructions: q.Instructions, Criteria: q.Options}
++	}
++	body, err := json.Marshal(map[string]any{"model": model, "state": state, "questions": wire})
++	if err != nil {
++		return nil, err
++	}
++	started := time.Now()
++	answers, inputTokens, err := c.call(ctx, model, body, questions)
++	row := []any{"job", job, "provider", "workersai", "model", model, "ok", err == nil,
++		"latency_ms", time.Since(started).Milliseconds(), "state_hash", stateHash(state)}
++	if err != nil {
++		row = append(row, "reason", err.Error())
++	} else {
++		for id, a := range answers {
++			row = append(row, id+"_choice", a.Choice, id+"_p", math.Round(a.PTop*100)/100, id+"_margin", math.Round(a.Margin*100)/100)
++		}
++		row = append(row, "input_tokens", inputTokens)
++	}
++	// The issue text, the options and the token never reach the log.
++	c.logger.InfoContext(ctx, "triage decision", row...)
++	return answers, err
++}
++
++func (c *Client) call(ctx context.Context, model string, body []byte, questions map[string]Question) (map[string]Answer, int, error) {
++	url := fmt.Sprintf("%s/accounts/%s/ai/run/@cf/cloudflare/%s", c.baseURL, c.accountID, model)
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
++	if err != nil {
++		return nil, 0, err
++	}
++	req.Header.Set("Authorization", "Bearer "+c.token)
++	req.Header.Set("Content-Type", "application/json")
++	resp, err := c.http.Do(req)
++	if err != nil {
++		if ctx.Err() != nil {
++			return nil, 0, errors.New("timeout")
++		}
++		return nil, 0, errors.New("unreachable")
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		// Error bodies are never read: they can echo the request.
++		return nil, 0, fmt.Errorf("http %d", resp.StatusCode)
++	}
++	var w wireResponse
++	if err := json.NewDecoder(resp.Body).Decode(&w); err != nil || (w.Success != nil && !*w.Success) {
++		return nil, 0, errors.New("malformed")
++	}
++	out := map[string]Answer{}
++	for id, q := range questions {
++		a, ok := validate(w.Result.Answers[id], q)
++		if !ok {
++			return nil, 0, errors.New("malformed")
++		}
++		out[id] = a
++	}
++	return out, w.Result.Usage.InputTokens, nil
++}
++
++// validate: the choice was offered, probabilities are offered keys in [0,1]
++// summing to ~1, and the choice is the most likely one.
++func validate(raw wireAnswer, q Question) (Answer, bool) {
++	if raw.Type != "" && raw.Type != "choice" {
++		return Answer{}, false
++	}
++	if _, ok := q.Options[raw.Choice]; !ok || len(raw.Probabilities) == 0 {
++		return Answer{}, false
++	}
++	sum := 0.0
++	for k, p := range raw.Probabilities {
++		if _, ok := q.Options[k]; !ok || math.IsNaN(p) || p < 0 || p > 1 {
++			return Answer{}, false
++		}
++		sum += p
++	}
++	if math.Abs(sum-1) > sumTolerance {
++		return Answer{}, false
++	}
++	top := raw.Probabilities[raw.Choice]
++	runner := 0.0
++	for k, p := range raw.Probabilities {
++		if k != raw.Choice && p > runner {
++			runner = p
++		}
++	}
++	if runner > top+1e-9 {
++		return Answer{}, false
++	}
++	return Answer{Choice: raw.Choice, PTop: top, Margin: top - runner, Probabilities: raw.Probabilities}, true
++}
++
++func stateHash(state any) string {
++	b, _ := json.Marshal(state)
++	sum := sha256.Sum256(b)
++	return hex.EncodeToString(sum[:])[:16]
++}
+diff --git a/server/internal/triage/clef_test.go b/server/internal/triage/clef_test.go
+new file mode 100644
+index 000000000..fe98d1a2f
+--- /dev/null
++++ b/server/internal/triage/clef_test.go
+@@ -0,0 +1,90 @@
++package triage
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++)
++
++func fakeClef(t *testing.T, answer string, status int, delay time.Duration) (*Client, *[]map[string]any) {
++	t.Helper()
++	var bodies []map[string]any
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if !strings.HasSuffix(r.URL.Path, "/accounts/0123456789abcdef0123456789abcdef/ai/run/@cf/cloudflare/clef-flash") || r.Header.Get("Authorization") != "Bearer tok" {
++			t.Errorf("request %s %s", r.URL.Path, r.Header.Get("Authorization"))
++		}
++		var b map[string]any
++		_ = json.NewDecoder(r.Body).Decode(&b)
++		bodies = append(bodies, b)
++		time.Sleep(delay)
++		w.WriteHeader(status)
++		_, _ = w.Write([]byte(answer))
++	}))
++	t.Cleanup(srv.Close)
++	return New("0123456789ABCDEF0123456789ABCDEF", "tok", srv.URL, nil), &bodies
++}
++
++var q2 = map[string]Question{"project": {Instructions: "Which?", Options: map[string]string{"p1": "A", "p2": "B"}}}
++
++func TestChooseValidAnswer(t *testing.T) {
++	c, bodies := fakeClef(t, `{"success":true,"result":{"answers":{"project":{"type":"choice","choice":"p2","probabilities":{"p1":0.1,"p2":0.9}}}}}`, 200, 0)
++	got, err := c.Choose(context.Background(), "test", "", map[string]any{"issue": "x"}, q2)
++	if err != nil || got["project"].Choice != "p2" || got["project"].PTop != 0.9 || got["project"].Margin < 0.79 {
++		t.Fatalf("got %+v %v", got, err)
++	}
++	b := (*bodies)[0]
++	qs := b["questions"].(map[string]any)["project"].(map[string]any)
++	if b["model"] != "clef-flash" || qs["type"] != "choice" || qs["criteria"].(map[string]any)["p1"] != "A" {
++		t.Fatalf("wire body = %+v", b)
++	}
++}
++
++// Every bad answer is refused (MausBot: a choice not offered, probabilities
++// that are not probabilities, a choice that is not the most likely).
++func TestChooseRejects(t *testing.T) {
++	for name, body := range map[string]string{
++		"not offered":   `{"result":{"answers":{"project":{"choice":"p9","probabilities":{"p1":0.1,"p9":0.9}}}}}`,
++		"not top":       `{"result":{"answers":{"project":{"choice":"p1","probabilities":{"p1":0.1,"p2":0.9}}}}}`,
++		"bad sum":       `{"result":{"answers":{"project":{"choice":"p2","probabilities":{"p1":0.5,"p2":0.9}}}}}`,
++		"missing":       `{"result":{"answers":{}}}`,
++		"not json":      `nope`,
++		"success=false": `{"success":false,"result":{"answers":{"project":{"choice":"p2","probabilities":{"p1":0.1,"p2":0.9}}}}}`,
++	} {
++		c, _ := fakeClef(t, body, 200, 0)
++		if _, err := c.Choose(context.Background(), "test", "", nil, q2); err == nil {
++			t.Errorf("%s: accepted", name)
++		}
++	}
++	c, _ := fakeClef(t, `{}`, 429, 0)
++	if _, err := c.Choose(context.Background(), "test", "", nil, q2); err == nil || err.Error() != "http 429" {
++		t.Errorf("429: %v", err)
++	}
++	slow, _ := fakeClef(t, `{}`, 200, 300*time.Millisecond)
++	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
++	defer cancel()
++	if _, err := slow.Choose(ctx, "test", "", nil, q2); err == nil {
++		t.Error("timeout accepted")
++	}
++	var off *Client
++	if _, err := off.Choose(context.Background(), "test", "", nil, q2); err != ErrOff {
++		t.Errorf("nil client: %v", err)
++	}
++}
++
++func TestOptionGuidanceAndPick(t *testing.T) {
++	g := optionGuidance("Kind of work.\n- Tech · Bug: something broken\nTech · Feature — new things", []string{"Tech · Bug", "Tech · Feature", "Tech · Doc"})
++	if g["Tech · Bug"] != "something broken" || g["Tech · Feature"] != "new things" || g["Tech · Doc"] != "" {
++		t.Fatalf("guidance = %+v", g)
++	}
++	opts := []option{{id: "a"}, {id: "b"}}
++	if p := pick("t", "t2", opts); p == nil || p.id != "b" {
++		t.Fatal("pick t2")
++	}
++	if pick("t", "t3", opts) != nil || pick("t", "x1", opts) != nil {
++		t.Fatal("pick out of range")
++	}
++}
+diff --git a/server/internal/triage/eval_test.go b/server/internal/triage/eval_test.go
+new file mode 100644
+index 000000000..8fe5da194
+--- /dev/null
++++ b/server/internal/triage/eval_test.go
+@@ -0,0 +1,106 @@
++package triage
++
++// Live eval against the real model; spends real (tiny) money, so it runs only
++// when asked, like OpenMausBot's room-routing.eval.test.ts:
++//
++//	TRIAGE_LIVE_EVAL=1 TRIAGE_EVAL_DATABASE_URL=postgres://… TRIAGE_EVAL_WORKSPACE=<uuid> \
++//	MULTICA_CLOUDFLARE_AI_ACCOUNT_ID=… MULTICA_CLOUDFLARE_AI_TOKEN=… go test ./internal/triage/ -run LiveEval -v
++//
++// Every issue that already has a project and a Type is asked about with its
++// answers hidden (and kept out of the examples); the report says how often a
++// suggestion at >= MinProbability was right, and how often it stayed silent.
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"testing"
++
++	"github.com/jackc/pgx/v5/pgxpool"
++)
++
++func TestLiveEval(t *testing.T) {
++	if os.Getenv("TRIAGE_LIVE_EVAL") != "1" {
++		t.Skip("set TRIAGE_LIVE_EVAL=1 for the live eval")
++	}
++	ctx := context.Background()
++	client := FromEnv(nil)
++	if client == nil {
++		t.Fatal("set MULTICA_CLOUDFLARE_AI_ACCOUNT_ID and MULTICA_CLOUDFLARE_AI_TOKEN")
++	}
++	pool, err := pgxpool.New(ctx, os.Getenv("TRIAGE_EVAL_DATABASE_URL"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer pool.Close()
++	ws := os.Getenv("TRIAGE_EVAL_WORKSPACE")
++	s := &Suggester{DB: pool, Client: client}
++	typeProp, _, _, err := s.types(ctx, ws)
++	if err != nil || typeProp == "" {
++		t.Fatalf("no Type property: %v", err)
++	}
++	// Cases: a fixture of requests the way the owner writes them
++	// (TRIAGE_EVAL_CASES, names resolved here), else the workspace's own
++	// issues that already have a project and a Type.
++	type c struct{ id, title, desc, project, typ string }
++	var cases []c
++	if path := os.Getenv("TRIAGE_EVAL_CASES"); path != "" {
++		raw, err := os.ReadFile(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++		var fx []struct{ Title, Description, Project, Type string }
++		if err := json.Unmarshal(raw, &fx); err != nil {
++			t.Fatal(err)
++		}
++		for _, f := range fx {
++			x := c{title: f.Title, desc: f.Description}
++			_ = pool.QueryRow(ctx, `SELECT id::text FROM project WHERE workspace_id = $1 AND title = $2`, ws, f.Project).Scan(&x.project)
++			_ = pool.QueryRow(ctx, `SELECT o->>'id' FROM issue_property, jsonb_array_elements(config->'options') o
++				WHERE id::text = $1 AND o->>'name' = $2`, typeProp, f.Type).Scan(&x.typ)
++			cases = append(cases, x)
++		}
++	} else {
++		rows, err := pool.Query(ctx, `SELECT id::text, title, coalesce(description, ''), project_id::text, properties->>$2
++			FROM issue WHERE workspace_id = $1 AND project_id IS NOT NULL AND properties ? $2
++			ORDER BY created_at DESC LIMIT 40`, ws, typeProp)
++		if err != nil {
++			t.Fatal(err)
++		}
++		for rows.Next() {
++			var x c
++			if err := rows.Scan(&x.id, &x.title, &x.desc, &x.project, &x.typ); err != nil {
++				t.Fatal(err)
++			}
++			cases = append(cases, x)
++		}
++		rows.Close()
++	}
++	var pRight, pWrong, pSilent, tRight, tWrong, tSilent int
++	for _, x := range cases {
++		s.Exclude = x.id
++		got, _ := s.Suggest(ctx, "eval", ws, x.title, x.desc, Need{Project: true, Type: true})
++		switch {
++		case got.Project == nil:
++			pSilent++
++			t.Logf("project silent: %q", x.title)
++		case got.Project.ID == x.project:
++			pRight++
++		default:
++			pWrong++
++			t.Logf("project wrong: %q → %s (%.2f)", x.title, got.Project.Name, got.Project.Probability)
++		}
++		switch {
++		case got.Type == nil:
++			tSilent++
++			t.Logf("type silent: %q", x.title)
++		case got.Type.OptionID == x.typ:
++			tRight++
++		default:
++			tWrong++
++			t.Logf("type wrong: %q → %s (%.2f)", x.title, got.Type.Label, got.Type.Probability)
++		}
++	}
++	t.Logf("%d issues · project: %d right, %d wrong, %d silent · type: %d right, %d wrong, %d silent",
++		len(cases), pRight, pWrong, pSilent, tRight, tWrong, tSilent)
++}
+diff --git a/server/internal/triage/suggest.go b/server/internal/triage/suggest.go
+new file mode 100644
+index 000000000..d2bd472a6
+--- /dev/null
++++ b/server/internal/triage/suggest.go
+@@ -0,0 +1,274 @@
++package triage
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"os"
++	"strings"
++
++	"github.com/jackc/pgx/v5"
++)
++
++// Querier is the slice of a pgx pool the suggester reads with.
++type Querier interface {
++	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
++	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
++}
++
++// Need says which fields the caller still lacks.
++type Need struct {
++	Project bool
++	Type    bool
++}
++
++type ProjectSuggestion struct {
++	ID          string  `json:"id"`
++	Name        string  `json:"name"`
++	Probability float64 `json:"probability"`
++}
++
++type TypeSuggestion struct {
++	PropertyID  string  `json:"property_id"`
++	OptionID    string  `json:"option_id"`
++	Label       string  `json:"label"`
++	Probability float64 `json:"probability"`
++}
++
++// Suggestion holds only what cleared MinProbability.
++type Suggestion struct {
++	Project  *ProjectSuggestion `json:"project,omitempty"`
++	Type     *TypeSuggestion    `json:"type,omitempty"`
++	Provider string             `json:"provider,omitempty"`
++}
++
++// Suggester builds the question from the workspace and asks the model.
++type Suggester struct {
++	DB     Querier
++	Client *Client
++	// Exclude keeps one issue out of the examples (the live eval asks about
++	// issues that already exist).
++	Exclude string
++}
++
++const (
++	nameMax     = 80
++	descMax     = 400
++	titleMax    = 100
++	examples    = 4
++	issueTitle  = 300
++	issueDetail = 1500
++)
++
++// Job switches (MausBot: one per job; absent means on).
++func JobOn(job string) bool {
++	return strings.TrimSpace(strings.ToLower(os.Getenv("MULTICA_TRIAGE_"+strings.ToUpper(job)))) != "off"
++}
++
++func clip(s string, max int) string {
++	s = strings.Join(strings.Fields(s), " ")
++	if r := []rune(s); len(r) > max {
++		return string(r[:max-1]) + "…"
++	}
++	return s
++}
++
++type option struct{ id, name, text string }
++
++// Suggest asks for the fields in need. A disabled model, a failure or an
++// unsure answer all come back as an empty Suggestion and a nil error.
++func (s *Suggester) Suggest(ctx context.Context, job, workspaceID, title, description string, need Need) (Suggestion, error) {
++	if s == nil || s.Client == nil || strings.TrimSpace(title) == "" || (!need.Project && !need.Type) {
++		return Suggestion{}, nil
++	}
++	questions := map[string]Question{}
++	var projects, types []option
++	var typeProp string
++	if need.Project {
++		var err error
++		if projects, err = s.projects(ctx, workspaceID); err != nil {
++			return Suggestion{}, err
++		}
++		if len(projects) >= 2 {
++			questions["project"] = Question{
++				Instructions: "Which project should `issue` go to? Each option is a project: its purpose, then recent issues in it.",
++				Options:      keyed("p", projects),
++			}
++		}
++	}
++	if need.Type {
++		var err error
++		var guidance string
++		if typeProp, guidance, types, err = s.types(ctx, workspaceID); err != nil {
++			return Suggestion{}, err
++		}
++		if len(types) >= 2 {
++			instructions := "What kind of work is `issue`? Each option is a value of the workspace's property, with recent issues that have it."
++			if guidance != "" {
++				instructions += " The workspace describes this property as: " + guidance
++			}
++			questions["type"] = Question{Instructions: instructions, Options: keyed("t", types)}
++		}
++	}
++	if len(questions) == 0 {
++		return Suggestion{}, nil
++	}
++	state := map[string]any{"issue": map[string]string{"title": clip(title, issueTitle), "description": clip(description, issueDetail)}}
++	model := ModelFast
++	if m := strings.TrimSpace(os.Getenv("MULTICA_TRIAGE_MODEL")); m == ModelCareful {
++		model = m
++	}
++	answers, err := s.Client.Choose(ctx, job, model, state, questions)
++	if err != nil {
++		return Suggestion{}, nil // fail open
++	}
++	out := Suggestion{Provider: "clef"}
++	if a, ok := answers["project"]; ok && a.PTop >= MinProbability {
++		if p := pick("p", a.Choice, projects); p != nil {
++			out.Project = &ProjectSuggestion{ID: p.id, Name: p.name, Probability: a.PTop}
++		}
++	}
++	if a, ok := answers["type"]; ok && a.PTop >= MinProbability {
++		if t := pick("t", a.Choice, types); t != nil {
++			out.Type = &TypeSuggestion{PropertyID: typeProp, OptionID: t.id, Label: t.name, Probability: a.PTop}
++		}
++	}
++	if out.Project == nil && out.Type == nil {
++		return Suggestion{}, nil
++	}
++	return out, nil
++}
++
++// Short keys keep ids out of the model's input.
++func keyed(prefix string, opts []option) map[string]string {
++	m := map[string]string{}
++	for i, o := range opts {
++		m[fmt.Sprintf("%s%d", prefix, i+1)] = o.text
++	}
++	return m
++}
++
++func pick(prefix, key string, opts []option) *option {
++	var i int
++	if _, err := fmt.Sscanf(key, prefix+"%d", &i); err != nil || i < 1 || i > len(opts) {
++		return nil
++	}
++	return &opts[i-1]
++}
++
++func describe(name, desc string, recent []string) string {
++	text := clip(name, nameMax)
++	if d := clip(desc, descMax); d != "" {
++		text += ": " + d
++	}
++	if len(recent) > 0 {
++		text += ". Recent: " + strings.Join(recent, "; ")
++	}
++	return text
++}
++
++func (s *Suggester) projects(ctx context.Context, ws string) ([]option, error) {
++	rows, err := s.DB.Query(ctx, `
++		SELECT p.id::text, p.title, coalesce(p.description, ''),
++		       coalesce((SELECT array_agg(t.title ORDER BY t.created_at DESC) FROM (
++		           SELECT title, created_at FROM issue i WHERE i.project_id = p.id AND i.id::text <> $3
++		           ORDER BY created_at DESC LIMIT $2) t), '{}')
++		FROM project p
++		WHERE p.workspace_id = $1 AND p.status NOT IN ('completed', 'cancelled')
++		ORDER BY p.created_at`, ws, examples, s.Exclude)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	var out []option
++	for rows.Next() {
++		var id, name, desc string
++		var recent []string
++		if err := rows.Scan(&id, &name, &desc, &recent); err != nil {
++			return nil, err
++		}
++		for i := range recent {
++			recent[i] = clip(recent[i], titleMax)
++		}
++		out = append(out, option{id: id, name: name, text: describe(name, desc, recent)})
++	}
++	return out, rows.Err()
++}
++
++// types: the select property the workspace's workflow rules use (patch 0005),
++// else a select property named "Type"; its description (the workspace's own
++// guidance) and its options, each with recent issues that carry it. All read
++// fresh from the workspace on every call: nothing about options is built in.
++func (s *Suggester) types(ctx context.Context, ws string) (string, string, []option, error) {
++	var propID, propDesc string
++	var config []byte
++	err := s.DB.QueryRow(ctx, `
++		SELECT ip.id::text, ip.config, coalesce(ip.description, '') FROM issue_property ip
++		WHERE ip.workspace_id = $1 AND ip.type = 'select' AND ip.archived_at IS NULL
++		  AND (ip.id IN (SELECT property_id FROM project_workflow_rule WHERE workspace_id = $1) OR lower(ip.name) = 'type')
++		ORDER BY (ip.id IN (SELECT property_id FROM project_workflow_rule WHERE workspace_id = $1)) DESC, ip.position
++		LIMIT 1`, ws).Scan(&propID, &config, &propDesc)
++	if err == pgx.ErrNoRows {
++		return "", "", nil, nil
++	}
++	if err != nil {
++		return "", "", nil, err
++	}
++	var cfg struct {
++		Options []struct {
++			ID   string `json:"id"`
++			Name string `json:"name"`
++		} `json:"options"`
++	}
++	if json.Unmarshal(config, &cfg) != nil {
++		return "", "", nil, nil
++	}
++	recent := map[string][]string{}
++	rows, err := s.DB.Query(ctx, `
++		SELECT opt, title FROM (
++		  SELECT properties->>$2 AS opt, title,
++		         row_number() OVER (PARTITION BY properties->>$2 ORDER BY created_at DESC) AS rn
++		  FROM issue WHERE workspace_id = $1 AND properties ? $2 AND id::text <> $4) t
++		WHERE rn <= $3`, ws, propID, examples, s.Exclude)
++	if err != nil {
++		return "", "", nil, err
++	}
++	defer rows.Close()
++	for rows.Next() {
++		var opt, title string
++		if err := rows.Scan(&opt, &title); err != nil {
++			return "", "", nil, err
++		}
++		recent[opt] = append(recent[opt], clip(title, titleMax))
++	}
++	names := make([]string, 0, len(cfg.Options))
++	for _, o := range cfg.Options {
++		names = append(names, o.Name)
++	}
++	guidance := optionGuidance(propDesc, names)
++	var out []option
++	for _, o := range cfg.Options {
++		out = append(out, option{id: o.ID, name: o.Name, text: describe(o.Name, guidance[o.Name], recent[o.ID])})
++	}
++	return propID, clip(propDesc, descMax), out, rows.Err()
++}
++
++// optionGuidance reads what each option means from the property's own
++// description, the one place a workspace already writes about it (Linear:
++// admin-written guidance). One option per line, "<option>: <meaning>"; lines
++// that do not start with an option's name are ignored. Nothing is hard-coded:
++// options, meanings and examples are all read fresh on every call.
++func optionGuidance(description string, names []string) map[string]string {
++	out := map[string]string{}
++	for _, line := range strings.Split(description, "\n") {
++		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "-*•"))
++		for _, n := range names {
++			if rest, ok := strings.CutPrefix(line, n); ok {
++				if rest = strings.TrimSpace(strings.TrimLeft(rest, ":—-– ")); rest != "" {
++					out[n] = rest
++				}
++			}
++		}
++	}
++	return out
++}
+diff --git a/server/internal/triage/testdata/opc-studio.json b/server/internal/triage/testdata/opc-studio.json
+new file mode 100644
+index 000000000..52d06b9ff
+--- /dev/null
++++ b/server/internal/triage/testdata/opc-studio.json
+@@ -0,0 +1,20 @@
++[
++  {"title": "Viết nội dung landing page cho Momentry", "project": "momentry", "type": "Marketing · Copy"},
++  {"title": "Momentry bị crash khi mở phiên dài hơn 2 giờ", "project": "momentry", "type": "Tech · Bug"},
++  {"title": "Thêm xuất story ra markdown trong momentry", "project": "momentry", "type": "Tech · Feature"},
++  {"title": "Nghiên cứu cách tính giá license cho dev của momentry", "project": "momentry", "type": "Marketing · Research"},
++  {"title": "Bài LinkedIn giới thiệu OPC Studio tuần này", "project": "Nội dung marketing", "type": "Marketing · Post"},
++  {"title": "Email bản tin tháng 11 gửi khách hàng OPC", "project": "Nội dung marketing", "type": "Marketing · Email"},
++  {"title": "Chiến dịch ra mắt gói Content cho khách SME", "project": "Nội dung marketing", "type": "Marketing · Campaign"},
++  {"title": "Blog: vì sao một người vận hành công ty với agent", "project": "Nội dung marketing", "type": "Marketing · Copy"},
++  {"title": "Nút đăng nhập trên app không phản hồi trên Safari", "project": "Sản phẩm", "type": "Tech · Bug"},
++  {"title": "Thêm trang cài đặt hồ sơ người dùng trong app", "project": "Sản phẩm", "type": "Tech · Feature"},
++  {"title": "Nâng cấp dependency React lên bản mới trong app", "project": "Sản phẩm", "type": "Tech · Chore"},
++  {"title": "Viết tài liệu API cho app", "project": "Sản phẩm", "type": "Tech · Doc"},
++  {"title": "Báo cáo sức khoẻ kiến trúc tuần 46", "project": "Kiến trúc", "type": "Tech · Research"},
++  {"title": "Đồng bộ board tuần này và báo cáo tiến độ", "project": "Điều phối", "type": "Tech · Chore"},
++  {"title": "Fix lỗi đếm sai số từ khi momentry đọc transcript", "project": "momentry", "type": "Tech · Bug"},
++  {"title": "Post Facebook: case study khách dùng OPC Studio", "project": "Nội dung marketing", "type": "Marketing · Post"},
++  {"title": "So sánh Polar và Dodo để bán license momentry", "project": "momentry", "type": "Tech · Research"},
++  {"title": "App chậm khi danh sách có hơn 1000 dòng", "project": "Sản phẩm", "type": "Tech · Bug"}
++]
+-- 
+2.53.0
+

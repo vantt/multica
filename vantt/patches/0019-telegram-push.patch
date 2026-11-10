@@ -1,0 +1,1049 @@
+From 3db4b79971ea1add5637ef23e49c799d94c5a49d Mon Sep 17 00:00:00 2001
+From: Van Tran <trantoanvan@outlook.com>
+Date: Tue, 10 Nov 2026 22:03:16 +0700
+Subject: [PATCH] feat(telegram): inbox notifications in the member's DM;
+ decision buttons
+
+A member who bound a Telegram bot gets every new inbox item in that bot's
+DM, like the WeCom smart bot's inbox push: what they mute in Multica's
+notification settings never becomes an item, so it is not sent either. The
+bot of the agent behind the item is preferred
+(FindChannelBindingForMemberOnAgentInstallation), else the member's newest
+binding. A mention carries its comment text.
+
+A new decision (patch 0008) now raises an inbox item "decision_requested"
+(action required) for the issue's member subscribers, else the workspace's
+owners and admins. In Telegram it carries one button per option; a press by
+the bound member answers the decision and posts the answer as their comment,
+exactly as the web panel does, so the issue's agent wakes. The polling loop
+now also takes callback_query updates.
+
+Patch-Id: telegram-push
+---
+ packages/core/types/inbox.ts                  |   4 +-
+ .../inbox/components/inbox-detail-label.tsx   |   1 +
+ packages/views/locales/en/inbox.json          |   1 +
+ packages/views/locales/fr/inbox.json          |   1 +
+ packages/views/locales/ja/inbox.json          |   1 +
+ packages/views/locales/ko/inbox.json          |   1 +
+ packages/views/locales/zh-Hans/inbox.json     |   1 +
+ packages/views/locales/zh-Hant/inbox.json     |   1 +
+ server/cmd/server/router.go                   |   6 +
+ server/internal/handler/vantt_decision.go     |   1 +
+ .../internal/handler/vantt_decision_notify.go | 170 ++++++++
+ .../handler/vantt_decision_notify_test.go     |  58 +++
+ server/internal/integrations/telegram/api.go  |   5 +-
+ .../integrations/telegram/telegram_channel.go |  18 +-
+ .../integrations/telegram/vantt_push.go       | 386 ++++++++++++++++++
+ .../integrations/telegram/vantt_push_test.go  | 143 +++++++
+ 16 files changed, 794 insertions(+), 4 deletions(-)
+ create mode 100644 server/internal/handler/vantt_decision_notify.go
+ create mode 100644 server/internal/handler/vantt_decision_notify_test.go
+ create mode 100644 server/internal/integrations/telegram/vantt_push.go
+ create mode 100644 server/internal/integrations/telegram/vantt_push_test.go
+
+diff --git a/packages/core/types/inbox.ts b/packages/core/types/inbox.ts
+index 473ed003a..7765c26f5 100644
+--- a/packages/core/types/inbox.ts
++++ b/packages/core/types/inbox.ts
+@@ -31,7 +31,9 @@ export type InboxItemType =
+   | "autopilot_quota_exceeded"
+   // Sub-issues of an issue assigned to the recipient closed (the child_done
+   // system rule notifies a member assignee instead of waking an agent).
+-  | "children_done";
++  | "children_done"
++  // vantt decisions: an agent asked the recipient to pick an option.
++  | "decision_requested";
+ 
+ /**
+  * One workspace's unread inbox count in the cross-workspace summary
+diff --git a/packages/views/inbox/components/inbox-detail-label.tsx b/packages/views/inbox/components/inbox-detail-label.tsx
+index 7fdafdc7b..40a696ebc 100644
+--- a/packages/views/inbox/components/inbox-detail-label.tsx
++++ b/packages/views/inbox/components/inbox-detail-label.tsx
+@@ -38,6 +38,7 @@ export function useTypeLabels(): Record<InboxItemType, string> {
+     autopilot_paused: t(($) => $.types.autopilot_paused),
+     autopilot_quota_exceeded: t(($) => $.types.autopilot_quota_exceeded),
+     children_done: t(($) => $.types.children_done),
++    decision_requested: t(($) => $.types.decision_requested),
+   };
+ }
+ 
+diff --git a/packages/views/locales/en/inbox.json b/packages/views/locales/en/inbox.json
+index ceb7c6ac9..aae244d68 100644
+--- a/packages/views/locales/en/inbox.json
++++ b/packages/views/locales/en/inbox.json
+@@ -82,6 +82,7 @@
+     "quick_create_unconfirmed": "Create with agent unconfirmed",
+     "autopilot_paused": "Autopilot paused",
+     "children_done": "Sub-issues finished",
++    "decision_requested": "Decision needed",
+     "autopilot_quota_exceeded": "Autopilot run limit reached"
+   },
+   "labels": {
+diff --git a/packages/views/locales/fr/inbox.json b/packages/views/locales/fr/inbox.json
+index 5d48ee2d5..4eaffb729 100644
+--- a/packages/views/locales/fr/inbox.json
++++ b/packages/views/locales/fr/inbox.json
+@@ -82,6 +82,7 @@
+     "quick_create_unconfirmed": "Création avec un agent non confirmée",
+     "autopilot_paused": "Automatisation en pause",
+     "children_done": "Sous-tâches terminées",
++    "decision_requested": "Décision attendue",
+     "autopilot_quota_exceeded": "Limite d'exécutions d'automatisation atteinte"
+   },
+   "labels": {
+diff --git a/packages/views/locales/ja/inbox.json b/packages/views/locales/ja/inbox.json
+index 5b154dd71..f46cb76e0 100644
+--- a/packages/views/locales/ja/inbox.json
++++ b/packages/views/locales/ja/inbox.json
+@@ -80,6 +80,7 @@
+     "quick_create_unconfirmed": "エージェントでの作成結果は未確認",
+     "autopilot_paused": "自動化を一時停止しました",
+     "children_done": "サブタスクがすべて終わりました",
++    "decision_requested": "判断が必要です",
+     "autopilot_quota_exceeded": "自動化の実行上限に達しました"
+   },
+   "labels": {
+diff --git a/packages/views/locales/ko/inbox.json b/packages/views/locales/ko/inbox.json
+index dc66eb8d0..57829ce65 100644
+--- a/packages/views/locales/ko/inbox.json
++++ b/packages/views/locales/ko/inbox.json
+@@ -80,6 +80,7 @@
+     "quick_create_unconfirmed": "에이전트 생성 결과 미확인",
+     "autopilot_paused": "자동화 일시 중지됨",
+     "children_done": "하위 태스크가 모두 끝났습니다",
++    "decision_requested": "결정이 필요합니다",
+     "autopilot_quota_exceeded": "자동화 실행 한도 도달"
+   },
+   "labels": {
+diff --git a/packages/views/locales/zh-Hans/inbox.json b/packages/views/locales/zh-Hans/inbox.json
+index e2568ccfc..d9dce73a1 100644
+--- a/packages/views/locales/zh-Hans/inbox.json
++++ b/packages/views/locales/zh-Hans/inbox.json
+@@ -80,6 +80,7 @@
+     "quick_create_unconfirmed": "通过智能体创建结果未确认",
+     "autopilot_paused": "自动化已暂停",
+     "children_done": "子任务已全部结束",
++    "decision_requested": "需要你做决定",
+     "autopilot_quota_exceeded": "自动化执行次数已用完"
+   },
+   "labels": {
+diff --git a/packages/views/locales/zh-Hant/inbox.json b/packages/views/locales/zh-Hant/inbox.json
+index f3bc4d80f..7de7929b1 100644
+--- a/packages/views/locales/zh-Hant/inbox.json
++++ b/packages/views/locales/zh-Hant/inbox.json
+@@ -80,6 +80,7 @@
+     "quick_create_unconfirmed": "透過智慧體建立結果未確認",
+     "autopilot_paused": "自動化已暫停",
+     "children_done": "子任務已全部結束",
++    "decision_requested": "需要你做決定",
+     "autopilot_quota_exceeded": "自動化執行次數已用完"
+   },
+   "labels": {
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 153642213..8a6e5dc2c 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -1228,6 +1228,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 			telegramOutbound.Register(bus)
+ 			h.TelegramOutbound = telegramOutbound
+ 
++			// vantt 0019: inbox notifications to members' DMs, decision buttons.
++			telegramPush := telegram.NewPusher(queries, box.Open, appURLFromEnv(), slog.Default())
++			telegramPush.Answer = h.AnswerDecisionAs
++			telegramPush.Register(bus)
++
+ 			// Per-installation inbound: the Supervisor builds + supervises one
+ 			// long-polling loop per active Telegram installation.
+ 			telegram.RegisterTelegram(channelRegistry, telegram.ChannelDeps{
+@@ -1235,6 +1240,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 				Logger:            slog.Default(),
+ 				RecentContextSize: telegram.DefaultRecentContextSize,
+ 				AcceptsMedia:      store != nil,
++				Callbacks:         telegramPush,
+ 			})
+ 
+ 			installSvc, ierr := telegram.NewInstallService(queries, pool, box, slog.Default())
+diff --git a/server/internal/handler/vantt_decision.go b/server/internal/handler/vantt_decision.go
+index ca6dd1342..cc98c26b1 100644
+--- a/server/internal/handler/vantt_decision.go
++++ b/server/internal/handler/vantt_decision.go
+@@ -164,6 +164,7 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
+ 		writeError(w, http.StatusInternalServerError, "failed to create decision")
+ 		return
+ 	}
++	h.notifyDecision(r.Context(), issue, d, actorType, actorID) // patch 0019
+ 	writeJSON(w, http.StatusCreated, decisionToResponse(d))
+ }
+ 
+diff --git a/server/internal/handler/vantt_decision_notify.go b/server/internal/handler/vantt_decision_notify.go
+new file mode 100644
+index 000000000..d967cb36a
+--- /dev/null
++++ b/server/internal/handler/vantt_decision_notify.go
+@@ -0,0 +1,170 @@
++package handler
++
++// vantt patch 0019 (telegram-push): a new decision reaches the people who must
++// answer it through the inbox (and from there their chat bot), and a chat
++// button answers it the same way the web panel does.
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"log/slog"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/multica-ai/multica/server/internal/events"
++	"github.com/multica-ai/multica/server/internal/inbox"
++	"github.com/multica-ai/multica/server/internal/integrations/telegram"
++	"github.com/multica-ai/multica/server/internal/util"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++	"github.com/multica-ai/multica/server/pkg/protocol"
++)
++
++// decisionRecipients: the issue's member subscribers, else the workspace's
++// owners and admins. The asker is never told about their own question.
++func (h *Handler) decisionRecipients(ctx context.Context, issue db.Issue, actorType, actorID string) []string {
++	seen := map[string]bool{}
++	var out []string
++	add := func(id string) {
++		if id == "" || seen[id] || (actorType == "member" && id == actorID) {
++			return
++		}
++		seen[id] = true
++		out = append(out, id)
++	}
++	if subs, err := h.Queries.ListIssueSubscribers(ctx, issue.ID); err == nil {
++		for _, s := range subs {
++			if s.UserType == "member" {
++				add(util.UUIDToString(s.UserID))
++			}
++		}
++	}
++	if len(out) == 0 {
++		if ids, err := h.Queries.ListWorkspaceManagerUserIDs(ctx, issue.WorkspaceID); err == nil {
++			for _, id := range ids {
++				add(util.UUIDToString(id))
++			}
++		}
++	}
++	return out
++}
++
++// notifyDecision puts the decision in each recipient's inbox (action required)
++// and publishes inbox:new, which chat bots forward.
++func (h *Handler) notifyDecision(ctx context.Context, issue db.Issue, d db.IssueDecision, actorType, actorID string) {
++	details, _ := json.Marshal(map[string]string{"decision_id": util.UUIDToString(d.ID)})
++	actor, _ := util.ParseUUID(actorID) // invalid (system) stays unset
++	for _, recipient := range h.decisionRecipients(ctx, issue, actorType, actorID) {
++		item, inserted, err := inbox.CreateIfEligible(ctx, h.Queries, db.CreateInboxItemParams{
++			WorkspaceID:   issue.WorkspaceID,
++			RecipientType: "member",
++			RecipientID:   util.MustParseUUID(recipient),
++			Type:          telegram.InboxTypeDecisionRequested,
++			Severity:      "action_required",
++			IssueID:       issue.ID,
++			Title:         d.Question,
++			Body:          util.StrToText(issue.Title),
++			ActorType:     util.StrToText(actorType),
++			ActorID:       actor,
++			Details:       details,
++		})
++		if err != nil {
++			slog.Error("decision inbox creation failed", "decision_id", util.UUIDToString(d.ID), "error", err)
++			continue
++		}
++		if !inserted || h.Bus == nil {
++			continue
++		}
++		h.Bus.Publish(events.Event{
++			Type:        protocol.EventInboxNew,
++			WorkspaceID: util.UUIDToString(issue.WorkspaceID),
++			ActorType:   actorType,
++			ActorID:     actorID,
++			Payload: map[string]any{"item": map[string]any{
++				"id":             util.UUIDToString(item.ID),
++				"workspace_id":   util.UUIDToString(item.WorkspaceID),
++				"recipient_type": item.RecipientType,
++				"recipient_id":   util.UUIDToString(item.RecipientID),
++				"type":           item.Type,
++				"severity":       item.Severity,
++				"issue_id":       util.UUIDToPtr(item.IssueID),
++				"title":          item.Title,
++				"body":           util.TextToPtr(item.Body),
++				"read":           item.Read,
++				"archived":       item.Archived,
++				"created_at":     util.TimestampToString(item.CreatedAt),
++				"actor_type":     util.TextToPtr(item.ActorType),
++				"actor_id":       util.UUIDToPtr(item.ActorID),
++				"details":        json.RawMessage(item.Details),
++				"issue_status":   issue.Status,
++			}},
++		})
++	}
++}
++
++// AnswerDecisionAs answers a decision for a member who pressed a chat button:
++// the same two calls the web panel makes (answer, then the answer as their
++// comment so the issue's agent wakes), run in-process as that member. The
++// caller has already proven the chat identity is bound to userID.
++func (h *Handler) AnswerDecisionAs(ctx context.Context, workspaceID, userID, decisionID string, optionIndex int) (string, error) {
++	wsID, err := util.ParseUUID(workspaceID)
++	if err != nil {
++		return "", err
++	}
++	uID, err := util.ParseUUID(userID)
++	if err != nil {
++		return "", err
++	}
++	if _, err := h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: uID, WorkspaceID: wsID}); err != nil {
++		return "", fmt.Errorf("not a member of the workspace: %w", err)
++	}
++	dID, err := util.ParseUUID(decisionID)
++	if err != nil {
++		return "", err
++	}
++	d, err := h.Queries.GetIssueDecision(ctx, db.GetIssueDecisionParams{ID: dID, WorkspaceID: wsID})
++	if err != nil {
++		return "", fmt.Errorf("decision not found: %w", err)
++	}
++	if d.Status != "open" {
++		return "", telegram.ErrDecisionClosed
++	}
++	resp := decisionToResponse(d)
++	if optionIndex < 0 || optionIndex >= len(resp.Options) {
++		return "", errors.New("no such option")
++	}
++	option := resp.Options[optionIndex]
++	issueID := util.UUIDToString(d.IssueID)
++
++	call := func(handle http.HandlerFunc, path string, body any, params map[string]string) int {
++		raw, _ := json.Marshal(body)
++		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(raw))).WithContext(ctx)
++		r.Header.Set("Content-Type", "application/json")
++		r.Header.Set("X-User-ID", userID)
++		r.Header.Set("X-Workspace-ID", workspaceID)
++		rctx := chi.NewRouteContext()
++		for k, v := range params {
++			rctx.URLParams.Add(k, v)
++		}
++		r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
++		w := httptest.NewRecorder()
++		handle(w, r)
++		return w.Code
++	}
++	switch code := call(h.AnswerIssueDecision, "/api/issues/"+issueID+"/decisions/"+decisionID+"/answer",
++		map[string]string{"option_id": option.ID, "note": ""}, map[string]string{"id": issueID, "decisionId": decisionID}); code {
++	case http.StatusOK:
++	case http.StatusConflict:
++		return "", telegram.ErrDecisionClosed
++	default:
++		return "", fmt.Errorf("answer decision: status %d", code)
++	}
++	if code := call(h.CreateComment, "/api/issues/"+issueID+"/comments",
++		map[string]string{"content": "**" + d.Question + "** → " + option.Label}, map[string]string{"id": issueID}); code != http.StatusCreated && code != http.StatusOK {
++		return option.Label, fmt.Errorf("post answer comment: status %d", code)
++	}
++	return option.Label, nil
++}
+diff --git a/server/internal/handler/vantt_decision_notify_test.go b/server/internal/handler/vantt_decision_notify_test.go
+new file mode 100644
+index 000000000..af1c76c48
+--- /dev/null
++++ b/server/internal/handler/vantt_decision_notify_test.go
+@@ -0,0 +1,58 @@
++package handler
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/multica-ai/multica/server/internal/integrations/telegram"
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++// An agent's decision lands in the inbox of the people who answer it, and a
++// chat button answers it as the member: decision answered, answer posted as
++// their comment, second press refused.
++func TestDecisionNotifyAndAnswerAs(t *testing.T) {
++	issueID := dbfx.Issue(t, "decision via chat", testutil.Cols{"status": "todo"})
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	taskID := runningTask(t, agentID, issueID, "todo")
++	ask := decisionRequest("POST", "/api/issues/"+issueID+"/decisions",
++		map[string]any{"question": "Polar or Dodo?", "options": []map[string]any{{"label": "Polar"}, {"label": "Dodo"}}}, "id", issueID)
++	ask.Header.Set("X-Actor-Source", "task_token")
++	ask.Header.Set("X-Agent-ID", agentID)
++	ask.Header.Set("X-Task-ID", taskID)
++	var d DecisionResponse
++	testutil.Call(t, testHandler.CreateIssueDecision, ask).Want(http.StatusCreated).JSON(&d)
++
++	var n int
++	dbfx.QueryRow(t, `SELECT count(*) FROM inbox_item WHERE recipient_id = $1 AND type = $2 AND severity = 'action_required'
++		AND issue_id = $3 AND details->>'decision_id' = $4`, testUserID, telegram.InboxTypeDecisionRequested, issueID, d.ID).Scan(&n)
++	if n != 1 {
++		t.Fatalf("decision inbox items for the workspace owner = %d", n)
++	}
++
++	ctx := context.Background()
++	if _, err := testHandler.AnswerDecisionAs(ctx, testWorkspaceID, uuid.NewString(), d.ID, 0); err == nil {
++		t.Fatal("a non-member answered")
++	}
++	label, err := testHandler.AnswerDecisionAs(ctx, testWorkspaceID, testUserID, d.ID, 1)
++	if err != nil || label != "Dodo" {
++		t.Fatalf("answer = %q, %v", label, err)
++	}
++	var status, option string
++	dbfx.QueryRow(t, `SELECT status, answer_option_id FROM issue_decision WHERE id = $1`, d.ID).Scan(&status, &option)
++	if status != "answered" || option != d.Options[1].ID {
++		t.Fatalf("decision = %s %s", status, option)
++	}
++	dbfx.QueryRow(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'member' AND author_id = $2
++		AND content = '**Polar or Dodo?** → Dodo'`, issueID, testUserID).Scan(&n)
++	if n != 1 {
++		t.Fatalf("answer comments = %d", n)
++	}
++	if _, err := testHandler.AnswerDecisionAs(ctx, testWorkspaceID, testUserID, d.ID, 0); !errors.Is(err, telegram.ErrDecisionClosed) {
++		t.Fatalf("second press = %v", err)
++	}
++}
+diff --git a/server/internal/integrations/telegram/api.go b/server/internal/integrations/telegram/api.go
+index 8c4bd31ad..466785525 100644
+--- a/server/internal/integrations/telegram/api.go
++++ b/server/internal/integrations/telegram/api.go
+@@ -320,6 +320,8 @@ type MessageEntity struct {
+ type Update struct {
+ 	UpdateID int64    `json:"update_id"`
+ 	Message  *Message `json:"message"`
++	// vantt 0019: a pressed decision button (see vantt_push.go).
++	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+ }
+ 
+ // GetMe validates the token and returns the bot's own identity.
+@@ -357,7 +359,8 @@ func (a *botAPI) GetUpdates(ctx context.Context, offset int64) ([]Update, error)
+ 		Timeout: longPollTimeoutSecs,
+ 		// Restrict the stream to plain messages: fewer wakeups, and edits /
+ 		// reactions / channel posts never enter the pipeline.
+-		AllowedUpdates: []string{"message"},
++		// vantt 0019: plus callback_query for decision buttons.
++		AllowedUpdates: []string{"message", "callback_query"},
+ 	}, &updates)
+ 	if err != nil {
+ 		var ae *apiError
+diff --git a/server/internal/integrations/telegram/telegram_channel.go b/server/internal/integrations/telegram/telegram_channel.go
+index 74688dfd2..c72b98244 100644
+--- a/server/internal/integrations/telegram/telegram_channel.go
++++ b/server/internal/integrations/telegram/telegram_channel.go
+@@ -10,6 +10,7 @@ import (
+ 	"strconv"
+ 	"time"
+ 
++	"github.com/jackc/pgx/v5/pgtype"
+ 	"github.com/multica-ai/multica/server/internal/integrations/channel"
+ )
+ 
+@@ -33,6 +34,9 @@ type telegramChannel struct {
+ 	// stored (see ChannelDeps.AcceptsMedia). Without it media keeps getting
+ 	// the unsupported notice instead of a placeholder nothing stands behind.
+ 	acceptsMedia bool
++	// vantt 0019: installation id and the button-press handler (nil: ignored).
++	installationID pgtype.UUID
++	callbacks      CallbackHandler
+ }
+ 
+ // pollRetryDelay spaces retries after a transient getUpdates failure inside
+@@ -122,6 +126,12 @@ func (c *telegramChannel) Connect(ctx context.Context) error {
+ // location, …), they get a courteous notice in a private chat or when
+ // explicitly addressed to the bot in a group.
+ func (c *telegramChannel) dispatch(ctx context.Context, u Update) error {
++	if u.CallbackQuery != nil {
++		if c.callbacks != nil {
++			c.callbacks.HandleCallback(ctx, c.installationID, c.api, *u.CallbackQuery)
++		}
++		return nil
++	}
+ 	msg, ok := inboundFromUpdateWithContext(u, c.botID, c.botUsername, c.recent)
+ 	if !ok {
+ 		return nil
+@@ -255,6 +265,8 @@ type ChannelDeps struct {
+ 	// sets it from the same condition, so the loop never accepts a photo the
+ 	// pipeline cannot keep.
+ 	AcceptsMedia bool
++	// Callbacks handles pressed inline buttons (vantt 0019). Nil ignores them.
++	Callbacks CallbackHandler
+ }
+ 
+ // RegisterTelegram registers the per-installation Telegram Factory so the
+@@ -286,7 +298,7 @@ func newTelegramFactory(deps ChannelDeps) channel.Factory {
+ 		if err != nil {
+ 			return nil, fmt.Errorf("telegram: installation app_id is not a bot id: %w", err)
+ 		}
+-		return &telegramChannel{
++		ch := &telegramChannel{
+ 			botID:        botID,
+ 			botUsername:  ic.BotUsername,
+ 			api:          newBotAPI(deps.APIBase, token, deps.HTTPClient),
+@@ -294,6 +306,8 @@ func newTelegramFactory(deps ChannelDeps) channel.Factory {
+ 			logger:       logger,
+ 			recent:       newRecentContextBuffer(deps.RecentContextSize),
+ 			acceptsMedia: deps.AcceptsMedia,
+-		}, nil
++		}
++		ch.installationID, ch.callbacks = cfg.ID, deps.Callbacks // vantt 0019
++		return ch, nil
+ 	}
+ }
+diff --git a/server/internal/integrations/telegram/vantt_push.go b/server/internal/integrations/telegram/vantt_push.go
+new file mode 100644
+index 000000000..c74e2601d
+--- /dev/null
++++ b/server/internal/integrations/telegram/vantt_push.go
+@@ -0,0 +1,386 @@
++package telegram
++
++// vantt patch 0019 (telegram-push): a member's inbox notifications reach their
++// Telegram DM through the bot they bound, and a decision arrives with one
++// button per option. Pressing one answers the decision as that member.
++//
++// Reference: Linear's personal Slack notifications; in-tree, the WeCom smart
++// bot already pushes inbox:new (wecom/outbound.go handleInboxNew) — this is the
++// same route for Telegram, plus inline buttons for decisions (patch 0008).
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"html"
++	"log/slog"
++	"net/http"
++	"net/url"
++	"strconv"
++	"strings"
++	"time"
++	"unicode/utf8"
++
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/events"
++	"github.com/multica-ai/multica/server/internal/util"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++	"github.com/multica-ai/multica/server/pkg/protocol"
++)
++
++// CallbackQuery is the Bot API object for a pressed inline button.
++type CallbackQuery struct {
++	ID      string   `json:"id"`
++	From    User     `json:"from"`
++	Message *Message `json:"message,omitempty"`
++	Data    string   `json:"data,omitempty"`
++}
++
++// CallbackHandler receives button presses from one installation's polling loop.
++type CallbackHandler interface {
++	HandleCallback(ctx context.Context, installationID pgtype.UUID, api *botAPI, cq CallbackQuery)
++}
++
++// DecisionAnswerer records option optionIndex of a decision as userID's answer
++// and wakes the issue's agent, exactly as the web panel does. It returns the
++// option's label; ErrDecisionClosed when the decision is no longer open.
++type DecisionAnswerer func(ctx context.Context, workspaceID, userID, decisionID string, optionIndex int) (string, error)
++
++// ErrDecisionClosed reports a press on a decision that was already answered or cancelled.
++var ErrDecisionClosed = errors.New("decision is no longer open")
++
++// InboxTypeDecisionRequested is the inbox item type a new decision raises.
++const InboxTypeDecisionRequested = "decision_requested"
++
++const (
++	decisionCallbackPrefix = "vd:"
++	pushBodyMaxRunes       = 3000
++)
++
++type Pusher struct {
++	q       *db.Queries
++	decrypt Decrypter
++	appURL  string
++	logger  *slog.Logger
++	apiBase string
++	client  *http.Client
++	// Answer answers a decision; nil turns the buttons off.
++	Answer DecisionAnswerer
++	// spawn runs a delivery; tests run it inline.
++	spawn func(func())
++}
++
++func NewPusher(q *db.Queries, decrypt Decrypter, appURL string, logger *slog.Logger) *Pusher {
++	if logger == nil {
++		logger = slog.Default()
++	}
++	return &Pusher{
++		q: q, decrypt: decrypt, appURL: strings.TrimRight(appURL, "/"), logger: logger,
++		client: &http.Client{Timeout: 15 * time.Second},
++		spawn:  func(f func()) { go f() },
++	}
++}
++
++// Register subscribes to inbox:new. The bus is synchronous, so delivery runs
++// off the publisher's goroutine.
++func (p *Pusher) Register(bus *events.Bus) {
++	bus.Subscribe(protocol.EventInboxNew, p.handleInboxNew)
++}
++
++func (p *Pusher) handleInboxNew(e events.Event) {
++	payload, ok := e.Payload.(map[string]any)
++	if !ok {
++		return
++	}
++	item, ok := payload["item"].(map[string]any)
++	if !ok || pushString(item["recipient_type"]) != "member" {
++		return
++	}
++	p.spawn(func() {
++		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++		defer cancel()
++		if err := p.Deliver(ctx, item); err != nil {
++			p.logger.WarnContext(ctx, "telegram push: inbox delivery failed", "error", err,
++				"recipient_id", pushString(item["recipient_id"]), "type", pushString(item["type"]))
++		}
++	})
++}
++
++// Deliver sends one inbox item to its recipient's Telegram DM. Every item
++// that reached the inbox goes: what a member mutes in their notification
++// settings never becomes an item (same as the WeCom push). A recipient with
++// no Telegram binding is not an error: the in-app inbox still has it.
++func (p *Pusher) Deliver(ctx context.Context, item map[string]any) error {
++	workspaceID, err := util.ParseUUID(pushString(item["workspace_id"]))
++	if err != nil {
++		return nil
++	}
++	recipientID, err := util.ParseUUID(pushString(item["recipient_id"]))
++	if err != nil {
++		return nil
++	}
++	binding, err := p.bindingFor(ctx, item, workspaceID, recipientID)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return nil
++	}
++	if err != nil {
++		return fmt.Errorf("lookup binding: %w", err)
++	}
++	inst, err := p.q.GetChannelInstallation(ctx, db.GetChannelInstallationParams{ID: binding.InstallationID, ChannelType: string(TypeTelegram)})
++	if err != nil || inst.Status != "active" {
++		return nil
++	}
++	creds, err := decodeCredentials(inst.Config, p.decrypt)
++	if err != nil {
++		return fmt.Errorf("decode credentials: %w", err)
++	}
++	// A private chat's id is the user's id, and a binding exists only after
++	// the member wrote to the bot, so the bot may message them.
++	chatID, err := strconv.ParseInt(binding.ChannelUserID, 10, 64)
++	if err != nil {
++		return nil
++	}
++	text, keyboard := p.render(ctx, item, workspaceID)
++	if text == "" {
++		return nil
++	}
++	return sendPush(ctx, newBotAPI(p.apiBase, creds.BotToken, p.client), chatID, text, keyboard)
++}
++
++// bindingFor prefers the bot of the agent whose activity raised the item, the
++// same rule as FindChannelBindingForMemberOnAgentInstallation's other callers.
++func (p *Pusher) bindingFor(ctx context.Context, item map[string]any, workspaceID, recipientID pgtype.UUID) (db.ChannelUserBinding, error) {
++	if pushString(item["actor_type"]) == "agent" {
++		if agentID, err := util.ParseUUID(pushString(item["actor_id"])); err == nil {
++			b, err := p.q.FindChannelBindingForMemberOnAgentInstallation(ctx, db.FindChannelBindingForMemberOnAgentInstallationParams{
++				WorkspaceID: workspaceID, MulticaUserID: recipientID, ChannelType: string(TypeTelegram), AgentID: agentID,
++			})
++			if err == nil {
++				return b, nil
++			}
++			if !errors.Is(err, pgx.ErrNoRows) {
++				return db.ChannelUserBinding{}, err
++			}
++		}
++	}
++	return p.q.FindChannelBindingForMember(ctx, db.FindChannelBindingForMemberParams{
++		WorkspaceID: workspaceID, MulticaUserID: recipientID, ChannelType: string(TypeTelegram),
++	})
++}
++
++type inlineButton struct {
++	Text         string `json:"text"`
++	CallbackData string `json:"callback_data,omitempty"`
++	URL          string `json:"url,omitempty"`
++}
++
++type inlineKeyboard struct {
++	InlineKeyboard [][]inlineButton `json:"inline_keyboard"`
++}
++
++var pushTypeLabels = map[string]string{
++	InboxTypeDecisionRequested: "Decision needed",
++	"mentioned":                "Mentioned you",
++	"new_comment":              "New comment",
++	"issue_assigned":           "Assigned to you",
++	"status_changed":           "Status changed",
++	"review_requested":         "Review requested",
++	"task_failed":              "Run failed",
++	"agent_blocked":            "Agent blocked",
++	"agent_completed":          "Agent finished",
++	"children_done":            "Sub-issues finished",
++}
++
++func pushTypeLabel(t string) string {
++	if l, ok := pushTypeLabels[t]; ok {
++		return l
++	}
++	return strings.ReplaceAll(t, "_", " ")
++}
++
++// render builds the message (Telegram HTML) and, for a decision, its buttons.
++func (p *Pusher) render(ctx context.Context, item map[string]any, workspaceID pgtype.UUID) (string, *inlineKeyboard) {
++	typ := pushString(item["type"])
++	title := pushString(item["title"])
++	if title == "" && typ == "" {
++		return "", nil
++	}
++	details := map[string]any{}
++	switch d := item["details"].(type) {
++	case json.RawMessage:
++		_ = json.Unmarshal(d, &details)
++	case []byte:
++		_ = json.Unmarshal(d, &details)
++	case map[string]any:
++		details = d
++	}
++	body := pushString(item["body"])
++	if body == "" {
++		// A mention carries the comment id, not its text.
++		if cid, err := util.ParseUUID(pushString(details["comment_id"])); err == nil {
++			if c, err := p.q.GetComment(ctx, cid); err == nil {
++				body = c.Content
++			}
++		}
++	}
++	var b strings.Builder
++	b.WriteString("<b>" + html.EscapeString(pushTypeLabel(typ)) + "</b> · " + html.EscapeString(title))
++	if body != "" {
++		if utf8.RuneCountInString(body) > pushBodyMaxRunes {
++			body = string([]rune(body)[:pushBodyMaxRunes]) + "…"
++		}
++		b.WriteString("\n\n" + formatHTML(body))
++	}
++	if link := p.link(ctx, item, workspaceID); link != "" {
++		b.WriteString("\n\n<a href=\"" + html.EscapeString(link) + "\">Open in Multica</a>")
++	}
++	var keyboard *inlineKeyboard
++	if typ == InboxTypeDecisionRequested && p.Answer != nil {
++		keyboard = p.decisionButtons(ctx, workspaceID, pushString(details["decision_id"]))
++	}
++	return b.String(), keyboard
++}
++
++func (p *Pusher) link(ctx context.Context, item map[string]any, workspaceID pgtype.UUID) string {
++	if p.appURL == "" {
++		return ""
++	}
++	seg := util.UUIDToString(workspaceID)
++	if ws, err := p.q.GetWorkspace(ctx, workspaceID); err == nil && ws.Slug != "" {
++		seg = ws.Slug
++	}
++	if issueID := pushString(item["issue_id"]); issueID != "" {
++		return p.appURL + "/" + url.PathEscape(seg) + "/issues/" + url.PathEscape(issueID)
++	}
++	return p.appURL + "/" + url.PathEscape(seg) + "/inbox"
++}
++
++type pushOption struct {
++	Label       string `json:"label"`
++	Recommended bool   `json:"recommended"`
++}
++
++func (p *Pusher) decisionButtons(ctx context.Context, workspaceID pgtype.UUID, decisionID string) *inlineKeyboard {
++	id, err := util.ParseUUID(decisionID)
++	if err != nil {
++		return nil
++	}
++	d, err := p.q.GetIssueDecision(ctx, db.GetIssueDecisionParams{ID: id, WorkspaceID: workspaceID})
++	if err != nil || d.Status != "open" {
++		return nil
++	}
++	var options []pushOption
++	if json.Unmarshal(d.Options, &options) != nil {
++		return nil
++	}
++	kb := &inlineKeyboard{}
++	for i, o := range options {
++		label := o.Label
++		if o.Recommended {
++			label = "★ " + label
++		}
++		kb.InlineKeyboard = append(kb.InlineKeyboard, []inlineButton{{
++			Text: label, CallbackData: decisionCallbackPrefix + util.UUIDToString(id) + ":" + strconv.Itoa(i),
++		}})
++	}
++	return kb
++}
++
++// HandleCallback answers a decision from a pressed button. Only a Telegram
++// user bound to a member of the decision's workspace can answer.
++func (p *Pusher) HandleCallback(ctx context.Context, installationID pgtype.UUID, api *botAPI, cq CallbackQuery) {
++	toast := func(text string) {
++		_ = api.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": cq.ID, "text": text}, nil)
++	}
++	decisionID, index, ok := parseDecisionCallback(cq.Data)
++	if !ok || p.Answer == nil {
++		toast("This button is not active.")
++		return
++	}
++	binding, err := p.q.GetChannelUserBindingByUserID(ctx, db.GetChannelUserBindingByUserIDParams{
++		InstallationID: installationID, ChannelUserID: strconv.FormatInt(cq.From.ID, 10),
++	})
++	if err != nil {
++		toast("Link your Multica account first: send this bot a message.")
++		return
++	}
++	label, err := p.Answer(ctx, util.UUIDToString(binding.WorkspaceID), util.UUIDToString(binding.MulticaUserID), decisionID, index)
++	switch {
++	case errors.Is(err, ErrDecisionClosed):
++		toast("This decision was already answered.")
++	case err != nil:
++		p.logger.WarnContext(ctx, "telegram push: answer decision failed", "decision_id", decisionID, "error", err)
++		toast("Could not record the answer. Try again in Multica.")
++		return
++	default:
++		toast("✓ " + label)
++	}
++	if cq.Message != nil {
++		// Drop the buttons so the decision cannot be pressed twice.
++		_ = api.call(ctx, "editMessageReplyMarkup", map[string]any{
++			"chat_id": cq.Message.Chat.ID, "message_id": cq.Message.MessageID, "reply_markup": inlineKeyboard{InlineKeyboard: [][]inlineButton{}},
++		}, nil)
++		if err == nil {
++			_, _ = api.SendMessage(ctx, sendMessageParams{
++				ChatID: cq.Message.Chat.ID, Text: "✓ " + label,
++				ReplyParameters: &replyParameters{MessageID: cq.Message.MessageID, AllowSendingWithoutReply: true},
++			})
++		}
++	}
++}
++
++func parseDecisionCallback(data string) (string, int, bool) {
++	rest, ok := strings.CutPrefix(data, decisionCallbackPrefix)
++	if !ok {
++		return "", 0, false
++	}
++	id, idx, ok := strings.Cut(rest, ":")
++	if !ok {
++		return "", 0, false
++	}
++	n, err := strconv.Atoi(idx)
++	if err != nil || n < 0 {
++		return "", 0, false
++	}
++	if _, err := util.ParseUUID(id); err != nil {
++		return "", 0, false
++	}
++	return id, n, true
++}
++
++type pushMessageParams struct {
++	ChatID                int64           `json:"chat_id"`
++	Text                  string          `json:"text"`
++	ParseMode             string          `json:"parse_mode,omitempty"`
++	DisableWebPagePreview bool            `json:"disable_web_page_preview,omitempty"`
++	ReplyMarkup           *inlineKeyboard `json:"reply_markup,omitempty"`
++}
++
++// sendPush sends HTML and falls back to plain text when Telegram rejects the markup.
++func sendPush(ctx context.Context, api *botAPI, chatID int64, text string, keyboard *inlineKeyboard) error {
++	err := api.call(ctx, "sendMessage", pushMessageParams{
++		ChatID: chatID, Text: text, ParseMode: "HTML", DisableWebPagePreview: true, ReplyMarkup: keyboard,
++	}, nil)
++	if err != nil && isHTMLParseError(err) {
++		err = api.call(ctx, "sendMessage", pushMessageParams{ChatID: chatID, Text: text, ReplyMarkup: keyboard}, nil)
++	}
++	return err
++}
++
++func pushString(v any) string {
++	switch s := v.(type) {
++	case string:
++		return s
++	case *string:
++		if s != nil {
++			return *s
++		}
++	case pgtype.Text:
++		if s.Valid {
++			return s.String
++		}
++	}
++	return ""
++}
+diff --git a/server/internal/integrations/telegram/vantt_push_test.go b/server/internal/integrations/telegram/vantt_push_test.go
+new file mode 100644
+index 000000000..04931915c
+--- /dev/null
++++ b/server/internal/integrations/telegram/vantt_push_test.go
+@@ -0,0 +1,143 @@
++package telegram
++
++import (
++	"context"
++	"encoding/base64"
++	"encoding/json"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/multica-ai/multica/server/internal/util"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++type botCall struct {
++	Method string
++	Body   map[string]any
++}
++
++// fakeBot records Bot API calls and answers ok.
++func fakeBot(t *testing.T) (*httptest.Server, func() []botCall) {
++	t.Helper()
++	var mu sync.Mutex
++	var calls []botCall
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		raw, _ := io.ReadAll(r.Body)
++		var body map[string]any
++		_ = json.Unmarshal(raw, &body)
++		mu.Lock()
++		calls = append(calls, botCall{Method: r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], Body: body})
++		mu.Unlock()
++		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":7,"chat":{"id":1}}}`))
++	}))
++	t.Cleanup(srv.Close)
++	return srv, func() []botCall { mu.Lock(); defer mu.Unlock(); return append([]botCall(nil), calls...) }
++}
++
++func TestPushParseCallback(t *testing.T) {
++	if _, _, ok := parseDecisionCallback("vd:not-a-uuid:1"); ok {
++		t.Error("bad uuid accepted")
++	}
++	id := uuid.NewString()
++	if got, n, ok := parseDecisionCallback("vd:" + id + ":2"); !ok || got != id || n != 2 {
++		t.Errorf("parse = %s %d %v", got, n, ok)
++	}
++}
++
++// A decision reaches the bound member's DM with one button per option, and a
++// press answers it as that member.
++func TestPushDecisionButtons(t *testing.T) {
++	if testPool == nil {
++		t.Skip("no database")
++	}
++	ctx := context.Background()
++	q := db.New(testPool)
++	ws, agent, user, inst, issue := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
++	cfg, _ := json.Marshal(installConfig{AppID: "424242" + ws[:4], BotUsername: "pushbot", BotTokenEncrypted: base64.StdEncoding.EncodeToString([]byte("123:TOKEN"))})
++	mustExec := func(sql string, args ...any) {
++		t.Helper()
++		if _, err := testPool.Exec(ctx, sql, args...); err != nil {
++			t.Fatal(err)
++		}
++	}
++	mustExec(`INSERT INTO channel_installation (id, workspace_id, agent_id, channel_type, config, installer_user_id) VALUES ($1,$2,$3,'telegram',$4,$5)`, inst, ws, agent, cfg, user)
++	mustExec(`INSERT INTO channel_user_binding (workspace_id, multica_user_id, installation_id, channel_type, channel_user_id) VALUES ($1,$2,$3,'telegram','555001')`, ws, user, inst)
++	var decisionID string
++	if err := testPool.QueryRow(ctx, `INSERT INTO issue_decision (issue_id, workspace_id, question, options, asked_by_type)
++		VALUES ($1,$2,'Polar or Dodo?','[{"id":"a","label":"Polar","recommended":true},{"id":"b","label":"Dodo"}]','agent') RETURNING id`, issue, ws).Scan(&decisionID); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() {
++		testPool.Exec(ctx, `DELETE FROM channel_user_binding WHERE installation_id = $1`, inst)
++		testPool.Exec(ctx, `DELETE FROM channel_installation WHERE id = $1`, inst)
++		testPool.Exec(ctx, `DELETE FROM issue_decision WHERE id = $1`, decisionID)
++	})
++
++	srv, calls := fakeBot(t)
++	type answered struct {
++		ws, user, decision string
++		index              int
++	}
++	var got []answered
++	p := NewPusher(q, nil, "https://multica.example", nil)
++	p.apiBase = srv.URL
++	p.Answer = func(_ context.Context, workspaceID, userID, decisionID string, i int) (string, error) {
++		got = append(got, answered{workspaceID, userID, decisionID, i})
++		return []string{"Polar", "Dodo"}[i], nil
++	}
++
++	details, _ := json.Marshal(map[string]string{"decision_id": decisionID})
++	item := map[string]any{
++		"workspace_id": ws, "recipient_type": "member", "recipient_id": user, "type": InboxTypeDecisionRequested,
++		"severity": "action_required", "issue_id": issue, "title": "Polar or Dodo?", "body": "Pick a payment provider",
++		"actor_type": "agent", "actor_id": agent, "details": json.RawMessage(details),
++	}
++	if err := p.Deliver(ctx, item); err != nil {
++		t.Fatal(err)
++	}
++	sent := calls()
++	if len(sent) != 1 || sent[0].Method != "sendMessage" || sent[0].Body["chat_id"].(float64) != 555001 {
++		t.Fatalf("calls = %+v", sent)
++	}
++	text, _ := sent[0].Body["text"].(string)
++	if !strings.Contains(text, "Decision needed") || !strings.Contains(text, "/issues/"+issue) {
++		t.Fatalf("text = %q", text)
++	}
++	rows := sent[0].Body["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
++	first := rows[0].([]any)[0].(map[string]any)
++	if len(rows) != 2 || first["text"] != "★ Polar" || first["callback_data"] != "vd:"+decisionID+":0" {
++		t.Fatalf("keyboard = %+v", rows)
++	}
++
++	// The bound user presses "Dodo".
++	api := newBotAPI(srv.URL, "123:TOKEN", nil)
++	instID := util.MustParseUUID(inst)
++	p.HandleCallback(ctx, instID, api, CallbackQuery{ID: "cq1", From: User{ID: 555001}, Data: "vd:" + decisionID + ":1",
++		Message: &Message{MessageID: 7, Chat: Chat{ID: 555001}}})
++	if len(got) != 1 || got[0] != (answered{ws, user, decisionID, 1}) {
++		t.Fatalf("answered = %+v", got)
++	}
++	after := calls()[1:]
++	if len(after) != 3 || after[0].Method != "answerCallbackQuery" || after[0].Body["text"] != "✓ Dodo" ||
++		after[1].Method != "editMessageReplyMarkup" || after[2].Method != "sendMessage" {
++		t.Fatalf("after press = %+v", after)
++	}
++
++	// A Telegram user nobody bound cannot answer.
++	p.HandleCallback(ctx, instID, api, CallbackQuery{ID: "cq2", From: User{ID: 999}, Data: "vd:" + decisionID + ":0"})
++	if len(got) != 1 {
++		t.Fatal("unbound user answered")
++	}
++
++	// No binding for the recipient: nothing is sent.
++	other := map[string]any{"workspace_id": ws, "recipient_type": "member", "recipient_id": uuid.NewString(), "type": "mentioned", "title": "x"}
++	before := len(calls())
++	if err := p.Deliver(ctx, other); err != nil || len(calls()) != before {
++		t.Fatalf("unbound delivery: err=%v calls=%d", err, len(calls())-before)
++	}
++}
+-- 
+2.53.0
+
