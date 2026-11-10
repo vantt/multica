@@ -1,0 +1,326 @@
+From 863cf8ab7fc151388bf1f30d2a7324025ea09153 Mon Sep 17 00:00:00 2001
+From: Van Tran <trantoanvan@outlook.com>
+Date: Wed, 11 Nov 2026 00:24:49 +0700
+Subject: [PATCH] feat(inbox): "Needs you" and "For your info" tabs
+
+The active inbox shows one of two tabs. "Needs you" holds the items the
+server already marks above info (action_required: assigned to you, a
+decision to answer, a run that failed; attention: an autopilot problem);
+"For your info" holds the rest. It opens on "Needs you" while that holds
+anything; the count there is red. Each "Needs you" row starts with a chip
+naming why (its kind). Archive stays "Done"; filters apply inside the tab.
+Web only: severity is already on every item. Reference: OpenMausBot's
+Needs you / For your info / Done.
+
+Patch-Id: inbox-split
+---
+ .../inbox/components/inbox-list-item.tsx      |  2 +
+ .../views/inbox/components/inbox-page.tsx     | 17 +++-
+ .../inbox/components/inbox-tabs.test.tsx      | 38 +++++++++
+ .../views/inbox/components/inbox-tabs.tsx     | 84 +++++++++++++++++++
+ packages/views/locales/en/inbox.json          |  5 ++
+ packages/views/locales/fr/inbox.json          |  5 ++
+ packages/views/locales/ja/inbox.json          |  5 ++
+ packages/views/locales/ko/inbox.json          |  5 ++
+ packages/views/locales/zh-Hans/inbox.json     |  5 ++
+ packages/views/locales/zh-Hant/inbox.json     |  5 ++
+ 10 files changed, 170 insertions(+), 1 deletion(-)
+ create mode 100644 packages/views/inbox/components/inbox-tabs.test.tsx
+ create mode 100644 packages/views/inbox/components/inbox-tabs.tsx
+
+diff --git a/packages/views/inbox/components/inbox-list-item.tsx b/packages/views/inbox/components/inbox-list-item.tsx
+index 07344c6fe..b3457a120 100644
+--- a/packages/views/inbox/components/inbox-list-item.tsx
++++ b/packages/views/inbox/components/inbox-list-item.tsx
+@@ -11,6 +11,7 @@ import { Archive, ArchiveRestore } from "@multica/ui/icons";
+ import type { InboxItem } from "@multica/core/types";
+ import type { InboxView } from "./inbox-view";
+ import { InboxDetailLabel, useTypeLabels } from "./inbox-detail-label";
++import { NeedsYouChip } from "./inbox-tabs"; // vantt inbox-split
+ import {
+   getInboxDisplayTitle,
+   isAutopilotQuotaNotice,
+@@ -193,6 +194,7 @@ export function InboxListItem({
+         </div>
+         <div className="mt-0.5 flex items-center justify-between gap-2">
+           <p className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-caption ${showUnread ? "text-muted-foreground" : "text-muted-foreground"}`}>
++            <NeedsYouChip item={item} />
+             <InboxDetailLabel item={item} />
+           </p>
+           <div className="flex shrink-0 items-center gap-1.5">
+diff --git a/packages/views/inbox/components/inbox-page.tsx b/packages/views/inbox/components/inbox-page.tsx
+index 1fd27c52b..e7abec1b7 100644
+--- a/packages/views/inbox/components/inbox-page.tsx
++++ b/packages/views/inbox/components/inbox-page.tsx
+@@ -99,6 +99,7 @@ import { PAGE_GUTTER, PageHeader } from "../../layout/page-header";
+ import { useTimeAgo } from "./inbox-list-item";
+ import { InboxList } from "./inbox-list";
+ import { InboxFilterMenu } from "./inbox-filter-menu";
++import { InboxTabs, effectiveTab, itemsForTab, needsYou, type InboxTab } from "./inbox-tabs"; // vantt inbox-split
+ import { InboxContextMenuProvider } from "./inbox-context-menu";
+ import { ARCHIVED_VIEW_PARAM, type InboxView } from "./inbox-view";
+ import { useTypeLabels } from "./inbox-detail-label";
+@@ -217,7 +218,15 @@ export function InboxPage() {
+       ...filterInboxItems(lookupItems, effectiveFilters, filterContext),
+     ]);
+   }, [isArchivedView, selectedOnPage, filteredItems, lookupItems, effectiveFilters, filterContext]);
+-  const visibleItems = isArchivedView && pinnedKey ? selectionItems : filteredItems;
++  // vantt inbox-split (D11): the active inbox shows one tab at a time.
++  const [chosenTab, setChosenTab] = useState<InboxTab | null>(null);
++  const needsCount = useMemo(() => filteredItems.filter(needsYou).length, [filteredItems]);
++  const tab = effectiveTab(chosenTab, needsCount);
++  const tabItems = useMemo(
++    () => (isArchivedView ? filteredItems : itemsForTab(filteredItems, tab)),
++    [isArchivedView, filteredItems, tab],
++  );
++  const visibleItems = isArchivedView && pinnedKey ? selectionItems : tabItems;
+   const selected = selectionItems.find((i) => (i.issue_id ?? i.id) === selectedKey) ?? null;
+   const selectedInView = selectedOnPage ?? (isArchivedView ? lookupItems.find((i) => (i.issue_id ?? i.id) === selectedKey) : null);
+   const selectionFilteredOut = !!selectedKey && !!selectedInView && !selected;
+@@ -745,6 +754,9 @@ export function InboxPage() {
+     <>
+       {listHeader}
+       {isArchivedView && archivedBackRow}
++      {!isArchivedView && (
++        <InboxTabs tab={tab} needsCount={needsCount} fyiCount={filteredItems.length - needsCount} onChange={setChosenTab} />
++      )}
+       {lookupLoading && (
+         <p role="status" className="shrink-0 border-b px-3 py-2 text-caption text-muted-foreground">
+           {t(($) => $.list.loading_selection)}
+@@ -770,6 +782,9 @@ export function InboxPage() {
+     <>
+       {listHeader}
+       {isArchivedView && archivedBackRow}
++      {!isArchivedView && (
++        <InboxTabs tab={tab} needsCount={needsCount} fyiCount={filteredItems.length - needsCount} onChange={setChosenTab} />
++      )}
+       <div className="flex-1 min-h-0 overflow-hidden px-2 py-1">
+         {Array.from({ length: 6 }).map((_, i) => (
+           <div key={i} className="flex items-center gap-3 px-2 py-2.5">
+diff --git a/packages/views/inbox/components/inbox-tabs.test.tsx b/packages/views/inbox/components/inbox-tabs.test.tsx
+new file mode 100644
+index 000000000..dafe87498
+--- /dev/null
++++ b/packages/views/inbox/components/inbox-tabs.test.tsx
+@@ -0,0 +1,38 @@
++import { cleanup, fireEvent, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { renderWithI18n } from "../../test/i18n";
++import { effectiveTab, InboxTabs, itemsForTab, NeedsYouChip, needsYou } from "./inbox-tabs";
++
++afterEach(cleanup);
++
++const items = [
++  { id: "a", severity: "action_required" as const, type: "decision_requested" as const },
++  { id: "b", severity: "info" as const, type: "new_comment" as const },
++  { id: "c", severity: "attention" as const, type: "autopilot_paused" as const },
++];
++
++describe("inbox tabs", () => {
++  it("splits on the server's severity", () => {
++    expect(items.filter(needsYou).map((i) => i.id)).toEqual(["a", "c"]);
++    expect(itemsForTab(items, "needs").map((i) => i.id)).toEqual(["a", "c"]);
++    expect(itemsForTab(items, "fyi").map((i) => i.id)).toEqual(["b"]);
++  });
++  it("opens on Needs you while it holds anything, else on For your info", () => {
++    expect(effectiveTab(null, 2)).toBe("needs");
++    expect(effectiveTab(null, 0)).toBe("fyi");
++    expect(effectiveTab("fyi", 2)).toBe("fyi");
++  });
++  it("renders both tabs with counts and switches", () => {
++    const onChange = vi.fn();
++    renderWithI18n(<InboxTabs tab="needs" needsCount={2} fyiCount={5} onChange={onChange} />);
++    expect(screen.getByRole("tab", { name: /Needs you/ }).getAttribute("aria-selected")).toBe("true");
++    fireEvent.click(screen.getByRole("tab", { name: /For your info/ }));
++    expect(onChange).toHaveBeenCalledWith("fyi");
++  });
++  it("labels why a row needs you, and nothing for info rows", () => {
++    renderWithI18n(<NeedsYouChip item={items[0]!} />);
++    expect(screen.getByText("Decision needed")).toBeTruthy();
++    const { container } = renderWithI18n(<NeedsYouChip item={items[1]!} />);
++    expect(container.textContent).toBe("");
++  });
++});
+diff --git a/packages/views/inbox/components/inbox-tabs.tsx b/packages/views/inbox/components/inbox-tabs.tsx
+new file mode 100644
+index 000000000..ee5154b45
+--- /dev/null
++++ b/packages/views/inbox/components/inbox-tabs.tsx
+@@ -0,0 +1,84 @@
++"use client";
++
++import type { InboxItem } from "@multica/core/types";
++import { useT } from "../../i18n";
++import { useTypeLabels } from "./inbox-detail-label";
++
++/**
++ * vantt inbox-split (patch 0020, design D11): the active inbox in two tabs.
++ * "Needs you" holds the items the server already marks above info
++ * (action_required: assigned to you, a decision to answer, a run that failed;
++ * attention: an autopilot problem); "For your info" holds the rest. Archive is
++ * still "Done". Reference: OpenMausBot's Needs you / For your info / Done.
++ */
++export type InboxTab = "needs" | "fyi";
++
++export function needsYou(item: Pick<InboxItem, "severity">): boolean {
++  return item.severity === "action_required" || item.severity === "attention";
++}
++
++/** The tab shown: the chosen one, else "Needs you" while it holds anything. */
++export function effectiveTab(chosen: InboxTab | null, needsCount: number): InboxTab {
++  return chosen ?? (needsCount > 0 ? "needs" : "fyi");
++}
++
++export function itemsForTab<T extends Pick<InboxItem, "severity">>(items: readonly T[], tab: InboxTab): T[] {
++  return items.filter((item) => needsYou(item) === (tab === "needs"));
++}
++
++export function InboxTabs({
++  tab,
++  needsCount,
++  fyiCount,
++  onChange,
++}: {
++  tab: InboxTab;
++  needsCount: number;
++  fyiCount: number;
++  onChange: (tab: InboxTab) => void;
++}) {
++  const { t } = useT("inbox");
++  const button = (value: InboxTab, label: string, count: number) => {
++    const on = tab === value;
++    return (
++      <button
++        type="button"
++        role="tab"
++        aria-selected={on}
++        onClick={() => onChange(value)}
++        className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-caption outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring ${
++          on ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:bg-accent/50"
++        }`}
++      >
++        {label}
++        <span
++          className={`tabular-nums text-micro ${
++            on && value === "needs" && count > 0 ? "rounded-full bg-destructive px-1.5 text-white" : "text-muted-foreground"
++          }`}
++        >
++          {count}
++        </span>
++      </button>
++    );
++  };
++  return (
++    <div role="tablist" aria-label={t(($) => $.tabs.label)} className="flex shrink-0 items-center gap-1 border-b px-3 py-1.5">
++      {button("needs", t(($) => $.tabs.needs_you), needsCount)}
++      {button("fyi", t(($) => $.tabs.for_your_info), fyiCount)}
++    </div>
++  );
++}
++
++/** Why a "Needs you" row is there: its kind, as a small chip. */
++export function NeedsYouChip({ item }: { item: Pick<InboxItem, "severity" | "type"> }) {
++  const labels = useTypeLabels();
++  if (!needsYou(item)) return null;
++  const label = labels[item.type] ?? item.type.replace(/_/g, " ");
++  const tone =
++    item.type === "decision_requested"
++      ? "bg-violet-500/10 text-violet-700 dark:text-violet-300"
++      : item.type === "task_failed" || item.severity === "attention"
++        ? "bg-orange-500/10 text-orange-700 dark:text-orange-300"
++        : "bg-red-500/10 text-red-700 dark:text-red-300";
++  return <span className={`mr-1.5 inline-flex shrink-0 rounded-full px-1.5 text-micro font-medium ${tone}`}>{label}</span>;
++}
+diff --git a/packages/views/locales/en/inbox.json b/packages/views/locales/en/inbox.json
+index aae244d68..c14632ff8 100644
+--- a/packages/views/locales/en/inbox.json
++++ b/packages/views/locales/en/inbox.json
+@@ -120,5 +120,10 @@
+     "unarchive_failed": "Failed to unarchive",
+     "archived_load_failed": "Failed to load archived notifications",
+     "filters_load_failed": "Could not load filters"
++  },
++  "tabs": {
++    "label": "Inbox views",
++    "needs_you": "Needs you",
++    "for_your_info": "For your info"
+   }
+ }
+diff --git a/packages/views/locales/fr/inbox.json b/packages/views/locales/fr/inbox.json
+index 4eaffb729..8fde11f69 100644
+--- a/packages/views/locales/fr/inbox.json
++++ b/packages/views/locales/fr/inbox.json
+@@ -120,5 +120,10 @@
+     "unarchive_failed": "Échec du désarchivage",
+     "archived_load_failed": "Échec du chargement des notifications archivées",
+     "filters_load_failed": "Impossible de charger les filtres"
++  },
++  "tabs": {
++    "label": "Vues de la boîte",
++    "needs_you": "Pour vous",
++    "for_your_info": "Pour info"
+   }
+ }
+diff --git a/packages/views/locales/ja/inbox.json b/packages/views/locales/ja/inbox.json
+index f46cb76e0..3daffdcf3 100644
+--- a/packages/views/locales/ja/inbox.json
++++ b/packages/views/locales/ja/inbox.json
+@@ -118,5 +118,10 @@
+     "unarchive_failed": "アーカイブ解除に失敗しました",
+     "archived_load_failed": "アーカイブ済み通知を読み込めませんでした",
+     "filters_load_failed": "フィルターを読み込めませんでした"
++  },
++  "tabs": {
++    "label": "受信箱の表示",
++    "needs_you": "要対応",
++    "for_your_info": "参考"
+   }
+ }
+diff --git a/packages/views/locales/ko/inbox.json b/packages/views/locales/ko/inbox.json
+index 57829ce65..f766d8e76 100644
+--- a/packages/views/locales/ko/inbox.json
++++ b/packages/views/locales/ko/inbox.json
+@@ -118,5 +118,10 @@
+     "unarchive_failed": "보관 해제에 실패했습니다",
+     "archived_load_failed": "보관된 알림을 불러오지 못했습니다",
+     "filters_load_failed": "필터를 불러올 수 없습니다"
++  },
++  "tabs": {
++    "label": "받은함 보기",
++    "needs_you": "나에게 필요",
++    "for_your_info": "참고용"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hans/inbox.json b/packages/views/locales/zh-Hans/inbox.json
+index d9dce73a1..d172e94a7 100644
+--- a/packages/views/locales/zh-Hans/inbox.json
++++ b/packages/views/locales/zh-Hans/inbox.json
+@@ -118,5 +118,10 @@
+     "unarchive_failed": "取消归档失败",
+     "archived_load_failed": "无法加载已归档通知",
+     "filters_load_failed": "无法加载筛选项"
++  },
++  "tabs": {
++    "label": "收件箱视图",
++    "needs_you": "需要你处理",
++    "for_your_info": "供你知悉"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hant/inbox.json b/packages/views/locales/zh-Hant/inbox.json
+index 7de7929b1..18e32bba2 100644
+--- a/packages/views/locales/zh-Hant/inbox.json
++++ b/packages/views/locales/zh-Hant/inbox.json
+@@ -118,5 +118,10 @@
+     "unarchive_failed": "取消歸檔失敗",
+     "archived_load_failed": "無法載入已歸檔通知",
+     "filters_load_failed": "無法載入篩選項"
++  },
++  "tabs": {
++    "label": "收件匣檢視",
++    "needs_you": "需要你處理",
++    "for_your_info": "供你知悉"
+   }
+ }
+-- 
+2.53.0
+

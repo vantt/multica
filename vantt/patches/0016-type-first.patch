@@ -1,0 +1,120 @@
+From 2edc84ee621bf27c0ac9b32246b0eeefaa58af3d Mon Sep 17 00:00:00 2001
+From: Van Tran <trantoanvan@outlook.com>
+Date: Tue, 10 Nov 2026 20:40:34 +0700
+Subject: [PATCH] feat(issues): the property a project's workflow depends on is
+ always shown
+
+In a project whose workflow rules read a property (Type), the create-issue form
+and the issue page show that property without "Add property", so the work type
+is picked first, as Jira puts the work type first. Core: ruleProperties.
+
+Patch-Id: type-first
+---
+ packages/core/workflow-rules/index.test.ts        | 9 +++++++++
+ packages/core/workflow-rules/index.ts             | 9 +++++++++
+ packages/views/issues/components/issue-detail.tsx | 6 +++++-
+ packages/views/modals/create-issue.tsx            | 7 ++++++-
+ 4 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/packages/core/workflow-rules/index.test.ts b/packages/core/workflow-rules/index.test.ts
+index 6cdf4b335..532ee4d50 100644
+--- a/packages/core/workflow-rules/index.test.ts
++++ b/packages/core/workflow-rules/index.test.ts
+@@ -17,3 +17,12 @@ describe("mergeRuleWorkflows", () => {
+     expect(mergeRuleWorkflows(delivery, [], [delivery], ["done"])).toBe(delivery);
+   });
+ });
++
++describe("ruleProperties", () => {
++  it("names the properties the rules read, once", async () => {
++    const { ruleProperties } = await import("./index");
++    const r = (p: string) => ({ property_id: p, option_id: "o", workflow_id: "w" });
++    expect([...ruleProperties([r("type"), r("type"), r("domain")])]).toEqual(["type", "domain"]);
++    expect(ruleProperties(undefined).size).toBe(0);
++  });
++});
+diff --git a/packages/core/workflow-rules/index.ts b/packages/core/workflow-rules/index.ts
+index 1dfc2949d..aea7d03a0 100644
+--- a/packages/core/workflow-rules/index.ts
++++ b/packages/core/workflow-rules/index.ts
+@@ -58,6 +58,15 @@ export function mergeRuleWorkflows<W extends { steps: { status_key: string }[] }
+   return { ...project, steps };
+ }
+ 
++/**
++ * The properties a project's rules read (e.g. Type): the issue's workflow depends
++ * on them, so the create form and the issue page show them without "Add property"
++ * (vantt workflow-by-type; Jira puts the work type first).
++ */
++export function ruleProperties(rules: readonly WorkflowRule[] | undefined): Set<string> {
++  return new Set((rules ?? []).map((r) => r.property_id));
++}
++
+ export function useSetWorkflowRules(projectId: string) {
+   const qc = useQueryClient();
+   const wsId = useWorkspaceId();
+diff --git a/packages/views/issues/components/issue-detail.tsx b/packages/views/issues/components/issue-detail.tsx
+index 9907aa464..8d6e69c4e 100644
+--- a/packages/views/issues/components/issue-detail.tsx
++++ b/packages/views/issues/components/issue-detail.tsx
+@@ -1,5 +1,6 @@
+ "use client";
+ 
++import { ruleProperties, workflowRulesOptions } from "@multica/core/workflow-rules"; // vantt workflow-by-type
+ import {
+   issueBehavesAs,
+   issueBehavesAsAny,
+@@ -2573,6 +2574,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+   // still carry a value written before the archive, and that row must stay
+   // renderable (read-only) until someone clears it.
+   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId, true));
++  // vantt workflow-by-type: the property the project's rules read (Type) always has a row.
++  const { data: detailRules } = useQuery({ ...workflowRulesOptions(wsId, issue?.project_id ?? ""), enabled: Boolean(issue?.project_id) });
++  const pinnedProperties = ruleProperties(detailRules);
+ 
+   // Sub-issue rows only surface live definitions: the display picker offers
+   // non-archived properties, and chips render only ids that resolve here.
+@@ -2969,7 +2973,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+             .filter(
+               (p) =>
+                 issue.properties?.[p.id] !== undefined ||
+-                (!p.archived && visibleCustomProps.has(p.id)),
++                (!p.archived && (visibleCustomProps.has(p.id) || pinnedProperties.has(p.id))),
+             )
+             .map((p) => (
+               <PropRow
+diff --git a/packages/views/modals/create-issue.tsx b/packages/views/modals/create-issue.tsx
+index 1e1c2b2b9..8ab238b00 100644
+--- a/packages/views/modals/create-issue.tsx
++++ b/packages/views/modals/create-issue.tsx
+@@ -82,6 +82,7 @@ import {
+ } from "@multica/core/issues/mutations";
+ import { useAttachLabelToIssue } from "@multica/core/labels";
+ import { propertyListOptions } from "@multica/core/properties";
++import { ruleProperties, workflowRulesOptions } from "@multica/core/workflow-rules"; // vantt workflow-by-type
+ import {
+   ApiError,
+   DuplicateIssueErrorBodySchema,
+@@ -349,6 +350,9 @@ export function ManualCreatePanel({
+   const queryClient = useQueryClient();
+   const { categoryOf: draftStatusCategory, colorOf, iconOf } = useIssueStatuses(wsId);
+   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId));
++  // vantt workflow-by-type: the property the project's rules read (Type) is always offered.
++  const { data: createRules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
++  const pinnedProperties = ruleProperties(createRules);
+   const { data: parentIssue } = useQuery({
+     ...issueDetailOptions(wsId, parentIssueId ?? ""),
+     enabled: !!parentIssueId,
+@@ -1183,7 +1187,8 @@ export function ManualCreatePanel({
+                 .filter(
+                   (property) =>
+                     Object.prototype.hasOwnProperty.call(propertyValues, property.id) ||
+-                    customPropertyPickerId === property.id,
++                    customPropertyPickerId === property.id ||
++                    (!property.archived && pinnedProperties.has(property.id)),
+                 )
+                 .map((property) => {
+                   const value = propertyValues[property.id];
+-- 
+2.53.0
+
