@@ -164,6 +164,7 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create decision")
 		return
 	}
+	h.notifyDecision(r.Context(), issue, d, actorType, actorID) // patch 0019
 	writeJSON(w, http.StatusCreated, decisionToResponse(d))
 }
 
