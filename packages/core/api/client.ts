@@ -4130,6 +4130,14 @@ export class ApiClient {
     });
   }
 
+  // vantt board-gates (design D3): when each open issue entered its status.
+  async listIssueStatusSince(projectId: string | null): Promise<{ issues: Record<string, import("../board-gates").StatusSince> }> {
+    const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    const raw = await this.fetch<{ issues?: unknown }>(`/api/issues/status-since${q}`);
+    const issues = raw?.issues && typeof raw.issues === "object" ? (raw.issues as Record<string, import("../board-gates").StatusSince>) : {};
+    return { issues };
+  }
+
   // vantt workflow-by-type (patch workflow-by-type-ui, F3).
   async listProjectWorkflowRules(projectId: string): Promise<{ rules: { property_id: string; option_id: string; workflow_id: string }[] }> {
     const raw = await this.fetch<{ rules?: unknown }>(`/api/projects/${projectId}/workflow-rules`);
