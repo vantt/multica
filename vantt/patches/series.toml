@@ -75,3 +75,13 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["packages/views/workflows/workflow-rules-row.tsx", "packages/views/projects/components/project-detail.tsx", "packages/views/projects/components/project-detail.test.tsx", "packages/core/api/client.ts"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run locales projects workflows"
+
+[[patches]]
+id = "board-columns"
+name = "feat(boards): a project board shows the columns of every workflow its rules use"
+patch_file = "0007-board-columns.patch"
+metadata_file = "0007-board-columns.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/core/workflow-rules/index.ts", "packages/views/issues/utils/workflow-columns.ts", "packages/views/issues/utils/workflow-columns.test.ts"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run workflow-rules) && (cd packages/views && npx vitest run issues/utils workflows)"

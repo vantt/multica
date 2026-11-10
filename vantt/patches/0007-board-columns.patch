@@ -1,0 +1,144 @@
+From 2384031346971c781f4140aef8e4973c3f503e9b Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:47:32 +0700
+Subject: [PATCH] feat(boards): a project board shows the columns of every
+ workflow its rules use
+
+When a project sends some Types to other workflows (workflow-by-type), its
+board columns are the project workflow's steps plus each rule workflow's
+middle steps, before blocked/done/cancelled, so every issue has a column.
+Without rules nothing changes.
+
+Patch-Id: board-columns
+---
+ packages/core/workflow-rules/index.test.ts    | 19 +++++++++
+ packages/core/workflow-rules/index.ts         | 40 +++++++++++++++++--
+ .../issues/utils/workflow-columns.test.ts     |  3 ++
+ .../views/issues/utils/workflow-columns.ts    |  7 +++-
+ 4 files changed, 64 insertions(+), 5 deletions(-)
+ create mode 100644 packages/core/workflow-rules/index.test.ts
+
+diff --git a/packages/core/workflow-rules/index.test.ts b/packages/core/workflow-rules/index.test.ts
+new file mode 100644
+index 000000000..6cdf4b335
+--- /dev/null
++++ b/packages/core/workflow-rules/index.test.ts
+@@ -0,0 +1,19 @@
++// @vitest-environment node
++import { describe, expect, it } from "vitest";
++import { mergeRuleWorkflows } from "./index";
++
++const wf = (id: string, keys: string[]) => ({ id, steps: keys.map((status_key) => ({ status_key })) });
++
++describe("mergeRuleWorkflows", () => {
++  it("adds rule workflows' middle steps before the closing steps", () => {
++    const delivery = wf("d", ["backlog", "todo", "build", "in_review", "blocked", "done", "cancelled"]);
++    const content = wf("c", ["todo", "content_review", "in_review", "done", "cancelled"]);
++    const merged = mergeRuleWorkflows(delivery, [{ property_id: "p", option_id: "o", workflow_id: "c" }], [delivery, content], ["blocked", "done", "cancelled"]);
++    expect(merged?.steps.map((s) => s.status_key)).toEqual(["backlog", "todo", "build", "in_review", "content_review", "blocked", "done", "cancelled"]);
++  });
++
++  it("keeps the project workflow without rules", () => {
++    const delivery = wf("d", ["todo", "done"]);
++    expect(mergeRuleWorkflows(delivery, [], [delivery], ["done"])).toBe(delivery);
++  });
++});
+diff --git a/packages/core/workflow-rules/index.ts b/packages/core/workflow-rules/index.ts
+index 082ebb9be..1dfc2949d 100644
+--- a/packages/core/workflow-rules/index.ts
++++ b/packages/core/workflow-rules/index.ts
+@@ -1,4 +1,4 @@
+-import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
++import { useMutation, useQueryClient } from "@tanstack/react-query";
+ import { api } from "../api";
+ import { useWorkspaceId } from "../hooks";
+ 
+@@ -17,13 +17,45 @@ export const workflowRuleKeys = {
+   project: (wsId: string, projectId: string) => ["workflow-rules", wsId, projectId] as const,
+ };
+ 
++// A plain options object (not queryOptions) so surfaces whose tests mock
++// react-query with only useQuery can still read rules.
+ export function workflowRulesOptions(wsId: string, projectId: string) {
+-  return queryOptions({
++  return {
+     queryKey: workflowRuleKeys.project(wsId, projectId),
+     queryFn: () => api.listProjectWorkflowRules(projectId),
+-    select: (data) => data.rules,
++    select: (data: { rules: WorkflowRule[] }) => data.rules,
+     staleTime: 60_000,
+-  });
++  };
++}
++
++/**
++ * A project's columns when rules send some Types to other workflows (vantt
++ * board-columns, design D3d "Automatic"): the project workflow's steps, then
++ * each rule workflow's middle steps it does not have yet, before the closing
++ * steps (blocked, done, cancelled). Without rules: the project workflow.
++ */
++export function mergeRuleWorkflows<W extends { steps: { status_key: string }[] }>(
++  project: W | null,
++  rules: readonly WorkflowRule[],
++  workflows: readonly (W & { id: string })[],
++  tail: readonly string[] = ["blocked", "done", "cancelled"],
++): W | null {
++  if (!project || rules.length === 0) return project;
++  const steps = [...project.steps];
++  const has = new Set(steps.map((s) => s.status_key));
++  const tailAt = () => {
++    const i = steps.findIndex((s) => tail.includes(s.status_key));
++    return i < 0 ? steps.length : i;
++  };
++  for (const rule of rules) {
++    const wf = workflows.find((w) => w.id === rule.workflow_id);
++    for (const step of wf?.steps ?? []) {
++      if (has.has(step.status_key) || tail.includes(step.status_key)) continue;
++      steps.splice(tailAt(), 0, step);
++      has.add(step.status_key);
++    }
++  }
++  return { ...project, steps };
+ }
+ 
+ export function useSetWorkflowRules(projectId: string) {
+diff --git a/packages/views/issues/utils/workflow-columns.test.ts b/packages/views/issues/utils/workflow-columns.test.ts
+index cb27ea738..7fcf33d60 100644
+--- a/packages/views/issues/utils/workflow-columns.test.ts
++++ b/packages/views/issues/utils/workflow-columns.test.ts
+@@ -39,6 +39,9 @@ const { defaultWithoutBlocked } = vi.hoisted(() => ({
+   },
+ }));
+ 
++// vantt board-columns reads the project's workflow rules.
++vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: undefined }) }));
++
+ vi.mock("@multica/core/issue-workflows", () => ({
+   defaultWorkflow: () => defaultWithoutBlocked,
+   useIssueWorkflows: () => ({ workflows: [defaultWithoutBlocked] }),
+diff --git a/packages/views/issues/utils/workflow-columns.ts b/packages/views/issues/utils/workflow-columns.ts
+index 90aab3277..cbf930975 100644
+--- a/packages/views/issues/utils/workflow-columns.ts
++++ b/packages/views/issues/utils/workflow-columns.ts
+@@ -1,4 +1,6 @@
++import { useQuery } from "@tanstack/react-query";
+ import { defaultWorkflow, useIssueWorkflows, useProjectWorkflow } from "@multica/core/issue-workflows";
++import { mergeRuleWorkflows, workflowRulesOptions } from "@multica/core/workflow-rules";
+ import type { IssueStatus, IssueWorkflow } from "@multica/core/types";
+ 
+ /**
+@@ -33,7 +35,10 @@ export function useColumnWorkflow(
+ ): { workflow: IssueWorkflow | null } {
+   const { workflows } = useIssueWorkflows(wsId);
+   const projectWorkflow = useProjectWorkflow(wsId, projectId);
++  // vantt board-columns: a project whose rules send some Types to other
++  // workflows shows their steps too, so every issue has a column.
++  const { data: rules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
+   if (hasStatusFilter) return { workflow: null };
+-  if (projectId) return { workflow: projectWorkflow };
++  if (projectId) return { workflow: mergeRuleWorkflows(projectWorkflow, rules ?? [], workflows) };
+   return { workflow: defaultWorkflow(workflows) };
+ }
+-- 
+2.53.0
+
