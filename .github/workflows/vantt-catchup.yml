@@ -58,6 +58,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: server/go.mod

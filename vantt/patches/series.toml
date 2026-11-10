@@ -25,3 +25,13 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["server/internal/issueworkflow/issueworkflow.go", "server/internal/handler/issue_workflow_entry.go", "server/internal/handler/issue.go", "server/internal/handler/vantt_owner_gates_test.go"]
 test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'OwnerGate|AgentStepIsNotAGate' -count=1"
+
+[[patches]]
+id = "approval-panel"
+name = "feat(issues): approval panel for the person a workflow step waits on"
+patch_file = "0002-approval-panel.patch"
+metadata_file = "0002-approval-panel.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/workflows/approval-panel.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/views/locales/*/issues.json"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows/approval-panel.test.tsx locales"
