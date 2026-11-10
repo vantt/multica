@@ -1743,5 +1743,14 @@
     "status_bar": "ステータス別のサブ課題: {{summary}}",
     "days": "{{count}}日",
     "days_title": "{{status}} に {{count}} 日"
+  },
+  "board_lanes": {
+    "backlog": "バックログ",
+    "todo": "未着手",
+    "in_progress": "進行中",
+    "awaiting_approval": "承認待ち",
+    "done": "完了",
+    "gate_hint": "この列から動かせるのは承認者だけです",
+    "drop_blocked": "この課題のワークフローにはこの列のステップがありません"
   }
 }
