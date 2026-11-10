@@ -180,6 +180,7 @@ import { TruncatedTooltip } from "@multica/ui/components/common/truncated-toolti
 import { PAGE_GUTTER } from "../../layout/page-header";
 
 import { ProgressRing } from "./progress-ring";
+import { ChildStatusBar, DaysInStatus } from "./child-panel-extras"; // vantt parent-child
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 import { MetadataSection } from "./metadata-section";
 import { IssueSidebarSectionHeader, IssueSidebarStack, IssueSidebarPropertyGrid } from "./issue-sidebar-section";
@@ -1015,6 +1016,7 @@ function SubIssueRow({
               </span>
             )}
           </span>
+          {!isDone && <DaysInStatus issue={child} />}
         </AppLink>
         {rowProps.dueDate && child.due_date && (
           <DueDatePicker
@@ -3641,6 +3643,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       {doneChildCount}/{childIssues.length}
                     </span>
                   </div>
+                  <ChildStatusBar issues={childIssues} />
                   {/* issue.id, not the route param — the endpoint takes a
                       UUID and the route may carry a human-readable id. */}
                   <SubIssuesAgentWorkingChip parentIssueId={issue.id} />
