@@ -1738,5 +1738,10 @@
   },
   "parent_chip": {
     "title": "{{identifier}} のサブ課題 · {{title}}"
+  },
+  "child_panel": {
+    "status_bar": "ステータス別のサブ課題: {{summary}}",
+    "days": "{{count}}日",
+    "days_title": "{{status}} に {{count}} 日"
   }
 }
