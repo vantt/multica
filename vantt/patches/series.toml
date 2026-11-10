@@ -73,5 +73,5 @@ patch_file = "0006-workflow-by-type-ui.patch"
 metadata_file = "0006-workflow-by-type-ui.spec.md"
 upstream_status = "unsubmitted"
 upstream_ref = ""
-touches = ["packages/views/workflows/workflow-rules-row.tsx", "packages/views/projects/components/project-detail.tsx", "packages/core/api/client.ts"]
+touches = ["packages/views/workflows/workflow-rules-row.tsx", "packages/views/projects/components/project-detail.tsx", "packages/views/projects/components/project-detail.test.tsx", "packages/core/api/client.ts"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run locales projects workflows"

@@ -1,4 +1,4 @@
-From fdfe16fef61d9740cc041e9a82d5b6ccf998fd3c Mon Sep 17 00:00:00 2001
+From 3fc7ab87c5191458819a933a3b38e84478168af7 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:39:26 +0700
 Subject: [PATCH] feat(projects): edit workflows by Type in the project sidebar
@@ -18,10 +18,13 @@ Patch-Id: workflow-by-type-ui
  packages/views/locales/ko/issues.json         |   9 ++
  packages/views/locales/zh-Hans/issues.json    |   9 ++
  packages/views/locales/zh-Hant/issues.json    |   9 ++
+ .../components/project-detail.test.tsx        |   1 +
  .../projects/components/project-detail.tsx    |  12 ++
+ .../workflows/workflow-rules-row.test.tsx     |  40 ++++++
  .../views/workflows/workflow-rules-row.tsx    | 129 ++++++++++++++++++
- 11 files changed, 250 insertions(+)
+ 13 files changed, 291 insertions(+)
  create mode 100644 packages/core/workflow-rules/index.ts
+ create mode 100644 packages/views/workflows/workflow-rules-row.test.tsx
  create mode 100644 packages/views/workflows/workflow-rules-row.tsx
 
 diff --git a/packages/core/api/client.ts b/packages/core/api/client.ts
@@ -227,6 +230,18 @@ index 3d085280e..139a4a708 100644
      }
    },
    "hover_card": {
+diff --git a/packages/views/projects/components/project-detail.test.tsx b/packages/views/projects/components/project-detail.test.tsx
+index 2a4933fcd..9c9fba72c 100644
+--- a/packages/views/projects/components/project-detail.test.tsx
++++ b/packages/views/projects/components/project-detail.test.tsx
+@@ -23,6 +23,7 @@ vi.mock("@multica/ui/lib/clipboard", () => ({
+ 
+ vi.mock("../../workflows/project-workflow-menu", () => ({ ProjectWorkflowMenu: () => null }));
+ vi.mock("../../workflows/project-workflow-row", () => ({ ProjectWorkflowControl: () => null }));
++vi.mock("../../workflows/workflow-rules-row", () => ({ WorkflowRulesControl: () => null }));
+ 
+ vi.mock("@tanstack/react-query", () => ({
+   useQuery: (options: { queryKey?: readonly unknown[] }) => {
 diff --git a/packages/views/projects/components/project-detail.tsx b/packages/views/projects/components/project-detail.tsx
 index be113f661..60350ebf1 100644
 --- a/packages/views/projects/components/project-detail.tsx
@@ -264,6 +279,52 @@ index be113f661..60350ebf1 100644
          </div>}
        </div>
  
+diff --git a/packages/views/workflows/workflow-rules-row.test.tsx b/packages/views/workflows/workflow-rules-row.test.tsx
+new file mode 100644
+index 000000000..49f11382a
+--- /dev/null
++++ b/packages/views/workflows/workflow-rules-row.test.tsx
+@@ -0,0 +1,40 @@
++import { cleanup, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { Project } from "@multica/core/types";
++import { renderWithI18n } from "../test/i18n";
++import { WorkflowRulesControl } from "./workflow-rules-row";
++
++const state = vi.hoisted(() => ({ rules: [] as { property_id: string; option_id: string; workflow_id: string }[], admin: false }));
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("@tanstack/react-query", () => ({
++  useQuery: (o: { queryKey: readonly unknown[] }) =>
++    o.queryKey[0] === "workflow-rules"
++      ? { data: state.rules }
++      : { data: [{ id: "prop-1", name: "Type", type: "select", archived: false, config: { options: [{ id: "opt-copy", name: "Copy" }] } }] },
++}));
++vi.mock("@multica/core/workflow-rules", () => ({
++  workflowRulesOptions: () => ({ queryKey: ["workflow-rules"] }),
++  useSetWorkflowRules: () => ({ mutate: vi.fn(), isPending: false }),
++}));
++vi.mock("@multica/core/properties/queries", () => ({ propertyListOptions: () => ({ queryKey: ["properties"] }) }));
++vi.mock("@multica/core/issue-workflows", () => ({ useIssueWorkflows: () => ({ workflows: [{ id: "wf-content", name: "content" }] }) }));
++vi.mock("./permissions", () => ({ useWorkflowPermissions: () => ({ canManageProject: state.admin, isAdmin: state.admin }) }));
++
++afterEach(() => {
++  cleanup();
++  state.rules = [];
++});
++
++describe("WorkflowRulesControl", () => {
++  it("says every Type is the same when there are no rules", () => {
++    renderWithI18n(<WorkflowRulesControl project={{ id: "p-1" } as Project} />);
++    expect(screen.getByText("Same for every Type")).toBeTruthy();
++  });
++
++  it("summarises rules as option → workflow", () => {
++    state.rules = [{ property_id: "prop-1", option_id: "opt-copy", workflow_id: "wf-content" }];
++    renderWithI18n(<WorkflowRulesControl project={{ id: "p-1" } as Project} />);
++    expect(screen.getByText("Copy → content")).toBeTruthy();
++  });
++});
 diff --git a/packages/views/workflows/workflow-rules-row.tsx b/packages/views/workflows/workflow-rules-row.tsx
 new file mode 100644
 index 000000000..97a42e0ed
