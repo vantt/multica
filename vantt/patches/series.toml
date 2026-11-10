@@ -1,0 +1,167 @@
+# Patch series applied by vantt/scripts/catchup.mjs on top of the upstream tag in
+# vantt/upstream.pin. Patches are applied in file order with `git am --3way`.
+#
+# [[patches]]
+# id = "owner-gates"                         # required, unique, kebab-case
+# name = "feat(workflow): owner gates enforced by the server"   # required, commit subject
+# patch_file = "0001-owner-gates.patch"     # required, `git format-patch` output
+# metadata_file = "0001-owner-gates.spec.md" # required: requirement, invariants, touch points, how to rewrite on conflict
+# upstream_status = "unsubmitted"            # unsubmitted | issue_opened | pr_opened | merged | rejected ("merged" = skipped)
+# upstream_ref = ""                          # issue or PR link
+# touches = ["server/internal/issueworkflow/issueworkflow.go"]
+# test_command = "cd server && go test ./internal/issueworkflow/..."
+# probe = "vantt/probes/owner-gates.sh"      # behaviour check against a running instance
+#
+# Planned order (vantt/plans/plan.md): F0 fork-identity, F1 owner-gates, F2 goals,
+# F3 workflow-by-type, F4 boards, F5 decisions, F7 parent-child, F8 artifact-reader,
+# F6 budgets (last).
+
+[[patches]]
+id = "owner-gates"
+name = "feat(workflow): agents cannot move an issue out of a step a person handles"
+patch_file = "0001-owner-gates.patch"
+metadata_file = "0001-owner-gates.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/issueworkflow/issueworkflow.go", "server/internal/handler/issue_workflow_entry.go", "server/internal/handler/issue.go", "server/internal/handler/vantt_owner_gates_test.go"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'OwnerGate|AgentStepIsNotAGate' -count=1"
+
+[[patches]]
+id = "approval-panel"
+name = "feat(issues): approval panel for the person a workflow step waits on"
+patch_file = "0002-approval-panel.patch"
+metadata_file = "0002-approval-panel.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/workflows/approval-panel.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/views/locales/*/issues.json"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows/approval-panel.test.tsx locales"
+
+[[patches]]
+id = "goals"
+name = "feat(goals): goals with a number, a deadline, history and linked work"
+patch_file = "0003-goals.patch"
+metadata_file = "0003-goals.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/migrations/9001_vantt_goal*", "server/pkg/db/queries/goal.sql", "server/pkg/db/generated/goal.sql.go", "server/pkg/db/generated/models.go", "server/internal/handler/vantt_goal.go", "server/cmd/server/router.go"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Goal|WorkspaceDeletion' -count=1"
+
+[[patches]]
+id = "goals-ui"
+name = "feat(goals): Goals page and goal detail on web and desktop"
+patch_file = "0004-goals-ui.patch"
+metadata_file = "0004-goals-ui.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/core/goals/", "packages/views/goals/", "packages/core/api/client.ts", "packages/core/paths/", "packages/views/layout/app-sidebar.tsx", "apps/desktop/src/renderer/src/routes.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run goals paths) && (cd packages/views && npx vitest run locales layout search)"
+
+[[patches]]
+id = "workflow-by-type"
+name = "feat(workflow): pick a project's workflow by a select property (Type)"
+patch_file = "0005-workflow-by-type.patch"
+metadata_file = "0005-workflow-by-type.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = "https://github.com/multica-ai/multica/issues/5524"
+touches = ["server/internal/issueworkflow/issueworkflow.go", "server/internal/handler/issue_workflow_entry.go", "server/internal/handler/issue.go", "server/internal/service/issue.go", "server/internal/handler/property.go", "server/internal/handler/pr_auto_complete.go", "server/pkg/db/queries/workspace_delete.sql"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'WorkflowRule|FollowsRuleWorkflow|ChangingType|WorkspaceDeletion' -count=1"
+
+[[patches]]
+id = "workflow-by-type-ui"
+name = "feat(projects): edit workflows by Type in the project sidebar"
+patch_file = "0006-workflow-by-type-ui.patch"
+metadata_file = "0006-workflow-by-type-ui.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/workflows/workflow-rules-row.tsx", "packages/views/projects/components/project-detail.tsx", "packages/views/projects/components/project-detail.test.tsx", "packages/core/api/client.ts"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run locales projects workflows"
+
+[[patches]]
+id = "board-columns"
+name = "feat(boards): a project board shows the columns of every workflow its rules use"
+patch_file = "0007-board-columns.patch"
+metadata_file = "0007-board-columns.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/core/workflow-rules/index.ts", "packages/views/issues/utils/workflow-columns.ts", "packages/views/issues/utils/workflow-columns.test.ts"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run workflow-rules) && (cd packages/views && npx vitest run issues/utils workflows)"
+
+[[patches]]
+id = "decisions"
+name = "feat(decisions): structured decisions on issues"
+patch_file = "0008-decisions.patch"
+metadata_file = "0008-decisions.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/handler/vantt_decision.go", "server/cmd/server/router.go", "server/pkg/db/queries/workspace_delete.sql"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Decision|WorkspaceDeletion' -count=1"
+
+[[patches]]
+id = "decisions-ui"
+name = "feat(decisions): decision panel on the issue page"
+patch_file = "0009-decisions-ui.patch"
+metadata_file = "0009-decisions-ui.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/workflows/decision-panel.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/core/decisions/index.ts", "packages/core/api/client.ts"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows locales"
+
+[[patches]]
+id = "parent-child"
+name = "feat(issues): show a sub-issue's parent on board cards and list rows"
+patch_file = "0010-parent-child.patch"
+metadata_file = "0010-parent-child.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/issues/components/parent-issue-chip.tsx", "packages/views/issues/components/board-card.tsx", "packages/views/issues/components/list-row.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run issues/components/parent-issue-chip.test.tsx issues/components/board locales"
+
+[[patches]]
+id = "artifact-reader"
+name = "feat(attachments): reading view for markdown documents"
+patch_file = "0011-artifact-reader.patch"
+metadata_file = "0011-artifact-reader.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/editor/markdown-reader.tsx", "packages/views/editor/attachment-preview-modal.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run editor locales"
+
+[[patches]]
+id = "status-age"
+name = "feat(issues): when each open issue entered its status"
+patch_file = "0012-status-age.patch"
+metadata_file = "0012-status-age.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/handler/vantt_status_since.go", "server/cmd/server/router.go", "packages/core/board-gates/index.ts", "packages/core/api/client.ts"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'StatusSince' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/core && npx vitest run board-gates"
+
+[[patches]]
+id = "child-panel"
+name = "feat(issues): child issues by status and days in status"
+patch_file = "0013-child-panel.patch"
+metadata_file = "0013-child-panel.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/issues/components/child-panel-extras.tsx", "packages/views/issues/components/issue-detail.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run issues/components/child-panel-extras.test.tsx issues/components/issue-detail locales"
+
+[[patches]]
+id = "board-lanes"
+name = "feat(boards): lanes for a board of several workflows"
+patch_file = "0014-board-lanes.patch"
+metadata_file = "0014-board-lanes.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/issues/components/board-lanes.tsx", "packages/views/issues/components/board-view.tsx", "packages/views/issues/components/board-column.tsx", "packages/views/issues/components/board-card.tsx", "packages/views/issues/utils/drag-utils.ts"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run issues locales"
+
+[[patches]]
+id = "approval-pr"
+name = "feat(issues): pull requests in the approval panel"
+patch_file = "0015-approval-pr.patch"
+metadata_file = "0015-approval-pr.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/workflows/approval-prs.tsx", "packages/views/workflows/approval-panel.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows locales"
