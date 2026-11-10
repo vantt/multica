@@ -24,6 +24,7 @@ import { PriorityPicker, AssigneePicker, StartDatePicker, DueDatePicker } from "
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { propertyIdFromViewKey } from "@multica/core/issues/stores/view-store";
 import { ProgressRing } from "./progress-ring";
+import { ParentIssueChip } from "./parent-issue-chip";
 import type { ChildProgress } from "./list-row";
 import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
@@ -204,6 +205,7 @@ export const BoardCardContent = memo(function BoardCardContent({
         <div className="flex items-center gap-1.5 min-w-0">
           {priorityIconNode}
           <p className="text-caption text-muted-foreground truncate">{issue.identifier}</p>
+          <ParentIssueChip parentId={issue.parent_issue_id} />
           <IssueDuplicateOfMarker issue={issue} insideLink />
         </div>
         <IssueAgentActivityIndicator issueId={issue.id} />
