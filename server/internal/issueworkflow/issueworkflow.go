@@ -529,6 +529,7 @@ type Querier interface {
 	GetIssueWorkflow(ctx context.Context, arg db.GetIssueWorkflowParams) (db.IssueWorkflow, error)
 	GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtype.UUID) (db.IssueWorkflow, error)
 	GetProjectInWorkspace(ctx context.Context, arg db.GetProjectInWorkspaceParams) (db.Project, error)
+	ListProjectWorkflowRules(ctx context.Context, arg db.ListProjectWorkflowRulesParams) ([]db.ProjectWorkflowRule, error)
 }
 
 // DefaultFor loads the workspace Default workflow, or the built-in one when
@@ -559,6 +560,73 @@ func ForProject(ctx context.Context, q Querier, workspaceID, projectID pgtype.UU
 	}
 	def, err := ForProjectRow(ctx, q, project)
 	return def, project, err
+}
+
+// ForIssue loads the workflow an issue follows: the project's rule matching one
+// of the issue's select property values (vantt workflow-by-type), otherwise the
+// project's workflow. properties is the issue's property bag as stored or sent:
+// a JSON object keyed by property id. A rule naming a missing workflow is skipped.
+func ForIssue(ctx context.Context, q Querier, workspaceID, projectID pgtype.UUID, properties []byte) (*Definition, db.Project, error) {
+	if !projectID.Valid {
+		return nil, db.Project{}, nil
+	}
+	project, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, db.Project{}, nil
+		}
+		return nil, db.Project{}, err
+	}
+	if wf, ok, err := RuleWorkflow(ctx, q, project, properties); err != nil {
+		return nil, db.Project{}, err
+	} else if ok {
+		return &wf, project, nil
+	}
+	def, err := ForProjectRow(ctx, q, project)
+	return def, project, err
+}
+
+// RuleWorkflow returns the workflow a project's rules pick for a property bag.
+func RuleWorkflow(ctx context.Context, q Querier, project db.Project, properties []byte) (Definition, bool, error) {
+	if len(properties) == 0 {
+		return Definition{}, false, nil
+	}
+	var bag map[string]json.RawMessage
+	if json.Unmarshal(properties, &bag) != nil || len(bag) == 0 {
+		return Definition{}, false, nil
+	}
+	rules, err := q.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID})
+	if err != nil || len(rules) == 0 {
+		return Definition{}, false, err
+	}
+	for _, rule := range rules {
+		raw, ok := bag[uuidString(rule.PropertyID)]
+		if !ok {
+			continue
+		}
+		var value string
+		if json.Unmarshal(raw, &value) != nil || value != rule.OptionID {
+			continue
+		}
+		row, err := q.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: rule.WorkflowID, WorkspaceID: project.WorkspaceID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			return Definition{}, false, err
+		}
+		def, err := Decode(row)
+		return def, err == nil, err
+	}
+	return Definition{}, false, nil
+}
+
+func uuidString(u pgtype.UUID) string {
+	if !u.Valid {
+		return ""
+	}
+	b := u.Bytes
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // ForProjectRow loads the workflow of an already-loaded project. A dangling
