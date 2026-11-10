@@ -125,3 +125,23 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["packages/views/editor/markdown-reader.tsx", "packages/views/editor/attachment-preview-modal.tsx"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run editor locales"
+
+[[patches]]
+id = "status-age"
+name = "feat(issues): when each open issue entered its status"
+patch_file = "0012-status-age.patch"
+metadata_file = "0012-status-age.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/handler/vantt_status_since.go", "server/cmd/server/router.go", "packages/core/board-gates/index.ts", "packages/core/api/client.ts"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'StatusSince' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/core && npx vitest run board-gates"
+
+[[patches]]
+id = "child-panel"
+name = "feat(issues): child issues by status and days in status"
+patch_file = "0013-child-panel.patch"
+metadata_file = "0013-child-panel.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/issues/components/child-panel-extras.tsx", "packages/views/issues/components/issue-detail.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run issues/components/child-panel-extras.test.tsx issues/components/issue-detail locales"

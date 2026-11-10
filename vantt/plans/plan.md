@@ -23,7 +23,7 @@ inventing; every patch has a spec and aims upstream (proposals upstream need the
 | [05](phase-05-workflow-by-type.md) | F3 | Workflow chosen by a select property (Type) | done: 0005 server, 0006 UI; opc.mjs `workflow_rules` |
 | [06](phase-06-boards.md) | F4 | Jira-style boards | done: 0007 columns for every rule workflow; saved boards/swimlanes/filters = Multica built-ins (see 0007 spec) |
 | [07](phase-07-decisions.md) | F5 | Structured decisions, one-tap answers | done: 0008 server, 0009 UI |
-| [08](phase-08-parent-child-reader.md) | F7, F8 | Parent/child clarity; artifact reading page | done: 0010, 0011 |
+| [08](phase-08-parent-child-reader.md) | F7, F8 | Parent/child clarity; artifact reading page | done: 0010, 0011; D9 round 2 (owner first, 2026-11-10): 0012 status-age, 0013 child-panel; reader round 2 later |
 | [09](phase-09-budgets.md) | F6 | Budgets with caps | **deferred** (owner, 2026-11-10) |
 | [10](phase-10-upstream-catchup.md) | — | Review upstream v0.7.2, catch up | done: reviews/v0.7.2.md, pin v0.7.2 |
 
