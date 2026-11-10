@@ -609,6 +609,31 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 	return "", pgtype.UUID{}, false
 }
 
+// GateError refuses an agent's move of an issue out of a step a person
+// handles: approvals and decisions waiting on someone stay with that person
+// (vantt owner-gates).
+type GateError struct {
+	Status string
+}
+
+func (e *GateError) Error() string {
+	return fmt.Sprintf("status %q is waiting for a person: only a member can move the issue out of it", e.Status)
+}
+
+// PersonGate reports whether status is a step of def whose handler resolves to
+// a member, the way ResolveHandler would hand the issue off on entering it.
+func PersonGate(def *Definition, status string, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID) bool {
+	if def == nil {
+		return false
+	}
+	step, ok := def.Step(status)
+	if !ok {
+		return false
+	}
+	assigneeType, _, ok := ResolveHandler(step, project, issueCreatorType, issueCreatorID)
+	return ok && assigneeType == HandlerMember
+}
+
 // MoveTarget picks the status an issue keeps when it moves into a project
 // using def: its current status when the workflow lists it, otherwise the
 // first step of the same lifecycle category, otherwise the start status.
