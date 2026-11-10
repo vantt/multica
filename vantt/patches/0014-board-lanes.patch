@@ -1,36 +1,43 @@
-From 6f7c005790f6a99c03c9b14943cedf58e38f0c65 Mon Sep 17 00:00:00 2001
+From 049b404f23b2304d46160442b92961ecf8c0f6c3 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
-Date: Tue, 10 Nov 2026 17:58:24 +0700
-Subject: [PATCH] feat(boards): lanes for a board of several workflows
+Date: Tue, 10 Nov 2026 18:29:32 +0700
+Subject: [PATCH 1/2] feat(boards): lanes for a board of several workflows
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
-A project board whose Type rules use several workflows shows four columns that
-each hold several statuses: To do, In progress, Awaiting approval (every step a
-person approves, locked heading) and Done. Cards name their real status, and
-every card shows its days in column (from one day, red from five). Dropping on a
-lane picks the lane's first status the card's own workflow (its Type rule's)
-allows. A board of one workflow keeps one column per step.
+A board that shows issues of several workflows — a project whose Type rules use
+another workflow, or the workspace board when the workspace has more than one
+workflow — shows four columns that each hold several statuses: To do, In
+progress, Awaiting approval (every step a person approves, locked heading,
+longest wait first) and Done. Cards name their real status and goal, and every
+card shows its days in column (from one day, red from five). Dropping on a lane
+picks the lane's first status the card's own workflow (its Type rule's) allows.
+The workspace board loads the steps of every workflow. A board of one workflow
+keeps one column per step.
 Reference: Jira board column mapping, days in column.
 
 Patch-Id: board-lanes
 ---
- .../views/issues/components/board-card.tsx    |  13 +-
- .../views/issues/components/board-column.tsx  |   6 +
- .../issues/components/board-lanes.test.ts     |  60 ++++++++
- .../views/issues/components/board-lanes.tsx   | 144 ++++++++++++++++++
- .../views/issues/components/board-view.tsx    |  43 +++++-
- packages/views/issues/utils/drag-utils.ts     |   9 +-
+ .../views/issues/components/board-card.tsx    |  15 +-
+ .../views/issues/components/board-column.tsx  |   8 +
+ .../issues/components/board-lanes.test.ts     |  83 ++++++++
+ .../views/issues/components/board-lanes.tsx   | 194 ++++++++++++++++++
+ .../views/issues/components/board-view.tsx    |  45 +++-
+ packages/views/issues/utils/drag-utils.ts     |  10 +-
+ .../views/issues/utils/workflow-columns.ts    |  10 +-
  packages/views/locales/en/issues.json         |   8 +
  packages/views/locales/fr/issues.json         |   8 +
  packages/views/locales/ja/issues.json         |   8 +
  packages/views/locales/ko/issues.json         |   8 +
  packages/views/locales/zh-Hans/issues.json    |   8 +
  packages/views/locales/zh-Hant/issues.json    |   8 +
- 12 files changed, 311 insertions(+), 12 deletions(-)
+ 13 files changed, 400 insertions(+), 13 deletions(-)
  create mode 100644 packages/views/issues/components/board-lanes.test.ts
  create mode 100644 packages/views/issues/components/board-lanes.tsx
 
 diff --git a/packages/views/issues/components/board-card.tsx b/packages/views/issues/components/board-card.tsx
-index e94a750f4..371e9fb91 100644
+index e94a750f4..502a01aed 100644
 --- a/packages/views/issues/components/board-card.tsx
 +++ b/packages/views/issues/components/board-card.tsx
 @@ -1,6 +1,6 @@
@@ -45,20 +52,21 @@ index e94a750f4..371e9fb91 100644
  import { propertyIdFromViewKey } from "@multica/core/issues/stores/view-store";
  import { ProgressRing } from "./progress-ring";
  import { ParentIssueChip } from "./parent-issue-chip";
-+import { BoardLaneContext, LaneStatusChip } from "./board-lanes"; // vantt board-lanes
++import { BoardLaneContext, GoalChip, LaneStatusChip, useIssueGoal } from "./board-lanes"; // vantt board-lanes
 +import { DaysInStatus } from "./child-panel-extras"; // vantt board-lanes: days in column
  import type { ChildProgress } from "./list-row";
  import { IssueActionsContextMenu } from "../actions";
  import { LabelChip } from "../../labels/label-chip";
-@@ -118,6 +120,7 @@ export const BoardCardContent = memo(function BoardCardContent({
+@@ -118,6 +120,8 @@ export const BoardCardContent = memo(function BoardCardContent({
    // Keeps the chip row from rendering an empty flex container when the status
    // chip is the only thing in it and it decides to render nothing.
    const showCustomStatus = useIsCustomStatus(issue.status);
 +  const laneBoard = useContext(BoardLaneContext);
++  const goal = useIssueGoal(issue);
  
    const showAssigneeName = showAssigneeSection && hasAssignee && !showStartDate && !showDueDate;
    const showUpdatedHint = showAssigneeName && !showChildProgress;
-@@ -208,7 +211,10 @@ export const BoardCardContent = memo(function BoardCardContent({
+@@ -208,7 +212,10 @@ export const BoardCardContent = memo(function BoardCardContent({
            <ParentIssueChip parentId={issue.parent_issue_id} />
            <IssueDuplicateOfMarker issue={issue} insideLink />
          </div>
@@ -70,20 +78,21 @@ index e94a750f4..371e9fb91 100644
        </div>
  
        {/* Row 2: Title */}
-@@ -229,9 +235,10 @@ export const BoardCardContent = memo(function BoardCardContent({
+@@ -229,9 +236,11 @@ export const BoardCardContent = memo(function BoardCardContent({
        {/* Chip row: status + project + labels + custom property values.
            The status chip renders only for a CUSTOM status — the column header
            already names the category. (MUL-6243) */}
 -      {(showCustomStatus || showProject || showLabels || cardCustomProperties.length > 0) && (
-+      {(laneBoard || showCustomStatus || showProject || showLabels || cardCustomProperties.length > 0) && (
++      {(laneBoard || goal || showCustomStatus || showProject || showLabels || cardCustomProperties.length > 0) && (
          <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
            <CustomStatusChip status={issue.status} />
 +          <LaneStatusChip status={issue.status} isCustom={showCustomStatus} />
++          <GoalChip goal={goal} />
            {showProject && (
              <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-micro text-muted-foreground max-w-[160px]">
                <ProjectIcon project={project} size="sm" />
 diff --git a/packages/views/issues/components/board-column.tsx b/packages/views/issues/components/board-column.tsx
-index 99c8f3cf7..065e743ba 100644
+index 99c8f3cf7..98d0ca928 100644
 --- a/packages/views/issues/components/board-column.tsx
 +++ b/packages/views/issues/components/board-column.tsx
 @@ -36,6 +36,7 @@ import { VirtuosoSeed } from "../../common/virtuoso-seed";
@@ -94,17 +103,19 @@ index 99c8f3cf7..065e743ba 100644
  
  // Insertion-position prediction intentionally omitted. The server's
  // ORDER BY uses PostgreSQL's en_US.utf8 collation (glibc), which
-@@ -96,6 +97,9 @@ export interface BoardColumnGroup {
+@@ -96,6 +97,11 @@ export interface BoardColumnGroup {
    propertyOptionColor?: string;
    totalCount?: number;
    createData?: IssueCreateDefaults;
 +  /** vantt board-lanes: a column holding several statuses. */
 +  lane?: import("./board-lanes").Lane;
 +  statuses?: IssueStatus[];
++  /** vantt board-lanes: the column's own card order (Awaiting approval: oldest first). */
++  sortIds?: (ids: string[]) => string[];
  }
  
  export const BoardColumn = memo(function BoardColumn({
-@@ -412,6 +416,8 @@ function BoardGroupHeading({
+@@ -412,6 +418,8 @@ function BoardGroupHeading({
      return <StatusHeading status={group.status} count={count} />;
    }
  
@@ -115,10 +126,10 @@ index 99c8f3cf7..065e743ba 100644
        <div className="flex min-w-0 items-center gap-2">
 diff --git a/packages/views/issues/components/board-lanes.test.ts b/packages/views/issues/components/board-lanes.test.ts
 new file mode 100644
-index 000000000..f3dc666f6
+index 000000000..b01663c28
 --- /dev/null
 +++ b/packages/views/issues/components/board-lanes.test.ts
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,83 @@
 +import { describe, expect, it, vi } from "vitest";
 +import { buildColumns } from "../utils/drag-utils";
 +import { buildLaneGroups, lanePages, resolveLaneGroup } from "./board-lanes";
@@ -179,18 +190,42 @@ index 000000000..f3dc666f6
 +    expect(more).toHaveBeenCalledTimes(1);
 +  });
 +});
++
++describe("oldestFirst and the Awaiting approval lane", () => {
++  it("orders approvals by how long they have waited", async () => {
++    const { oldestFirst } = await import("./board-lanes");
++    const since = { a: { status: "in_review", since: "2026-11-09T00:00:00Z" }, b: { status: "in_review", since: "2026-11-01T00:00:00Z" } };
++    expect(oldestFirst(["a", "c", "b"], since)).toEqual(["b", "a", "c"]);
++    const g = buildLaneGroups(["in_review", "done"], category as never, ["in_review"], (l) => l, since);
++    const cols = buildColumns([{ id: "a", status: "in_review" }, { id: "b", status: "in_review" }] as never, g, "status");
++    expect(cols["lane:awaiting_approval"]).toEqual(["b", "a"]);
++  });
++});
++
++describe("issueGoal", () => {
++  it("takes the issue's goal, else its parent's, else its project's", async () => {
++    const { issueGoal } = await import("./board-lanes");
++    const goal = (id: string, type: string, target: string) => ({ id, title: id, links: [{ target_type: type, target_id: target }] });
++    const goals = [goal("G-project", "project", "p1"), goal("G-parent", "issue", "parent1"), goal("G-own", "issue", "i1")] as never;
++    expect(issueGoal(goals, { id: "i1", parent_issue_id: "parent1", project_id: "p1" })?.id).toBe("G-own");
++    expect(issueGoal(goals, { id: "i2", parent_issue_id: "parent1", project_id: "p1" })?.id).toBe("G-parent");
++    expect(issueGoal(goals, { id: "i3", parent_issue_id: null, project_id: "p1" })?.id).toBe("G-project");
++    expect(issueGoal(goals, { id: "i4", parent_issue_id: null, project_id: null })).toBeNull();
++  });
++});
 diff --git a/packages/views/issues/components/board-lanes.tsx b/packages/views/issues/components/board-lanes.tsx
 new file mode 100644
-index 000000000..f9b329970
+index 000000000..2c8f025c5
 --- /dev/null
 +++ b/packages/views/issues/components/board-lanes.tsx
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,194 @@
 +"use client";
 +
 +import { createContext, useContext } from "react";
 +import { useQuery } from "@tanstack/react-query";
 +import { Lock } from "lucide-react";
-+import { gateStatuses } from "@multica/core/board-gates";
++import { gateStatuses, type StatusSince } from "@multica/core/board-gates";
++import { goalListOptions, goalsForTarget, type Goal } from "@multica/core/goals";
 +import { useIssueWorkflows, useProjectWorkflow, workflowAllowsStatus } from "@multica/core/issue-workflows";
 +import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 +import { useWorkspaceId } from "@multica/core/hooks";
@@ -225,6 +260,7 @@ index 000000000..f9b329970
 +  categoryOf: (status: string) => IssueStatusCategory,
 +  gates: readonly string[],
 +  titleOf: (lane: Lane) => string,
++  since?: Record<string, StatusSince>,
 +): BoardColumnGroup[] {
 +  const byLane = new Map<Lane, IssueStatus[]>();
 +  for (const status of visibleStatuses) {
@@ -237,6 +273,8 @@ index 000000000..f9b329970
 +    lane,
 +    statuses: byLane.get(lane)!,
 +    createData: lane === "awaiting_approval" ? undefined : { status: byLane.get(lane)![0]! },
++    // Approvals wait oldest first (design D3): the longest wait sits on top.
++    sortIds: lane === "awaiting_approval" && since ? (ids: string[]) => oldestFirst(ids, since) : undefined,
 +  }));
 +}
 +
@@ -282,16 +320,21 @@ index 000000000..f9b329970
 +
 +export interface BoardLanes {
 +  gates: string[];
-+  /** The workflow an issue follows on this board: its Type rule's, else the project's. */
-+  workflowOf: (issue: Pick<Issue, "properties"> | null | undefined) => IssueWorkflow;
++  /** On a project board: the workflow an issue follows (its Type rule's, else the project's). */
++  workflowOf?: (issue: Pick<Issue, "properties"> | null | undefined) => IssueWorkflow;
 +}
 +
-+/** Lanes when this project's board uses several workflows (Type rules); null otherwise. */
++/**
++ * Lanes when the board shows issues of several workflows: a project whose Type rules
++ * use another workflow, or the workspace board ("All issues", design D3) when the
++ * workspace has more than one workflow. Null otherwise.
++ */
 +export function useBoardLanes(wsId: string, projectId: string | null | undefined): BoardLanes | null {
 +  const { workflows } = useIssueWorkflows(wsId);
 +  const projectWorkflow = useProjectWorkflow(wsId, projectId);
 +  const { data: rules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
-+  if (!projectId || !projectWorkflow || !rules?.length) return null;
++  if (!projectId) return workflows.length > 1 ? { gates: gateStatuses(workflows) } : null;
++  if (!projectWorkflow || !rules?.length) return null;
 +  const others = workflows.filter((w) => w.id !== projectWorkflow.id && rules.some((r) => r.workflow_id === w.id));
 +  if (!others.length) return null;
 +  const workflowOf = (issue: Pick<Issue, "properties"> | null | undefined) => {
@@ -329,32 +372,75 @@ index 000000000..f9b329970
 +    </span>
 +  );
 +}
++
++/** Ids by the time they entered their status, oldest first; unknown ones last, in order. */
++export function oldestFirst(ids: readonly string[], since: Record<string, StatusSince>): string[] {
++  const at = (id: string) => {
++    const t = Date.parse(since[id]?.since ?? "");
++    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
++  };
++  return ids.map((id, i) => ({ id, i, t: at(id) })).sort((a, b) => a.t - b.t || a.i - b.i).map((x) => x.id);
++}
++
++/**
++ * The goal an issue pushes (design D3 card): one linked to the issue, else to its
++ * parent, else to its project. Reference: Jira's goal field on issues.
++ */
++export function issueGoal(goals: readonly Goal[], issue: Pick<Issue, "id" | "parent_issue_id" | "project_id">): Goal | null {
++  return (
++    goalsForTarget(goals, "issue", [issue.id])[0] ??
++    goalsForTarget(goals, "issue", [issue.parent_issue_id])[0] ??
++    goalsForTarget(goals, "project", [issue.project_id])[0] ??
++    null
++  );
++}
++
++export function useIssueGoal(issue: Pick<Issue, "id" | "parent_issue_id" | "project_id">): Goal | null {
++  const { data: goals } = useQuery({ ...goalListOptions(useWorkspaceId()), retry: false });
++  return goals ? issueGoal(goals, issue) : null;
++}
++
++export function GoalChip({ goal }: { goal: Goal | null }) {
++  if (!goal) return null;
++  const key = goal.source_ref?.split("#")[1];
++  return (
++    <span
++      title={goal.title}
++      className="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-micro text-emerald-800 dark:text-emerald-300"
++    >
++      <span aria-hidden>◎</span>
++      <span className="truncate">{key ?? goal.title}</span>
++    </span>
++  );
++}
 diff --git a/packages/views/issues/components/board-view.tsx b/packages/views/issues/components/board-view.tsx
-index 5e0346a92..5d92229d3 100644
+index 5e0346a92..43e36b6d2 100644
 --- a/packages/views/issues/components/board-view.tsx
 +++ b/packages/views/issues/components/board-view.tsx
-@@ -75,6 +75,7 @@ import {
+@@ -75,6 +75,8 @@ import {
    projectGroupId,
  } from "../utils/drag-utils";
  import { useStatusLabel } from "../utils/status-label";
++import { statusSinceOptions } from "@multica/core/board-gates"; // vantt board-lanes
 +import { BoardLaneContext, buildLaneGroups, lanePages, resolveLaneGroup, useBoardLanes, type Lane } from "./board-lanes"; // vantt board-lanes
  
  function isStatusGroup(
    group: BoardColumnGroup,
-@@ -447,9 +448,25 @@ function BoardViewImpl({
+@@ -447,9 +449,26 @@ function BoardViewImpl({
        ]),
      ) as Record<string, IssueGroupPageState>;
    }, [groupBranches]);
 +  // vantt board-lanes (D3d Automatic): several workflows -> four lanes.
 +  const boardLanes = useBoardLanes(boardWsId, projectId);
 +  const laneMode = grouping === "status" && boardLanes !== null;
++  const { data: statusSince } = useQuery({ ...statusSinceOptions(boardWsId, projectId ?? null), enabled: laneMode });
 +  const laneGroups = useMemo(
 +    () =>
 +      laneMode
-+        ? buildLaneGroups(visibleStatuses, catalog.categoryOf, boardLanes!.gates, (lane: Lane) => t(($) => $.board_lanes[lane]))
++        ? buildLaneGroups(visibleStatuses, catalog.categoryOf, boardLanes!.gates, (lane: Lane) => t(($) => $.board_lanes[lane]), statusSince)
 +        : null,
 +    // eslint-disable-next-line react-hooks/exhaustive-deps
-+    [laneMode, visibleStatuses, catalog, boardLanes?.gates.join(","), t],
++    [laneMode, visibleStatuses, catalog, boardLanes?.gates.join(","), statusSince, t],
 +  );
 +  const pagination = useMemo(
 +    () => (laneGroups ? { ...(groupPagination ?? {}), ...lanePages(laneGroups, statusPagination) } : groupPagination),
@@ -367,7 +453,7 @@ index 5e0346a92..5d92229d3 100644
          hydratedAssigneeGroups ??
          hydratedProjectGroups ??
          buildGroups(issues, visibleStatuses, grouping, {
-@@ -462,10 +479,10 @@ function BoardViewImpl({
+@@ -462,10 +481,10 @@ function BoardViewImpl({
          });
        return built.map((group) => ({
          ...group,
@@ -380,11 +466,11 @@ index 5e0346a92..5d92229d3 100644
    );
    const groupIds = useMemo(
      () => new Set(groups.map((group) => group.id)),
-@@ -496,12 +513,13 @@ function BoardViewImpl({
+@@ -496,12 +515,13 @@ function BoardViewImpl({
    const workflowOfIssue = useCallback(
      (issue: Issue | null | undefined) => {
        if (!issue?.project_id) return null;
-+      if (boardLanes && issue.project_id === projectId) return boardLanes.workflowOf(issue); // vantt board-lanes
++      if (boardLanes?.workflowOf && issue.project_id === projectId) return boardLanes.workflowOf(issue); // vantt board-lanes
        return resolveProjectWorkflow(
          workflows,
          workspaceProjects?.find((p) => p.id === issue.project_id),
@@ -395,7 +481,7 @@ index 5e0346a92..5d92229d3 100644
    );
    const scopeProject = projectId ? workspaceProjects?.find((p) => p.id === projectId) ?? null : null;
    const activeWorkflow = workflowOfIssue(activeIssue);
-@@ -602,7 +620,11 @@ function BoardViewImpl({
+@@ -602,7 +622,11 @@ function BoardViewImpl({
          const activeCol = findColumn(prev, activeId, groupIds);
          const overCol = findColumn(prev, overId, groupIds);
          if (!activeCol || !overCol || activeCol === overCol) return prev;
@@ -408,7 +494,7 @@ index 5e0346a92..5d92229d3 100644
          if (targetStatus && catalog.entryOf(targetStatus)?.archived_at) return prev;
          if (targetStatus && !workflowAllowsStatus(workflowOfIssue(issueMapRef.current.get(activeId)), targetStatus)) {
            return prev;
-@@ -667,9 +689,14 @@ function BoardViewImpl({
+@@ -667,9 +691,14 @@ function BoardViewImpl({
          resetColumns();
          return;
        }
@@ -424,7 +510,7 @@ index 5e0346a92..5d92229d3 100644
          return;
        }
  
-@@ -813,6 +840,7 @@ function BoardViewImpl({
+@@ -813,6 +842,7 @@ function BoardViewImpl({
  
    return (
      <BoardWorkflowContext.Provider value={boardWorkflow}>
@@ -432,7 +518,7 @@ index 5e0346a92..5d92229d3 100644
      <DndContext
        sensors={sensors}
        collisionDetection={collisionDetection}
-@@ -866,7 +894,7 @@ function BoardViewImpl({
+@@ -866,7 +896,7 @@ function BoardViewImpl({
                  sortLabel={sortLabel}
                />
              ) : (
@@ -441,7 +527,7 @@ index 5e0346a92..5d92229d3 100644
                  <ServerPaginatedBoardColumn
                    key={group.id}
                    group={group}
-@@ -874,7 +902,7 @@ function BoardViewImpl({
+@@ -874,7 +904,7 @@ function BoardViewImpl({
                    issueMap={issueMapRef.current}
                    childProgressMap={childProgressMap}
                    projectMap={projectMap}
@@ -450,7 +536,7 @@ index 5e0346a92..5d92229d3 100644
                    projectId={projectId}
                    onCreateIssue={onCreateIssue}
                    sortLabel={sortLabel}
-@@ -922,6 +950,7 @@ function BoardViewImpl({
+@@ -922,6 +952,7 @@ function BoardViewImpl({
          ) : null}
        </DragOverlay>
      </DndContext>
@@ -459,10 +545,10 @@ index 5e0346a92..5d92229d3 100644
        issue={pendingHandoff?.issue ?? null}
        toStatus={pendingHandoff?.status ?? ""}
 diff --git a/packages/views/issues/utils/drag-utils.ts b/packages/views/issues/utils/drag-utils.ts
-index b8595053d..c4f98ba9d 100644
+index b8595053d..e98ae4e68 100644
 --- a/packages/views/issues/utils/drag-utils.ts
 +++ b/packages/views/issues/utils/drag-utils.ts
-@@ -84,9 +84,14 @@ export function buildColumns(
+@@ -84,11 +84,17 @@ export function buildColumns(
    knownOptionIds?: ReadonlySet<string>,
  ): Record<string, string[]> {
    const cols: Record<string, string[]> = {};
@@ -478,7 +564,29 @@ index b8595053d..c4f98ba9d 100644
 +    const gid = (grouping === "status" && laneOf.get(issue.status)) || getIssueGroupId(issue, grouping, knownOptionIds);
      if (cols[gid]) cols[gid].push(issue.id);
    }
++  for (const group of groups) if (group.sortIds) cols[group.id] = group.sortIds(cols[group.id]!);
    return cols;
+ }
+ 
+diff --git a/packages/views/issues/utils/workflow-columns.ts b/packages/views/issues/utils/workflow-columns.ts
+index cbf930975..aecb60ce6 100644
+--- a/packages/views/issues/utils/workflow-columns.ts
++++ b/packages/views/issues/utils/workflow-columns.ts
+@@ -40,5 +40,13 @@ export function useColumnWorkflow(
+   const { data: rules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
+   if (hasStatusFilter) return { workflow: null };
+   if (projectId) return { workflow: mergeRuleWorkflows(projectWorkflow, rules ?? [], workflows) };
+-  return { workflow: defaultWorkflow(workflows) };
++  // vantt board-lanes: the workspace board ("All issues", D3) lists the steps of
++  // every workflow, so issues in any workflow's status are loaded; the board
++  // folds them into lanes.
++  const base = defaultWorkflow(workflows);
++  if (workflows.length > 1) {
++    const all = workflows.map((w) => ({ property_id: "", option_id: "", workflow_id: w.id }));
++    return { workflow: mergeRuleWorkflows(base, all, workflows) };
++  }
++  return { workflow: base };
+ }
 diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
 index 1def57b36..f5f7b3544 100644
 --- a/packages/views/locales/en/issues.json

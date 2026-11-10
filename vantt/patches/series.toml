@@ -155,3 +155,13 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["packages/views/issues/components/board-lanes.tsx", "packages/views/issues/components/board-view.tsx", "packages/views/issues/components/board-column.tsx", "packages/views/issues/components/board-card.tsx", "packages/views/issues/utils/drag-utils.ts"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run issues locales"
+
+[[patches]]
+id = "approval-pr"
+name = "feat(issues): pull requests in the approval panel"
+patch_file = "0015-approval-pr.patch"
+metadata_file = "0015-approval-pr.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/workflows/approval-prs.tsx", "packages/views/workflows/approval-panel.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows locales"

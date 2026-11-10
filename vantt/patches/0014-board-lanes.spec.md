@@ -3,12 +3,18 @@
 Needs 0005–0007 (workflow rules), 0012 (status-age), 0013 (DaysInStatus).
 
 ## Requirement
-A project board grouped by status whose Type rules use at least one workflow other
-than the project's shows **four lanes**, each holding several statuses:
+A board grouped by status that shows issues of several workflows — a project whose
+Type rules use a workflow other than the project's, or the workspace board ("All
+issues", D3) when the workspace has more than one workflow — shows **four lanes**,
+each holding several statuses:
 To do (unstarted), In progress (started), **Awaiting approval** (every step a person
 handles that has a next status, from all the workflows; lock icon in the heading),
 Done (done and closed). Lanes without a visible status are not shown.
-- Cards name their real status (built-in statuses get a chip; custom ones already do).
+- Cards name their real status (built-in statuses get a chip; custom ones already do)
+  and their goal (linked to the issue, else its parent, else its project).
+- Awaiting approval lists the longest wait first.
+- The workspace board loads the steps of every workflow (`useColumnWorkflow`), so no
+  issue is hidden because its status is not in Default.
 - Every card shows days in column (from one day; red from five).
 - Dropping on a lane: the card keeps its status if it is already in the lane, else
   takes the lane's first status its own workflow allows (the Type rule's workflow,
@@ -20,15 +26,14 @@ Reference: Jira board column mapping (several statuses per column), days in colu
 Fixes the deviation in 0007: that patch showed every status of every workflow as its
 own column on such boards; D3d asked for status groups.
 
-Not built: Awaiting approval "oldest first" ordering (cards keep the board's sort);
-Goal chip on cards.
 
 ## Touch points
 `packages/views/issues/components/board-lanes.tsx` (+ test); `board-view.tsx`
 (lane groups, merged pages, rule-aware `workflowOfIssue`, lane resolution in drag over
 and drag end, `BoardLaneContext` provider); `board-column.tsx` (`lane`, `statuses` on
 `BoardColumnGroup`, `LaneHeading`); `board-card.tsx` (status chip, days);
-`utils/drag-utils.ts` `buildColumns` (several statuses per column); `board_lanes.*` in
+`utils/drag-utils.ts` `buildColumns` (several statuses per column, a column's own order);
+`utils/workflow-columns.ts` (workspace board: every workflow's steps); `board_lanes.*` in
 every locale.
 
 ## On conflict
