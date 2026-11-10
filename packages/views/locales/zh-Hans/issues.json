@@ -1743,5 +1743,14 @@
     "status_bar": "按状态的子任务：{{summary}}",
     "days": "{{count}}天",
     "days_title": "处于 {{status}} {{count}} 天"
+  },
+  "board_lanes": {
+    "backlog": "待规划",
+    "todo": "待办",
+    "in_progress": "进行中",
+    "awaiting_approval": "待审批",
+    "done": "已完成",
+    "gate_hint": "只有审批人能把卡片移出此列",
+    "drop_blocked": "此任务的工作流在该列没有步骤"
   }
 }
