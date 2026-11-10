@@ -105,3 +105,23 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["packages/views/workflows/decision-panel.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/core/decisions/index.ts", "packages/core/api/client.ts"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows locales"
+
+[[patches]]
+id = "parent-child"
+name = "feat(issues): show a sub-issue's parent on board cards and list rows"
+patch_file = "0010-parent-child.patch"
+metadata_file = "0010-parent-child.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/issues/components/parent-issue-chip.tsx", "packages/views/issues/components/board-card.tsx", "packages/views/issues/components/list-row.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run issues/components/parent-issue-chip.test.tsx issues/components/board locales"
+
+[[patches]]
+id = "artifact-reader"
+name = "feat(attachments): reading view for markdown documents"
+patch_file = "0011-artifact-reader.patch"
+metadata_file = "0011-artifact-reader.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["packages/views/editor/markdown-reader.tsx", "packages/views/editor/attachment-preview-modal.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run editor locales"
