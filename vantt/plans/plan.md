@@ -21,7 +21,7 @@ inventing; every patch has a spec and aims upstream (proposals upstream need the
 | [03](phase-03-owner-gates.md) | F1 | Server-enforced owner gates, Waiting on me, approval panel | done: 0001 server, 0002 panel; Waiting on me = saved view from packages (no patch) |
 | [04](phase-04-goals.md) | F2 | Goals with numbers | done: 0003 server, 0004 UI; the project repo is the source (plans/goals.md), two-way, repo wins |
 | [05](phase-05-workflow-by-type.md) | F3 | Workflow chosen by a select property (Type) | done: 0005 server, 0006 UI; opc.mjs `workflow_rules` |
-| [06](phase-06-boards.md) | F4 | Jira-style boards | done: 0007 columns for every rule workflow; saved boards/swimlanes/filters = Multica built-ins (see 0007 spec) |
+| [06](phase-06-boards.md) | F4 | Jira-style boards | done: 0007 columns for every rule workflow, 0014 lanes (To do · In progress · Awaiting approval · Done) for boards of several workflows + days in column; saved boards/swimlanes/filters = Multica built-ins (see 0007 spec) |
 | [07](phase-07-decisions.md) | F5 | Structured decisions, one-tap answers | done: 0008 server, 0009 UI |
 | [08](phase-08-parent-child-reader.md) | F7, F8 | Parent/child clarity; artifact reading page | done: 0010, 0011; D9 round 2 (owner first, 2026-11-10): 0012 status-age, 0013 child-panel; reader round 2 later |
 | [09](phase-09-budgets.md) | F6 | Budgets with caps | **deferred** (owner, 2026-11-10) |
