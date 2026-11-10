@@ -919,6 +919,23 @@ type IssueChildEvent struct {
 	ProcessedAt  pgtype.Timestamptz `json:"processed_at"`
 }
 
+type IssueDecision struct {
+	ID             pgtype.UUID        `json:"id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Question       string             `json:"question"`
+	Options        []byte             `json:"options"`
+	Status         string             `json:"status"`
+	DueDate        pgtype.Date        `json:"due_date"`
+	AskedByType    string             `json:"asked_by_type"`
+	AskedByID      pgtype.UUID        `json:"asked_by_id"`
+	AnswerOptionID pgtype.Text        `json:"answer_option_id"`
+	AnswerNote     string             `json:"answer_note"`
+	AnsweredBy     pgtype.UUID        `json:"answered_by"`
+	AnsweredAt     pgtype.Timestamptz `json:"answered_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueDependency struct {
 	ID               pgtype.UUID `json:"id"`
 	IssueID          pgtype.UUID `json:"issue_id"`
