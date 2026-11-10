@@ -1,4 +1,4 @@
-From 7dd093ba153068501c21244e6583bb688c76ba0a Mon Sep 17 00:00:00 2001
+From 9899cf533a0ff8a6993baed30e4c441005d0b3c3 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 18:29:32 +0700
 Subject: [PATCH 1/2] feat(boards): lanes for a board of several workflows
@@ -21,18 +21,18 @@ Patch-Id: board-lanes
 ---
  .../views/issues/components/board-card.tsx    |  15 +-
  .../views/issues/components/board-column.tsx  |   8 +
- .../issues/components/board-lanes.test.ts     |  83 ++++++++
- .../views/issues/components/board-lanes.tsx   | 194 ++++++++++++++++++
+ .../issues/components/board-lanes.test.ts     |  84 ++++++++
+ .../views/issues/components/board-lanes.tsx   | 196 ++++++++++++++++++
  .../views/issues/components/board-view.tsx    |  90 ++++++--
  packages/views/issues/utils/drag-utils.ts     |  10 +-
  .../views/issues/utils/workflow-columns.ts    |  10 +-
- packages/views/locales/en/issues.json         |   8 +
- packages/views/locales/fr/issues.json         |   8 +
- packages/views/locales/ja/issues.json         |   8 +
- packages/views/locales/ko/issues.json         |   8 +
- packages/views/locales/zh-Hans/issues.json    |   8 +
- packages/views/locales/zh-Hant/issues.json    |   8 +
- 13 files changed, 431 insertions(+), 27 deletions(-)
+ packages/views/locales/en/issues.json         |   9 +
+ packages/views/locales/fr/issues.json         |   9 +
+ packages/views/locales/ja/issues.json         |   9 +
+ packages/views/locales/ko/issues.json         |   9 +
+ packages/views/locales/zh-Hans/issues.json    |   9 +
+ packages/views/locales/zh-Hant/issues.json    |   9 +
+ 13 files changed, 440 insertions(+), 27 deletions(-)
  create mode 100644 packages/views/issues/components/board-lanes.test.ts
  create mode 100644 packages/views/issues/components/board-lanes.tsx
 
@@ -126,10 +126,10 @@ index 99c8f3cf7..98d0ca928 100644
        <div className="flex min-w-0 items-center gap-2">
 diff --git a/packages/views/issues/components/board-lanes.test.ts b/packages/views/issues/components/board-lanes.test.ts
 new file mode 100644
-index 000000000..b01663c28
+index 000000000..a8d0cbbbb
 --- /dev/null
 +++ b/packages/views/issues/components/board-lanes.test.ts
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,84 @@
 +import { describe, expect, it, vi } from "vitest";
 +import { buildColumns } from "../utils/drag-utils";
 +import { buildLaneGroups, lanePages, resolveLaneGroup } from "./board-lanes";
@@ -146,9 +146,10 @@ index 000000000..b01663c28
 +const groups = buildLaneGroups(visible, category as never, ["spec_approval", "in_review"], (l) => l);
 +
 +describe("buildLaneGroups", () => {
-+  it("folds statuses into four lanes, approvals in Awaiting approval", () => {
++  it("folds statuses into five lanes, approvals in Awaiting approval", () => {
 +    expect(groups.map((g) => [g.id, g.statuses])).toEqual([
-+      ["lane:todo", ["backlog", "todo"]],
++      ["lane:backlog", ["backlog"]],
++      ["lane:todo", ["todo"]],
 +      ["lane:in_progress", ["design", "build", "content_review", "blocked"]],
 +      ["lane:awaiting_approval", ["spec_approval", "in_review"]],
 +      ["lane:done", ["done", "cancelled"]],
@@ -163,7 +164,7 @@ index 000000000..b01663c28
 +});
 +
 +describe("resolveLaneGroup", () => {
-+  const awaiting = groups[2]!;
++  const awaiting = groups[3]!;
 +  const content = { steps: [{ status_key: "todo" }, { status_key: "content_review" }, { status_key: "in_review" }] };
 +  it("keeps the card's status inside its lane", () => {
 +    expect(resolveLaneGroup(awaiting, { status: "in_review" }, content as never)?.status).toBe("in_review");
@@ -172,7 +173,7 @@ index 000000000..b01663c28
 +    expect(resolveLaneGroup(awaiting, { status: "content_review" }, content as never)?.status).toBe("in_review");
 +  });
 +  it("refuses a lane the workflow has no step in", () => {
-+    expect(resolveLaneGroup(groups[0]!, { status: "in_review" }, { steps: [{ status_key: "in_review" }] } as never)).toBeNull();
++    expect(resolveLaneGroup(groups[1]!, { status: "in_review" }, { steps: [{ status_key: "in_review" }] } as never)).toBeNull();
 +  });
 +  it("leaves ordinary columns alone", () => {
 +    const g = { id: "status:todo", title: "todo", status: "todo" };
@@ -215,10 +216,10 @@ index 000000000..b01663c28
 +});
 diff --git a/packages/views/issues/components/board-lanes.tsx b/packages/views/issues/components/board-lanes.tsx
 new file mode 100644
-index 000000000..2c8f025c5
+index 000000000..f5e4fd89a
 --- /dev/null
 +++ b/packages/views/issues/components/board-lanes.tsx
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,196 @@
 +"use client";
 +
 +import { createContext, useContext } from "react";
@@ -238,17 +239,19 @@ index 000000000..2c8f025c5
 +
 +/**
 + * vantt board-lanes (designs D3, D3d "Automatic"): a project board whose Type
-+ * rules use several workflows shows four columns, each holding several statuses
-+ * — To do, In progress, Awaiting approval (every step a person approves), Done —
++ * rules use several workflows shows five columns, each holding several statuses
++ * — Backlog (not yet committed; no one picks it up), To do, In progress, Awaiting
++ * approval (every step a person approves), Done —
 + * and each card names its real status. A board of one workflow keeps one column
 + * per step. Reference: Jira board column mapping (several statuses per column).
 + */
-+export type Lane = "todo" | "in_progress" | "awaiting_approval" | "done";
-+export const LANES: readonly Lane[] = ["todo", "in_progress", "awaiting_approval", "done"];
++export type Lane = "backlog" | "todo" | "in_progress" | "awaiting_approval" | "done";
++export const LANES: readonly Lane[] = ["backlog", "todo", "in_progress", "awaiting_approval", "done"];
 +export const laneGroupId = (lane: Lane) => `lane:${lane}`;
 +
-+export function laneOf(category: IssueStatusCategory, isGate: boolean): Lane {
++export function laneOf(category: IssueStatusCategory, isGate: boolean, status = ""): Lane {
 +  if (isGate) return "awaiting_approval";
++  if (status === "backlog") return "backlog"; // Multica's built-in "not committed yet" status
 +  if (category === "unstarted") return "todo";
 +  if (category === "started") return "in_progress";
 +  return "done";
@@ -264,7 +267,7 @@ index 000000000..2c8f025c5
 +): BoardColumnGroup[] {
 +  const byLane = new Map<Lane, IssueStatus[]>();
 +  for (const status of visibleStatuses) {
-+    const lane = laneOf(categoryOf(status), gates.includes(status));
++    const lane = laneOf(categoryOf(status), gates.includes(status), status);
 +    byLane.set(lane, [...(byLane.get(lane) ?? []), status]);
 +  }
 +  return LANES.filter((lane) => byLane.has(lane)).map((lane) => ({
@@ -644,15 +647,16 @@ index cbf930975..aecb60ce6 100644
 +  return { workflow: base };
  }
 diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
-index 1def57b36..f5f7b3544 100644
+index 1def57b36..06a935392 100644
 --- a/packages/views/locales/en/issues.json
 +++ b/packages/views/locales/en/issues.json
-@@ -1809,5 +1809,13 @@
+@@ -1809,5 +1809,14 @@
      "status_bar": "Children by status: {{summary}}",
      "days": "{{count}}d",
      "days_title": "{{count}} days in {{status}}"
 +  },
 +  "board_lanes": {
++    "backlog": "Backlog",
 +    "todo": "To do",
 +    "in_progress": "In progress",
 +    "awaiting_approval": "Awaiting approval",
@@ -662,15 +666,16 @@ index 1def57b36..f5f7b3544 100644
    }
  }
 diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
-index 87f3dbd6a..33b93d146 100644
+index 87f3dbd6a..6eff0a390 100644
 --- a/packages/views/locales/fr/issues.json
 +++ b/packages/views/locales/fr/issues.json
-@@ -1808,5 +1808,13 @@
+@@ -1808,5 +1808,14 @@
      "status_bar": "Sous-tickets par statut : {{summary}}",
      "days": "{{count}} j",
      "days_title": "{{count}} jours en {{status}}"
 +  },
 +  "board_lanes": {
++    "backlog": "Backlog",
 +    "todo": "À faire",
 +    "in_progress": "En cours",
 +    "awaiting_approval": "En attente d'approbation",
@@ -680,15 +685,16 @@ index 87f3dbd6a..33b93d146 100644
    }
  }
 diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
-index eacd6420c..f5eef4833 100644
+index eacd6420c..e25742d0f 100644
 --- a/packages/views/locales/ja/issues.json
 +++ b/packages/views/locales/ja/issues.json
-@@ -1743,5 +1743,13 @@
+@@ -1743,5 +1743,14 @@
      "status_bar": "ステータス別のサブ課題: {{summary}}",
      "days": "{{count}}日",
      "days_title": "{{status}} に {{count}} 日"
 +  },
 +  "board_lanes": {
++    "backlog": "バックログ",
 +    "todo": "未着手",
 +    "in_progress": "進行中",
 +    "awaiting_approval": "承認待ち",
@@ -698,15 +704,16 @@ index eacd6420c..f5eef4833 100644
    }
  }
 diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
-index cbf6d571b..2c60ef3db 100644
+index cbf6d571b..cddecbcae 100644
 --- a/packages/views/locales/ko/issues.json
 +++ b/packages/views/locales/ko/issues.json
-@@ -1743,5 +1743,13 @@
+@@ -1743,5 +1743,14 @@
      "status_bar": "상태별 하위 이슈: {{summary}}",
      "days": "{{count}}일",
      "days_title": "{{status}} 상태로 {{count}}일"
 +  },
 +  "board_lanes": {
++    "backlog": "백로그",
 +    "todo": "할 일",
 +    "in_progress": "진행 중",
 +    "awaiting_approval": "승인 대기",
@@ -716,15 +723,16 @@ index cbf6d571b..2c60ef3db 100644
    }
  }
 diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
-index 61ec02ead..ace823191 100644
+index 61ec02ead..15c21b2bb 100644
 --- a/packages/views/locales/zh-Hans/issues.json
 +++ b/packages/views/locales/zh-Hans/issues.json
-@@ -1743,5 +1743,13 @@
+@@ -1743,5 +1743,14 @@
      "status_bar": "按状态的子任务：{{summary}}",
      "days": "{{count}}天",
      "days_title": "处于 {{status}} {{count}} 天"
 +  },
 +  "board_lanes": {
++    "backlog": "待规划",
 +    "todo": "待办",
 +    "in_progress": "进行中",
 +    "awaiting_approval": "待审批",
@@ -734,15 +742,16 @@ index 61ec02ead..ace823191 100644
    }
  }
 diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
-index 8bbbbb73d..9dfb87db3 100644
+index 8bbbbb73d..a0e2b02ac 100644
 --- a/packages/views/locales/zh-Hant/issues.json
 +++ b/packages/views/locales/zh-Hant/issues.json
-@@ -1742,5 +1742,13 @@
+@@ -1742,5 +1742,14 @@
      "status_bar": "依狀態的子任務：{{summary}}",
      "days": "{{count}}天",
      "days_title": "處於 {{status}} {{count}} 天"
 +  },
 +  "board_lanes": {
++    "backlog": "待規劃",
 +    "todo": "待辦",
 +    "in_progress": "進行中",
 +    "awaiting_approval": "待審批",

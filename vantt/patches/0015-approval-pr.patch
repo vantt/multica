@@ -1,4 +1,4 @@
-From 530c70d3a9949937252947e4d80c8821b49e6581 Mon Sep 17 00:00:00 2001
+From f8489a15e49db4eea9494d7daaf1f4090d162cd2 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 18:29:38 +0700
 Subject: [PATCH 2/2] feat(issues): pull requests in the approval panel
@@ -29,7 +29,7 @@ Patch-Id: approval-pr
  create mode 100644 packages/views/workflows/approval-prs.tsx
 
 diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
-index f5f7b3544..5c775f6a2 100644
+index 06a935392..2834e1119 100644
 --- a/packages/views/locales/en/issues.json
 +++ b/packages/views/locales/en/issues.json
 @@ -1773,6 +1773,9 @@
@@ -43,7 +43,7 @@ index f5f7b3544..5c775f6a2 100644
        "gate_note": "Agents cannot move this issue out of this step.",
        "approve": "Approve",
 diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
-index 33b93d146..f922ad6ed 100644
+index 6eff0a390..8127f105e 100644
 --- a/packages/views/locales/fr/issues.json
 +++ b/packages/views/locales/fr/issues.json
 @@ -1772,6 +1772,9 @@
@@ -57,7 +57,7 @@ index 33b93d146..f922ad6ed 100644
        "gate_note": "Les agents ne peuvent pas faire sortir ce ticket de cette étape.",
        "approve": "Approuver",
 diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
-index f5eef4833..864ec2361 100644
+index e25742d0f..90e2e0bc3 100644
 --- a/packages/views/locales/ja/issues.json
 +++ b/packages/views/locales/ja/issues.json
 @@ -1707,6 +1707,9 @@
@@ -71,7 +71,7 @@ index f5eef4833..864ec2361 100644
        "gate_note": "エージェントはこの課題をこのステップから移動できません。",
        "approve": "承認",
 diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
-index 2c60ef3db..32d9ceb1c 100644
+index cddecbcae..8a0a18059 100644
 --- a/packages/views/locales/ko/issues.json
 +++ b/packages/views/locales/ko/issues.json
 @@ -1707,6 +1707,9 @@
@@ -85,7 +85,7 @@ index 2c60ef3db..32d9ceb1c 100644
        "gate_note": "에이전트는 이 이슈를 이 단계에서 옮길 수 없습니다.",
        "approve": "승인",
 diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
-index ace823191..53b9ac6b8 100644
+index 15c21b2bb..2531b408d 100644
 --- a/packages/views/locales/zh-Hans/issues.json
 +++ b/packages/views/locales/zh-Hans/issues.json
 @@ -1707,6 +1707,9 @@
@@ -99,7 +99,7 @@ index ace823191..53b9ac6b8 100644
        "gate_note": "智能体无法将此事项移出此步骤。",
        "approve": "批准",
 diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
-index 9dfb87db3..7fa35d8ef 100644
+index a0e2b02ac..939dba505 100644
 --- a/packages/views/locales/zh-Hant/issues.json
 +++ b/packages/views/locales/zh-Hant/issues.json
 @@ -1706,6 +1706,9 @@

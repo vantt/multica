@@ -5,8 +5,8 @@ Needs 0005–0007 (workflow rules), 0012 (status-age), 0013 (DaysInStatus).
 ## Requirement
 A board grouped by status that shows issues of several workflows — a project whose
 Type rules use a workflow other than the project's, or the workspace board ("All
-issues", D3) when the workspace has more than one workflow — shows **four lanes**,
-each holding several statuses:
+issues", D3) when the workspace has more than one workflow — shows **five lanes**,
+each holding several statuses (Backlog = built-in `backlog`, not yet committed, owner idea 2026-11-10):
 To do (unstarted), In progress (started), **Awaiting approval** (every step a person
 handles that has a next status, from all the workflows; lock icon in the heading),
 Done (done and closed). Lanes without a visible status are not shown.
