@@ -1,0 +1,276 @@
+From 4982c3d4c8a173ebef10b3981c632e39f9258c2a Mon Sep 17 00:00:00 2001
+From: Van Tran <trantoanvan@outlook.com>
+Date: Tue, 10 Nov 2026 17:45:23 +0700
+Subject: [PATCH 2/2] feat(issues): child issues by status and days in status
+
+The sub-issue panel shows a bar of the children by status next to the done
+count, and each open child shows how many days it has sat in its status (from
+one day, red from five). Reference: Jira's Child issues panel.
+
+Patch-Id: child-panel
+---
+ .../components/child-panel-extras.test.tsx    | 45 +++++++++++
+ .../issues/components/child-panel-extras.tsx  | 74 +++++++++++++++++++
+ .../views/issues/components/issue-detail.tsx  |  3 +
+ packages/views/locales/en/issues.json         |  5 ++
+ packages/views/locales/fr/issues.json         |  5 ++
+ packages/views/locales/ja/issues.json         |  5 ++
+ packages/views/locales/ko/issues.json         |  5 ++
+ packages/views/locales/zh-Hans/issues.json    |  5 ++
+ packages/views/locales/zh-Hant/issues.json    |  5 ++
+ 9 files changed, 152 insertions(+)
+ create mode 100644 packages/views/issues/components/child-panel-extras.test.tsx
+ create mode 100644 packages/views/issues/components/child-panel-extras.tsx
+
+diff --git a/packages/views/issues/components/child-panel-extras.test.tsx b/packages/views/issues/components/child-panel-extras.test.tsx
+new file mode 100644
+index 000000000..7eb0df65d
+--- /dev/null
++++ b/packages/views/issues/components/child-panel-extras.test.tsx
+@@ -0,0 +1,45 @@
++import { cleanup, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { renderWithI18n } from "../../test/i18n";
++import { ChildStatusBar, DaysInStatus } from "./child-panel-extras";
++
++const since = (days: number) => new Date(Date.now() - days * 86_400_000 - 60_000).toISOString();
++let entries: Record<string, { status: string; since: string }> = {};
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("@multica/core/issue-statuses/hooks", () => ({
++  useIssueStatuses: () => ({
++    categoryOf: (s: string) => (s === "done" ? "done" : s === "todo" ? "unstarted" : "started"),
++    colorOf: () => "#888888",
++  }),
++}));
++vi.mock("../utils/status-label", () => ({ useStatusLabel: () => (s: string) => s }));
++vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: entries }) }));
++
++afterEach(cleanup);
++
++describe("ChildStatusBar", () => {
++  it("summarises children by status, done first", () => {
++    renderWithI18n(<ChildStatusBar issues={[{ status: "todo" }, { status: "done" }, { status: "done" }, { status: "in_review" }]} />);
++    expect(screen.getByTitle("2 done, 1 in_review, 1 todo")).toBeTruthy();
++  });
++  it("draws nothing without children", () => {
++    const { container } = renderWithI18n(<ChildStatusBar issues={[]} />);
++    expect(container.textContent).toBe("");
++  });
++});
++
++describe("DaysInStatus", () => {
++  it("shows whole days in the current status", () => {
++    entries = { a: { status: "in_review", since: since(6) } };
++    renderWithI18n(<DaysInStatus issue={{ id: "a", status: "in_review", project_id: "p" }} />);
++    expect(screen.getByText("6d")).toBeTruthy();
++    expect(screen.getByTitle("6 days in in_review")).toBeTruthy();
++  });
++  it("hides under a day and after the issue moved", () => {
++    entries = { a: { status: "todo", since: since(0) }, b: { status: "todo", since: since(3) } };
++    renderWithI18n(<DaysInStatus issue={{ id: "a", status: "todo", project_id: "p" }} />);
++    renderWithI18n(<DaysInStatus issue={{ id: "b", status: "in_review", project_id: "p" }} />);
++    expect(screen.queryByText(/\dd$/)).toBeNull();
++  });
++});
+diff --git a/packages/views/issues/components/child-panel-extras.tsx b/packages/views/issues/components/child-panel-extras.tsx
+new file mode 100644
+index 000000000..89468f033
+--- /dev/null
++++ b/packages/views/issues/components/child-panel-extras.tsx
+@@ -0,0 +1,74 @@
++"use client";
++
++import { useQuery } from "@tanstack/react-query";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { daysInColumn, statusSinceOptions } from "@multica/core/board-gates";
++import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
++import type { Issue } from "@multica/core/types";
++import { cn } from "@multica/ui/lib/utils";
++import { useT } from "../../i18n";
++import { useStatusLabel } from "../utils/status-label";
++
++const CATEGORY_ORDER = ["done", "started", "unstarted", "backlog", "closed", "cancelled"];
++
++/**
++ * Child issues by status (vantt parent-child, design D9): one bar segment per
++ * status, coloured like the status, done first. Reference: Jira's "Child issues"
++ * progress bar.
++ */
++export function ChildStatusBar({ issues }: { issues: readonly Pick<Issue, "status">[] }) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const catalog = useIssueStatuses(wsId);
++  const labelOf = useStatusLabel(wsId);
++  if (issues.length === 0) return null;
++  const counts = new Map<string, number>();
++  for (const c of issues) counts.set(c.status, (counts.get(c.status) ?? 0) + 1);
++  const rank = (s: string) => {
++    const i = CATEGORY_ORDER.indexOf(catalog.categoryOf(s));
++    return i < 0 ? CATEGORY_ORDER.length : i;
++  };
++  const parts = [...counts].sort((a, b) => rank(a[0]) - rank(b[0]) || b[1] - a[1]);
++  const summary = parts.map(([s, n]) => `${n} ${labelOf(s)}`).join(", ");
++  return (
++    <span
++      role="img"
++      aria-label={t(($) => $.child_panel.status_bar, { summary })}
++      title={summary}
++      className="flex h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-muted sm:w-32"
++    >
++      {parts.map(([status, n]) => (
++        <span
++          key={status}
++          style={{ width: `${(n / issues.length) * 100}%`, backgroundColor: catalog.colorOf(status) ?? undefined }}
++          className="h-full"
++        />
++      ))}
++    </span>
++  );
++}
++
++/**
++ * Days a child has sat in its status (vantt parent-child, design D9); shown from
++ * one day on, red from five. Done and cancelled children show nothing.
++ */
++export function DaysInStatus({ issue, className }: { issue: Pick<Issue, "id" | "status" | "project_id">; className?: string }) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const labelOf = useStatusLabel(wsId);
++  const { data } = useQuery(statusSinceOptions(wsId, issue.project_id ?? null));
++  const days = daysInColumn(data?.[issue.id], issue.status);
++  if (days === null || days < 1) return null;
++  return (
++    <span
++      title={t(($) => $.child_panel.days_title, { count: days, status: labelOf(issue.status) })}
++      className={cn(
++        "shrink-0 text-caption tabular-nums",
++        days >= 5 ? "font-medium text-destructive" : "text-muted-foreground",
++        className,
++      )}
++    >
++      {t(($) => $.child_panel.days, { count: days })}
++    </span>
++  );
++}
+diff --git a/packages/views/issues/components/issue-detail.tsx b/packages/views/issues/components/issue-detail.tsx
+index b7c55fd0e..9907aa464 100644
+--- a/packages/views/issues/components/issue-detail.tsx
++++ b/packages/views/issues/components/issue-detail.tsx
+@@ -180,6 +180,7 @@ import { TruncatedTooltip } from "@multica/ui/components/common/truncated-toolti
+ import { PAGE_GUTTER } from "../../layout/page-header";
+ 
+ import { ProgressRing } from "./progress-ring";
++import { ChildStatusBar, DaysInStatus } from "./child-panel-extras"; // vantt parent-child
+ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+ import { MetadataSection } from "./metadata-section";
+ import { IssueSidebarSectionHeader, IssueSidebarStack, IssueSidebarPropertyGrid } from "./issue-sidebar-section";
+@@ -1015,6 +1016,7 @@ function SubIssueRow({
+               </span>
+             )}
+           </span>
++          {!isDone && <DaysInStatus issue={child} />}
+         </AppLink>
+         {rowProps.dueDate && child.due_date && (
+           <DueDatePicker
+@@ -3641,6 +3643,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+                       {doneChildCount}/{childIssues.length}
+                     </span>
+                   </div>
++                  <ChildStatusBar issues={childIssues} />
+                   {/* issue.id, not the route param — the endpoint takes a
+                       UUID and the route may carry a human-readable id. */}
+                   <SubIssuesAgentWorkingChip parentIssueId={issue.id} />
+diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
+index 431eed87b..1def57b36 100644
+--- a/packages/views/locales/en/issues.json
++++ b/packages/views/locales/en/issues.json
+@@ -1804,5 +1804,10 @@
+   },
+   "parent_chip": {
+     "title": "Sub-issue of {{identifier}} · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "Children by status: {{summary}}",
++    "days": "{{count}}d",
++    "days_title": "{{count}} days in {{status}}"
+   }
+ }
+diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
+index 89e1e5853..87f3dbd6a 100644
+--- a/packages/views/locales/fr/issues.json
++++ b/packages/views/locales/fr/issues.json
+@@ -1803,5 +1803,10 @@
+   },
+   "parent_chip": {
+     "title": "Sous-ticket de {{identifier}} · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "Sous-tickets par statut : {{summary}}",
++    "days": "{{count}} j",
++    "days_title": "{{count}} jours en {{status}}"
+   }
+ }
+diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
+index 29a4d000f..eacd6420c 100644
+--- a/packages/views/locales/ja/issues.json
++++ b/packages/views/locales/ja/issues.json
+@@ -1738,5 +1738,10 @@
+   },
+   "parent_chip": {
+     "title": "{{identifier}} のサブ課題 · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "ステータス別のサブ課題: {{summary}}",
++    "days": "{{count}}日",
++    "days_title": "{{status}} に {{count}} 日"
+   }
+ }
+diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
+index 3746c7e8c..cbf6d571b 100644
+--- a/packages/views/locales/ko/issues.json
++++ b/packages/views/locales/ko/issues.json
+@@ -1738,5 +1738,10 @@
+   },
+   "parent_chip": {
+     "title": "{{identifier}}의 하위 이슈 · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "상태별 하위 이슈: {{summary}}",
++    "days": "{{count}}일",
++    "days_title": "{{status}} 상태로 {{count}}일"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
+index 2584ea060..61ec02ead 100644
+--- a/packages/views/locales/zh-Hans/issues.json
++++ b/packages/views/locales/zh-Hans/issues.json
+@@ -1738,5 +1738,10 @@
+   },
+   "parent_chip": {
+     "title": "{{identifier}} 的子事项 · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "按状态的子任务：{{summary}}",
++    "days": "{{count}}天",
++    "days_title": "处于 {{status}} {{count}} 天"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
+index fb320099a..8bbbbb73d 100644
+--- a/packages/views/locales/zh-Hant/issues.json
++++ b/packages/views/locales/zh-Hant/issues.json
+@@ -1737,5 +1737,10 @@
+   },
+   "parent_chip": {
+     "title": "{{identifier}} 的子事項 · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "依狀態的子任務：{{summary}}",
++    "days": "{{count}}天",
++    "days_title": "處於 {{status}} {{count}} 天"
+   }
+ }
+-- 
+2.53.0
+
