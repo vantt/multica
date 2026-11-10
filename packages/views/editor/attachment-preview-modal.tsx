@@ -71,6 +71,7 @@ import { openExternal } from "../platform";
 import { isDesktopShell } from "../platform/local-directory";
 import { useImmersiveMode } from "../platform/use-immersive-mode";
 import { ReadonlyContent } from "./readonly-content";
+import { MarkdownReader } from "./markdown-reader";
 import {
   canOpenPreview,
   extensionToLanguage,
@@ -1405,13 +1406,13 @@ function PreviewContent({
           attachmentId={state.attachmentId!}
           onDownload={onDownload}
           render={(text) => (
-            <DocumentSheet width="prose" onBackdropClick={onBackdropClick}>
+            <MarkdownReader text={text} onBackdropClick={onBackdropClick}>
               <ReadonlyContent
                 content={text}
                 className="px-10 py-8"
                 attachments={source.kind === "full" ? [source.attachment] : []}
               />
-            </DocumentSheet>
+            </MarkdownReader>
           )}
         />
       );
