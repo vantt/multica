@@ -1804,5 +1804,10 @@
   },
   "parent_chip": {
     "title": "Sub-issue of {{identifier}} · {{title}}"
+  },
+  "child_panel": {
+    "status_bar": "Children by status: {{summary}}",
+    "days": "{{count}}d",
+    "days_title": "{{count}} days in {{status}}"
   }
 }
