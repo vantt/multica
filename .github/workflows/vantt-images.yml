@@ -1,0 +1,74 @@
+name: vantt-images
+
+# Build and push ghcr.io/vantt/multica-backend and ghcr.io/vantt/multica-web for a
+# fork release tag (v<upstream>-vantt.N). linux/amd64 only: the fork runs on one
+# x86_64 host. Build steps follow upstream's release.yml.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Fork release tag, e.g. v0.7.1-vantt.1
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    if: github.repository == 'vantt/multica'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            file: Dockerfile
+            title: Multica Backend (vantt fork)
+          - name: web
+            file: Dockerfile.web
+            title: Multica Web (vantt fork)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+      - name: Labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/multica-${{ matrix.name }}
+          tags: |
+            type=raw,value=${{ inputs.version }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          pull: true
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=vantt-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=vantt-${{ matrix.name }}
+          build-args: |
+            VERSION=${{ inputs.version }}
+            COMMIT=${{ github.sha }}
+            REMOTE_API_URL=http://backend:8080
+            NEXT_PUBLIC_APP_VERSION=${{ inputs.version }}
