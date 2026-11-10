@@ -123,6 +123,7 @@ vi.mock("../i18n", () => ({
   useT: () => ({
     t: (sel: (s: Record<string, Record<string, string>>) => string) =>
       sel({
+        reader: { outline: "On this page", progress: "Reading progress" },
         image: {
           download: "Download",
           copy_image: "Copy image",
