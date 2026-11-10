@@ -1707,6 +1707,9 @@
       }
     },
     "approval": {
+      "prs_label": "풀 리퀘스트",
+      "approve_on_github": "GitHub에서 승인",
+      "pr_then_approve": "GitHub에서 내 계정으로 PR을 승인한 뒤 여기서 승인하세요.",
       "title": "승인 대기 중",
       "gate_note": "에이전트는 이 이슈를 이 단계에서 옮길 수 없습니다.",
       "approve": "승인",
