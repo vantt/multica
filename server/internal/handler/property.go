@@ -683,6 +683,14 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if callerType, _ := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID)); callerType == "agent" {
+		if err := h.refuseAgentRuleChange(r.Context(), issue, propertyID, callerType); err != nil {
+			if !writeIssueWorkflowError(w, err) {
+				writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			}
+			return
+		}
+	}
 
 	// Validation and write share the property advisory lock with definition
 	// updates: the value written is guaranteed to reference the definition
@@ -754,6 +762,7 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
 		"properties":     properties,
 		"issue_revision": updated.Revision,
 	})
+	h.followRuleWorkflow(r, issue, updated, actorType, actorID)
 	writeJSON(w, http.StatusOK, map[string]any{"properties": properties, "issue_revision": updated.Revision})
 }
 
