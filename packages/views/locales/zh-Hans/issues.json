@@ -1755,5 +1755,11 @@
     "done": "已完成",
     "gate_hint": "只有审批人能把卡片移出此列",
     "drop_blocked": "此任务的工作流在该列没有步骤"
+  },
+  "triage": {
+    "suggested": "建议",
+    "apply_both": "全部应用",
+    "dismiss": "隐藏建议",
+    "source": "Clef · {{percent}} · 基于工作区的项目、Type 和近期问题"
   }
 }
