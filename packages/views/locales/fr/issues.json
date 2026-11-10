@@ -1803,5 +1803,10 @@
   },
   "parent_chip": {
     "title": "Sous-ticket de {{identifier}} · {{title}}"
+  },
+  "child_panel": {
+    "status_bar": "Sous-tickets par statut : {{summary}}",
+    "days": "{{count}} j",
+    "days_title": "{{count}} jours en {{status}}"
   }
 }
