@@ -1,0 +1,17 @@
+# Patch series applied by vantt/scripts/catchup.mjs on top of the upstream tag in
+# vantt/upstream.pin. Patches are applied in file order with `git am --3way`.
+#
+# [[patches]]
+# id = "owner-gates"                         # required, unique, kebab-case
+# name = "feat(workflow): owner gates enforced by the server"   # required, commit subject
+# patch_file = "0001-owner-gates.patch"     # required, `git format-patch` output
+# metadata_file = "0001-owner-gates.spec.md" # required: requirement, invariants, touch points, how to rewrite on conflict
+# upstream_status = "unsubmitted"            # unsubmitted | issue_opened | pr_opened | merged | rejected ("merged" = skipped)
+# upstream_ref = ""                          # issue or PR link
+# touches = ["server/internal/issueworkflow/issueworkflow.go"]
+# test_command = "cd server && go test ./internal/issueworkflow/..."
+# probe = "vantt/probes/owner-gates.sh"      # behaviour check against a running instance
+#
+# Planned order (vantt/plans/plan.md): F0 fork-identity, F1 owner-gates, F2 goals,
+# F3 workflow-by-type, F4 boards, F5 decisions, F7 parent-child, F8 artifact-reader,
+# F6 budgets (last).
