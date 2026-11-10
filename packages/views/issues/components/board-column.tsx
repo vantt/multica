@@ -36,6 +36,7 @@ import { VirtuosoSeed } from "../../common/virtuoso-seed";
 import { useBoardWorkflow } from "./board-workflow-context";
 import { ColumnHandoff } from "../../workflows/column-handoff";
 import type { IssueCreateDefaults } from "../surface/types";
+import { LaneHeading } from "./board-lanes"; // vantt board-lanes
 
 // Insertion-position prediction intentionally omitted. The server's
 // ORDER BY uses PostgreSQL's en_US.utf8 collation (glibc), which
@@ -96,6 +97,9 @@ export interface BoardColumnGroup {
   propertyOptionColor?: string;
   totalCount?: number;
   createData?: IssueCreateDefaults;
+  /** vantt board-lanes: a column holding several statuses. */
+  lane?: import("./board-lanes").Lane;
+  statuses?: IssueStatus[];
 }
 
 export const BoardColumn = memo(function BoardColumn({
@@ -411,6 +415,8 @@ function BoardGroupHeading({
   if (group.status) {
     return <StatusHeading status={group.status} count={count} />;
   }
+
+  if (group.lane) return <LaneHeading group={group} count={count} />; // vantt board-lanes
 
   if (group.propertyId !== undefined) {
     return (

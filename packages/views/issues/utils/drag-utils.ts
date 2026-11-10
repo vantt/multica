@@ -84,9 +84,14 @@ export function buildColumns(
   knownOptionIds?: ReadonlySet<string>,
 ): Record<string, string[]> {
   const cols: Record<string, string[]> = {};
-  for (const group of groups) cols[group.id] = [];
+  // vantt board-lanes: a column may hold several statuses.
+  const laneOf = new Map<string, string>();
+  for (const group of groups) {
+    cols[group.id] = [];
+    for (const status of group.statuses ?? []) laneOf.set(status, group.id);
+  }
   for (const issue of issues) {
-    const gid = getIssueGroupId(issue, grouping, knownOptionIds);
+    const gid = (grouping === "status" && laneOf.get(issue.status)) || getIssueGroupId(issue, grouping, knownOptionIds);
     if (cols[gid]) cols[gid].push(issue.id);
   }
   return cols;

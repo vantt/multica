@@ -75,6 +75,7 @@ import {
   projectGroupId,
 } from "../utils/drag-utils";
 import { useStatusLabel } from "../utils/status-label";
+import { BoardLaneContext, buildLaneGroups, lanePages, resolveLaneGroup, useBoardLanes, type Lane } from "./board-lanes"; // vantt board-lanes
 
 function isStatusGroup(
   group: BoardColumnGroup,
@@ -447,9 +448,25 @@ function BoardViewImpl({
       ]),
     ) as Record<string, IssueGroupPageState>;
   }, [groupBranches]);
+  // vantt board-lanes (D3d Automatic): several workflows -> four lanes.
+  const boardLanes = useBoardLanes(boardWsId, projectId);
+  const laneMode = grouping === "status" && boardLanes !== null;
+  const laneGroups = useMemo(
+    () =>
+      laneMode
+        ? buildLaneGroups(visibleStatuses, catalog.categoryOf, boardLanes!.gates, (lane: Lane) => t(($) => $.board_lanes[lane]))
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [laneMode, visibleStatuses, catalog, boardLanes?.gates.join(","), t],
+  );
+  const pagination = useMemo(
+    () => (laneGroups ? { ...(groupPagination ?? {}), ...lanePages(laneGroups, statusPagination) } : groupPagination),
+    [laneGroups, groupPagination, statusPagination],
+  );
   const groups = useMemo(
     () => {
       const built =
+        laneGroups ??
         hydratedAssigneeGroups ??
         hydratedProjectGroups ??
         buildGroups(issues, visibleStatuses, grouping, {
@@ -462,10 +479,10 @@ function BoardViewImpl({
         });
       return built.map((group) => ({
         ...group,
-        totalCount: groupPagination?.[group.id]?.total ?? group.totalCount,
+        totalCount: pagination?.[group.id]?.total ?? group.totalCount,
       }));
     },
-    [hydratedAssigneeGroups, hydratedProjectGroups, issues, visibleStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
+    [laneGroups, pagination, hydratedAssigneeGroups, hydratedProjectGroups, issues, visibleStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
   );
   const groupIds = useMemo(
     () => new Set(groups.map((group) => group.id)),
@@ -496,12 +513,13 @@ function BoardViewImpl({
   const workflowOfIssue = useCallback(
     (issue: Issue | null | undefined) => {
       if (!issue?.project_id) return null;
+      if (boardLanes && issue.project_id === projectId) return boardLanes.workflowOf(issue); // vantt board-lanes
       return resolveProjectWorkflow(
         workflows,
         workspaceProjects?.find((p) => p.id === issue.project_id),
       );
     },
-    [workflows, workspaceProjects],
+    [workflows, workspaceProjects, boardLanes, projectId],
   );
   const scopeProject = projectId ? workspaceProjects?.find((p) => p.id === projectId) ?? null : null;
   const activeWorkflow = workflowOfIssue(activeIssue);
@@ -602,7 +620,11 @@ function BoardViewImpl({
         const activeCol = findColumn(prev, activeId, groupIds);
         const overCol = findColumn(prev, overId, groupIds);
         if (!activeCol || !overCol || activeCol === overCol) return prev;
-        const targetStatus = groups.find((group) => group.id === overCol)?.status;
+        const targetStatus = resolveLaneGroup(
+          groups.find((group) => group.id === overCol),
+          issueMapRef.current.get(activeId),
+          workflowOfIssue(issueMapRef.current.get(activeId)),
+        )?.status;
         if (targetStatus && catalog.entryOf(targetStatus)?.archived_at) return prev;
         if (targetStatus && !workflowAllowsStatus(workflowOfIssue(issueMapRef.current.get(activeId)), targetStatus)) {
           return prev;
@@ -667,9 +689,14 @@ function BoardViewImpl({
         resetColumns();
         return;
       }
-      const finalGroup = groupMap.get(finalCol);
+      const finalGroup = resolveLaneGroup(
+        groupMap.get(finalCol),
+        issueMapRef.current.get(activeId),
+        workflowOfIssue(issueMapRef.current.get(activeId)),
+      );
       if (!finalGroup) {
         resetColumns();
+        if (finalGroup === null) toast.info(t(($) => $.board_lanes.drop_blocked));
         return;
       }
 
@@ -813,6 +840,7 @@ function BoardViewImpl({
 
   return (
     <BoardWorkflowContext.Provider value={boardWorkflow}>
+    <BoardLaneContext.Provider value={laneMode}>
     <DndContext
       sensors={sensors}
       collisionDetection={collisionDetection}
@@ -866,7 +894,7 @@ function BoardViewImpl({
                 sortLabel={sortLabel}
               />
             ) : (
-              groupPagination?.[group.id] ? (
+              pagination?.[group.id] ? (
                 <ServerPaginatedBoardColumn
                   key={group.id}
                   group={group}
@@ -874,7 +902,7 @@ function BoardViewImpl({
                   issueMap={issueMapRef.current}
                   childProgressMap={childProgressMap}
                   projectMap={projectMap}
-                  page={groupPagination[group.id]!}
+                  page={pagination[group.id]!}
                   projectId={projectId}
                   onCreateIssue={onCreateIssue}
                   sortLabel={sortLabel}
@@ -922,6 +950,7 @@ function BoardViewImpl({
         ) : null}
       </DragOverlay>
     </DndContext>
+    </BoardLaneContext.Provider>
     <WorkflowHandoffConfirmDialog
       issue={pendingHandoff?.issue ?? null}
       toStatus={pendingHandoff?.status ?? ""}
