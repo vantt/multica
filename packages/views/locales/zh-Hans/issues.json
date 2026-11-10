@@ -1738,5 +1738,10 @@
   },
   "parent_chip": {
     "title": "{{identifier}} 的子事项 · {{title}}"
+  },
+  "child_panel": {
+    "status_bar": "按状态的子任务：{{summary}}",
+    "days": "{{count}}天",
+    "days_title": "处于 {{status}} {{count}} 天"
   }
 }
