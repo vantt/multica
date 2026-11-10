@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueproperty"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -683,6 +684,14 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if callerType, _ := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID)); callerType == "agent" {
+		if err := h.refuseAgentRuleChange(r.Context(), issue, propertyID, callerType); err != nil {
+			if !writeIssueWorkflowError(w, err) {
+				writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			}
+			return
+		}
+	}
 
 	// Validation and write share the property advisory lock with definition
 	// updates: the value written is guaranteed to reference the definition
@@ -734,6 +743,18 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
+		// vantt derived-property: e.g. Domain follows Type.
+		derived, err := service.DerivedPropertyValues(r.Context(), q, issue.WorkspaceID, updated.Properties)
+		if err != nil {
+			return err
+		}
+		for key, v := range derived {
+			if updated, err = q.SetIssuePropertyValue(r.Context(), db.SetIssuePropertyValueParams{
+				ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: key, Value: v,
+			}); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -754,6 +775,7 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
 		"properties":     properties,
 		"issue_revision": updated.Revision,
 	})
+	h.followRuleWorkflow(r, issue, updated, actorType, actorID)
 	writeJSON(w, http.StatusOK, map[string]any{"properties": properties, "issue_revision": updated.Revision})
 }
 

@@ -1771,6 +1771,28 @@
           "waiting": "Waiting on reporter"
         }
       }
+    },
+    "approval": {
+      "prs_label": "Pull requests",
+      "approve_on_github": "Approve on GitHub",
+      "pr_then_approve": "Approve the PR on GitHub with your account, then Approve here.",
+      "title": "Waiting for your approval",
+      "gate_note": "Agents cannot move this issue out of this step.",
+      "approve": "Approve",
+      "send_back": "Send back",
+      "moves_to": "Approve moves it to {{status}}",
+      "reason_label": "What needs to change?",
+      "send_back_to": "Send back to {{status}}",
+      "cancel": "Cancel"
+    },
+    "rules": {
+      "label": "By Type",
+      "none": "Same for every Type",
+      "help": "Issues whose property has one of these values follow another workflow. Anything else follows the project's workflow.",
+      "choose_by": "Choose workflow by",
+      "project_default": "Project workflow",
+      "cancel": "Cancel",
+      "save": "Save"
     }
   },
   "hover_card": {

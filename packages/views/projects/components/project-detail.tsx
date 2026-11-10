@@ -30,6 +30,7 @@ import { ProjectResourcesSection } from "./project-resources-section";
 import { ProjectStartDatePicker } from "./project-start-date-picker";
 import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
+import { WorkflowRulesControl } from "../../workflows/workflow-rules-row";
 import { ProjectWorkflowMenu } from "../../workflows/project-workflow-menu";
 import { IssueSurface } from "../../issues/surface/issue-surface";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -104,6 +105,16 @@ function ProjectWorkflowPropRow({ project }: { project: Project }) {
   return (
     <PropRow label={t(($) => $.workflows.project.label)}>
       <ProjectWorkflowControl project={project} />
+    </PropRow>
+  );
+}
+
+// Workflows by Type (vantt workflow-by-type-ui).
+function ProjectWorkflowRulesPropRow({ project }: { project: Project }) {
+  const { t } = useT("issues");
+  return (
+    <PropRow label={t(($) => $.workflows.rules.label)}>
+      <WorkflowRulesControl project={project} />
     </PropRow>
   );
 }
@@ -430,6 +441,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
           </PropRow>
           <ProjectWorkflowPropRow project={project} />
+          <ProjectWorkflowRulesPropRow project={project} />
         </div>}
       </div>
 

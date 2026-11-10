@@ -39,6 +39,9 @@ const { defaultWithoutBlocked } = vi.hoisted(() => ({
   },
 }));
 
+// vantt board-columns reads the project's workflow rules.
+vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: undefined }) }));
+
 vi.mock("@multica/core/issue-workflows", () => ({
   defaultWorkflow: () => defaultWithoutBlocked,
   useIssueWorkflows: () => ({ workflows: [defaultWithoutBlocked] }),
