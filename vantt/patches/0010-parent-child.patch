@@ -1,8 +1,8 @@
-From 2160dfa2e7522de79dc0b593fdc0f2910945a7b0 Mon Sep 17 00:00:00 2001
+From e6c8f930ae74f2a614793000efee9dce0059c7a0 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:55:15 +0700
-Subject: [PATCH] feat(issues): show a sub-issue's parent on board cards and
- list rows
+Subject: [PATCH 10/11] feat(issues): show a sub-issue's parent on board cards
+ and list rows
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -28,7 +28,7 @@ Patch-Id: parent-child
  create mode 100644 packages/views/issues/components/parent-issue-chip.tsx
 
 diff --git a/packages/views/issues/components/board-card.tsx b/packages/views/issues/components/board-card.tsx
-index a5b5ad3db..815a1df8d 100644
+index af6e2a2d8..e94a750f4 100644
 --- a/packages/views/issues/components/board-card.tsx
 +++ b/packages/views/issues/components/board-card.tsx
 @@ -24,6 +24,7 @@ import { PriorityPicker, AssigneePicker, StartDatePicker, DueDatePicker } from "
@@ -140,10 +140,10 @@ index 000000000..e27ec11d9
 +  );
 +}
 diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
-index 520e75ee0..3c1199a4c 100644
+index e9d67648d..431eed87b 100644
 --- a/packages/views/locales/en/issues.json
 +++ b/packages/views/locales/en/issues.json
-@@ -1798,5 +1798,8 @@
+@@ -1801,5 +1801,8 @@
    },
    "hover_card": {
      "created_updated": "created {{created}} · updated {{updated}}"
@@ -153,10 +153,10 @@ index 520e75ee0..3c1199a4c 100644
    }
  }
 diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
-index 245cb39b7..43b2261cc 100644
+index cb0ae252b..89e1e5853 100644
 --- a/packages/views/locales/fr/issues.json
 +++ b/packages/views/locales/fr/issues.json
-@@ -1797,5 +1797,8 @@
+@@ -1800,5 +1800,8 @@
    },
    "hover_card": {
      "created_updated": "a créé {{created}} · mis à jour {{updated}}"
@@ -166,10 +166,10 @@ index 245cb39b7..43b2261cc 100644
    }
  }
 diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
-index 116b3d40e..ef5fa1ba3 100644
+index 2ee49eeee..29a4d000f 100644
 --- a/packages/views/locales/ja/issues.json
 +++ b/packages/views/locales/ja/issues.json
-@@ -1732,5 +1732,8 @@
+@@ -1735,5 +1735,8 @@
    },
    "hover_card": {
      "created_updated": "{{created}}に作成 · {{updated}}に更新"
@@ -179,10 +179,10 @@ index 116b3d40e..ef5fa1ba3 100644
    }
  }
 diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
-index 5657b5507..d7866ac50 100644
+index b775f8626..3746c7e8c 100644
 --- a/packages/views/locales/ko/issues.json
 +++ b/packages/views/locales/ko/issues.json
-@@ -1732,5 +1732,8 @@
+@@ -1735,5 +1735,8 @@
    },
    "hover_card": {
      "created_updated": "{{created}} 생성 · {{updated}} 수정됨"
@@ -192,10 +192,10 @@ index 5657b5507..d7866ac50 100644
    }
  }
 diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
-index d468e1964..e0b7efc41 100644
+index 4a39e6815..2584ea060 100644
 --- a/packages/views/locales/zh-Hans/issues.json
 +++ b/packages/views/locales/zh-Hans/issues.json
-@@ -1732,5 +1732,8 @@
+@@ -1735,5 +1735,8 @@
    },
    "hover_card": {
      "created_updated": "创建于 {{created}} · 更新于 {{updated}}"
@@ -205,10 +205,10 @@ index d468e1964..e0b7efc41 100644
    }
  }
 diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
-index c248c4b8f..ae0fe60fe 100644
+index fa5f4551f..fb320099a 100644
 --- a/packages/views/locales/zh-Hant/issues.json
 +++ b/packages/views/locales/zh-Hant/issues.json
-@@ -1731,5 +1731,8 @@
+@@ -1734,5 +1734,8 @@
    },
    "hover_card": {
      "created_updated": "建立於 {{created}} · 更新於 {{updated}}"

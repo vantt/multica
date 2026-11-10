@@ -14,7 +14,8 @@ the project's workflow, then the workspace Default. Reference: Jira workflow sch
 - Every former `ForProject` caller that has an issue uses `ForIssue`: issue update
   (`applyIssueWorkflow`, prev.Properties), create (request properties), service create
   (`createWorkflow`, p.Properties), claim brief (`claimProjectWorkflow`), gate check
-  (`refuseAgentLeavingGate`, patch 0001). The comment-trigger preview passes no properties.
+  (`refuseAgentLeavingGate`, patch 0001), PR automation (`pr_auto_complete.go`, v0.7.2+). The
+  comment-trigger preview passes no properties.
 - API `GET/PUT /api/projects/{id}/workflow-rules` inside the projects route group;
   PUT owner/admin; validates select property, option and workflow; no duplicate options.
 - `SetIssueProperty`: an agent changing a rule property while the issue sits in a

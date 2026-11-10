@@ -1,7 +1,8 @@
-From 0cdec47561a64e0b15b96283a1a9c65e4dfbb9f2 Mon Sep 17 00:00:00 2001
+From d7f306792177de8bac661a3c09854d126e154b74 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:31:04 +0700
-Subject: [PATCH] feat(goals): Goals page and goal detail on web and desktop
+Subject: [PATCH 04/11] feat(goals): Goals page and goal detail on web and
+ desktop
 
 Sidebar entry Goals (after Projects). List: off track / at risk / on track /
 update due tiles, goal tree with progress, health and pace, measured by and
@@ -47,9 +48,8 @@ Patch-Id: goals-ui
  packages/views/locales/zh-Hant/layout.json    |   3 +-
  packages/views/locales/zh-Hant/projects.json  |  49 +++
  packages/views/package.json                   |   1 +
- packages/views/search/search-command.test.tsx |   1 +
- packages/views/search/search-command.tsx      |   1 +
- 38 files changed, 1070 insertions(+), 6 deletions(-)
+ packages/views/search/use-root-model.ts       |   1 +
+ 37 files changed, 1069 insertions(+), 6 deletions(-)
  create mode 100644 apps/desktop/src/renderer/src/pages/goal-detail-page.tsx
  create mode 100644 apps/web/app/[workspaceSlug]/(dashboard)/goals/[id]/page.tsx
  create mode 100644 apps/web/app/[workspaceSlug]/(dashboard)/goals/page.tsx
@@ -79,7 +79,7 @@ index 000000000..68050b043
 +  return <GoalsPage goalId={id} />;
 +}
 diff --git a/apps/desktop/src/renderer/src/routes.tsx b/apps/desktop/src/renderer/src/routes.tsx
-index 39350edc4..97d7f4bd9 100644
+index e16c412e7..df07f13b3 100644
 --- a/apps/desktop/src/renderer/src/routes.tsx
 +++ b/apps/desktop/src/renderer/src/routes.tsx
 @@ -3,6 +3,7 @@ import { createMemoryRouter, Outlet, useMatches } from "react-router-dom";
@@ -486,7 +486,7 @@ index 000000000..9c7b4984b
 +  measured_by?: "manual" | "script";
 +}
 diff --git a/packages/core/package.json b/packages/core/package.json
-index 736e4d5e0..84aaaaa46 100644
+index c25543b88..b79966ddc 100644
 --- a/packages/core/package.json
 +++ b/packages/core/package.json
 @@ -38,6 +38,7 @@
@@ -523,7 +523,7 @@ index bda798fd1..f4c4fa02d 100644
      autopilotDetail: (id: string) => `${ws}/autopilots/${encode(id)}`,
      agents: () => `${ws}/agents`,
 diff --git a/packages/core/paths/route-icons.ts b/packages/core/paths/route-icons.ts
-index c113e2490..95ffcbcad 100644
+index 814d247b0..500e08601 100644
 --- a/packages/core/paths/route-icons.ts
 +++ b/packages/core/paths/route-icons.ts
 @@ -25,6 +25,7 @@ export type RouteIconName =
@@ -559,7 +559,7 @@ index c113e2490..95ffcbcad 100644
    agents: { segment: "agents", icon: "Bot", navKey: "agents" },
    squads: { segment: "squads", icon: "Users", navKey: "squads" },
 diff --git a/packages/core/paths/tab-subject.ts b/packages/core/paths/tab-subject.ts
-index 3837b0806..fbaac6bf9 100644
+index 93cf6f5af..735347020 100644
 --- a/packages/core/paths/tab-subject.ts
 +++ b/packages/core/paths/tab-subject.ts
 @@ -82,6 +82,8 @@ export function parseTabSubject(url: string): TabSubject {
@@ -1001,7 +1001,7 @@ index 000000000..6e340cdff
 @@ -0,0 +1 @@
 +export { GoalsPage } from "./goals-page";
 diff --git a/packages/views/layout/app-sidebar.test.tsx b/packages/views/layout/app-sidebar.test.tsx
-index c4d308c3d..3b31bb0fb 100644
+index 480387986..2053cbf47 100644
 --- a/packages/views/layout/app-sidebar.test.tsx
 +++ b/packages/views/layout/app-sidebar.test.tsx
 @@ -145,6 +145,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
@@ -1013,10 +1013,10 @@ index c4d308c3d..3b31bb0fb 100644
      skills: () => "/acme/skills",
      settings: () => "/acme/settings",
 diff --git a/packages/views/layout/app-sidebar.tsx b/packages/views/layout/app-sidebar.tsx
-index c5d8963f2..0cc6d800b 100644
+index 2f0656fc7..b01f855e9 100644
 --- a/packages/views/layout/app-sidebar.tsx
 +++ b/packages/views/layout/app-sidebar.tsx
-@@ -117,6 +117,7 @@ type NavKey =
+@@ -118,6 +118,7 @@ type NavKey =
    | "myIssues"
    | "issues"
    | "projects"
@@ -1024,7 +1024,7 @@ index c5d8963f2..0cc6d800b 100644
    | "autopilots"
    | "agents"
    | "squads"
-@@ -133,6 +134,7 @@ type NavLabelKey =
+@@ -134,6 +135,7 @@ type NavLabelKey =
    | "my_issues"
    | "issues"
    | "projects"
@@ -1032,7 +1032,7 @@ index c5d8963f2..0cc6d800b 100644
    | "autopilots"
    | "agents"
    | "squads"
-@@ -153,6 +155,7 @@ const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
+@@ -154,6 +156,7 @@ const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
  const workNav: { key: NavKey; labelKey: NavLabelKey }[] = [
    { key: "issues", labelKey: "issues" },
    { key: "projects", labelKey: "projects" },
@@ -1065,7 +1065,7 @@ index 7a07cda07..792da2e31 100644
      skills: () => "/w/skills",
      settings: () => "/w/settings",
 diff --git a/packages/views/layout/route-icon-components.tsx b/packages/views/layout/route-icon-components.tsx
-index 0173bebf2..be337073c 100644
+index 702e7592c..8b600c1e7 100644
 --- a/packages/views/layout/route-icon-components.tsx
 +++ b/packages/views/layout/route-icon-components.tsx
 @@ -4,6 +4,7 @@ import {
@@ -1076,7 +1076,7 @@ index 0173bebf2..be337073c 100644
    Zap,
    Bot,
    Users,
-@@ -37,6 +38,7 @@ export const ROUTE_ICON_COMPONENTS: Record<RouteIconName, LucideIcon> = {
+@@ -37,6 +38,7 @@ export const ROUTE_ICON_COMPONENTS: Record<RouteIconName, IconComponent> = {
    CircleUser,
    ListTodo,
    FolderKanban,
@@ -1523,7 +1523,7 @@ index 4ba3e4269..7cd2e370f 100644
    }
  }
 diff --git a/packages/views/package.json b/packages/views/package.json
-index a67f3bb72..49a9528c3 100644
+index 74635305c..242de2608 100644
 --- a/packages/views/package.json
 +++ b/packages/views/package.json
 @@ -20,6 +20,7 @@
@@ -1534,23 +1534,11 @@ index a67f3bb72..49a9528c3 100644
      "./autopilots/components": "./autopilots/components/index.ts",
      "./modals/registry": "./modals/registry.tsx",
      "./modals/create-issue": "./modals/create-issue.tsx",
-diff --git a/packages/views/search/search-command.test.tsx b/packages/views/search/search-command.test.tsx
-index f94b8c966..857674788 100644
---- a/packages/views/search/search-command.test.tsx
-+++ b/packages/views/search/search-command.test.tsx
-@@ -234,6 +234,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
-     agents: () => "/ws-test/agents",
-     squads: () => "/ws-test/squads",
-     usage: () => "/ws-test/usage",
-+    goals: () => "/ws-test/goals",
-     runtimes: () => "/ws-test/runtimes",
-     skills: () => "/ws-test/skills",
-     settings: () => "/ws-test/settings",
-diff --git a/packages/views/search/search-command.tsx b/packages/views/search/search-command.tsx
-index 1edadcb49..38123f453 100644
---- a/packages/views/search/search-command.tsx
-+++ b/packages/views/search/search-command.tsx
-@@ -99,6 +99,7 @@ const PAGE_KEYWORDS: Record<WorkspacePageKey, string[]> = {
+diff --git a/packages/views/search/use-root-model.ts b/packages/views/search/use-root-model.ts
+index dd7434bfd..010885a83 100644
+--- a/packages/views/search/use-root-model.ts
++++ b/packages/views/search/use-root-model.ts
+@@ -38,6 +38,7 @@ const PAGE_KEYWORDS: Record<WorkspacePageKey, string[]> = {
    myIssues: ["my", "issues", "assigned", "mine", "我的", "任务"],
    issues: ["issues", "tasks", "bugs", "任务"],
    projects: ["projects", "kanban", "项目"],

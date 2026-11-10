@@ -1,8 +1,8 @@
-From 7c41ad66cdc2c4c327885ad0580fb906f210516b Mon Sep 17 00:00:00 2001
+From e4cbdb34db178111f6a3e263d30a510ebedc7cb8 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:12:58 +0700
-Subject: [PATCH] feat(issues): approval panel for the person a workflow step
- waits on
+Subject: [PATCH 02/11] feat(issues): approval panel for the person a workflow
+ step waits on
 
 While an issue sits in a step whose handler is the viewer (a member, or the
 creator when that is the viewer), the issue page shows an approval panel:
@@ -25,7 +25,7 @@ Patch-Id: approval-panel
  create mode 100644 packages/views/workflows/approval-panel.tsx
 
 diff --git a/packages/views/issues/components/issue-detail.tsx b/packages/views/issues/components/issue-detail.tsx
-index 44eb9b122..7b6d28de1 100644
+index 88d46beeb..d26686211 100644
 --- a/packages/views/issues/components/issue-detail.tsx
 +++ b/packages/views/issues/components/issue-detail.tsx
 @@ -14,6 +14,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
@@ -36,7 +36,7 @@ index 44eb9b122..7b6d28de1 100644
  import {
    Archive,
    Calendar,
-@@ -3313,6 +3314,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+@@ -3352,6 +3353,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                )
              }
            />
@@ -45,10 +45,10 @@ index 44eb9b122..7b6d28de1 100644
            {titleLazy.active && (
              <div className={titleLazy.ready ? undefined : "hidden"}>
 diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
-index e6f1ead39..38bab5787 100644
+index dce19d457..08de03e94 100644
 --- a/packages/views/locales/en/issues.json
 +++ b/packages/views/locales/en/issues.json
-@@ -1768,6 +1768,16 @@
+@@ -1771,6 +1771,16 @@
            "waiting": "Waiting on reporter"
          }
        }
@@ -66,10 +66,10 @@ index e6f1ead39..38bab5787 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
-index 5736941ad..803799de0 100644
+index 737729ca0..43542bd64 100644
 --- a/packages/views/locales/fr/issues.json
 +++ b/packages/views/locales/fr/issues.json
-@@ -1767,6 +1767,16 @@
+@@ -1770,6 +1770,16 @@
            "waiting": "En attente du retour"
          }
        }
@@ -87,10 +87,10 @@ index 5736941ad..803799de0 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
-index c49521b00..1e0c997e5 100644
+index 5c5f706f9..43a96c716 100644
 --- a/packages/views/locales/ja/issues.json
 +++ b/packages/views/locales/ja/issues.json
-@@ -1702,6 +1702,16 @@
+@@ -1705,6 +1705,16 @@
            "waiting": "返答待ち"
          }
        }
@@ -108,10 +108,10 @@ index c49521b00..1e0c997e5 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
-index 628c0a6a9..7e565c124 100644
+index be3a7b7e4..450f017ed 100644
 --- a/packages/views/locales/ko/issues.json
 +++ b/packages/views/locales/ko/issues.json
-@@ -1702,6 +1702,16 @@
+@@ -1705,6 +1705,16 @@
            "waiting": "회신 대기"
          }
        }
@@ -129,10 +129,10 @@ index 628c0a6a9..7e565c124 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
-index e077c849e..d6c7f5453 100644
+index d55665495..2f7f038a8 100644
 --- a/packages/views/locales/zh-Hans/issues.json
 +++ b/packages/views/locales/zh-Hans/issues.json
-@@ -1702,6 +1702,16 @@
+@@ -1705,6 +1705,16 @@
            "waiting": "等待反馈"
          }
        }
@@ -150,10 +150,10 @@ index e077c849e..d6c7f5453 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
-index 1dbd9f591..3d085280e 100644
+index bcfd21c18..444fc1edb 100644
 --- a/packages/views/locales/zh-Hant/issues.json
 +++ b/packages/views/locales/zh-Hant/issues.json
-@@ -1701,6 +1701,16 @@
+@@ -1704,6 +1704,16 @@
            "waiting": "等待反饋"
          }
        }

@@ -1,7 +1,8 @@
-From 3fc7ab87c5191458819a933a3b38e84478168af7 Mon Sep 17 00:00:00 2001
+From c531a63bba9fee80776ae5a234dba073d0538953 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:39:26 +0700
-Subject: [PATCH] feat(projects): edit workflows by Type in the project sidebar
+Subject: [PATCH 06/11] feat(projects): edit workflows by Type in the project
+ sidebar
 
 A "By Type" row under the project's workflow: summary of the rules, and for
 owners/admins a popover to pick the select property and, per option, the
@@ -57,7 +58,7 @@ index a70e5111e..4e9981f7d 100644
    async listGoals(): Promise<{ goals: Goal[] }> {
      const raw = await this.fetch<unknown>("/api/goals");
 diff --git a/packages/core/package.json b/packages/core/package.json
-index 84aaaaa46..718dd7458 100644
+index b79966ddc..e2ab6fb21 100644
 --- a/packages/core/package.json
 +++ b/packages/core/package.json
 @@ -39,6 +39,7 @@
@@ -111,10 +112,10 @@ index 000000000..082ebb9be
 +  });
 +}
 diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
-index 38bab5787..401b2e6c7 100644
+index 08de03e94..82d9d43bc 100644
 --- a/packages/views/locales/en/issues.json
 +++ b/packages/views/locales/en/issues.json
-@@ -1778,6 +1778,15 @@
+@@ -1781,6 +1781,15 @@
        "reason_label": "What needs to change?",
        "send_back_to": "Send back to {{status}}",
        "cancel": "Cancel"
@@ -131,10 +132,10 @@ index 38bab5787..401b2e6c7 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
-index 803799de0..ad1cf242f 100644
+index 43542bd64..8671e69c5 100644
 --- a/packages/views/locales/fr/issues.json
 +++ b/packages/views/locales/fr/issues.json
-@@ -1777,6 +1777,15 @@
+@@ -1780,6 +1780,15 @@
        "reason_label": "Que faut-il changer ?",
        "send_back_to": "Renvoyer à {{status}}",
        "cancel": "Annuler"
@@ -151,10 +152,10 @@ index 803799de0..ad1cf242f 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
-index 1e0c997e5..e4871c220 100644
+index 43a96c716..b36bb455c 100644
 --- a/packages/views/locales/ja/issues.json
 +++ b/packages/views/locales/ja/issues.json
-@@ -1712,6 +1712,15 @@
+@@ -1715,6 +1715,15 @@
        "reason_label": "何を変更する必要がありますか？",
        "send_back_to": "{{status}} に差し戻す",
        "cancel": "キャンセル"
@@ -171,10 +172,10 @@ index 1e0c997e5..e4871c220 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
-index 7e565c124..f1d6af56a 100644
+index 450f017ed..21e85caa2 100644
 --- a/packages/views/locales/ko/issues.json
 +++ b/packages/views/locales/ko/issues.json
-@@ -1712,6 +1712,15 @@
+@@ -1715,6 +1715,15 @@
        "reason_label": "무엇을 바꿔야 하나요?",
        "send_back_to": "{{status}}(으)로 되돌려 보내기",
        "cancel": "취소"
@@ -191,10 +192,10 @@ index 7e565c124..f1d6af56a 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
-index d6c7f5453..18391312c 100644
+index 2f7f038a8..5dbf75414 100644
 --- a/packages/views/locales/zh-Hans/issues.json
 +++ b/packages/views/locales/zh-Hans/issues.json
-@@ -1712,6 +1712,15 @@
+@@ -1715,6 +1715,15 @@
        "reason_label": "需要修改什么？",
        "send_back_to": "退回到 {{status}}",
        "cancel": "取消"
@@ -211,10 +212,10 @@ index d6c7f5453..18391312c 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
-index 3d085280e..139a4a708 100644
+index 444fc1edb..9fbdb5730 100644
 --- a/packages/views/locales/zh-Hant/issues.json
 +++ b/packages/views/locales/zh-Hant/issues.json
-@@ -1711,6 +1711,15 @@
+@@ -1714,6 +1714,15 @@
        "reason_label": "需要修改什麼？",
        "send_back_to": "退回到 {{status}}",
        "cancel": "取消"
@@ -243,10 +244,10 @@ index 2a4933fcd..9c9fba72c 100644
  vi.mock("@tanstack/react-query", () => ({
    useQuery: (options: { queryKey?: readonly unknown[] }) => {
 diff --git a/packages/views/projects/components/project-detail.tsx b/packages/views/projects/components/project-detail.tsx
-index be113f661..60350ebf1 100644
+index 9bfe389a8..6bc802f35 100644
 --- a/packages/views/projects/components/project-detail.tsx
 +++ b/packages/views/projects/components/project-detail.tsx
-@@ -29,6 +29,7 @@ import { ProjectResourcesSection } from "./project-resources-section";
+@@ -30,6 +30,7 @@ import { ProjectResourcesSection } from "./project-resources-section";
  import { ProjectStartDatePicker } from "./project-start-date-picker";
  import { ProjectDueDatePicker } from "./project-due-date-picker";
  import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
@@ -254,7 +255,7 @@ index be113f661..60350ebf1 100644
  import { ProjectWorkflowMenu } from "../../workflows/project-workflow-menu";
  import { IssueSurface } from "../../issues/surface/issue-surface";
  import { Skeleton } from "@multica/ui/components/ui/skeleton";
-@@ -107,6 +108,16 @@ function ProjectWorkflowPropRow({ project }: { project: Project }) {
+@@ -108,6 +109,16 @@ function ProjectWorkflowPropRow({ project }: { project: Project }) {
    );
  }
  
@@ -271,7 +272,7 @@ index be113f661..60350ebf1 100644
  // ProjectDetail
  
  export function ProjectDetail({ projectId }: { projectId: string }) {
-@@ -426,6 +437,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
+@@ -430,6 +441,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
              <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
            </PropRow>
            <ProjectWorkflowPropRow project={project} />

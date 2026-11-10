@@ -1,8 +1,8 @@
-From 2384031346971c781f4140aef8e4973c3f503e9b Mon Sep 17 00:00:00 2001
+From 1fef666ee53170f38384c8617de239f95c50376a Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:47:32 +0700
-Subject: [PATCH] feat(boards): a project board shows the columns of every
- workflow its rules use
+Subject: [PATCH 07/11] feat(boards): a project board shows the columns of
+ every workflow its rules use
 
 When a project sends some Types to other workflows (workflow-by-type), its
 board columns are the project workflow's steps plus each rule workflow's

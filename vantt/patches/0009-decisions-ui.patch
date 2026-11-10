@@ -1,7 +1,7 @@
-From 14e234b020db1405aedc53374a5c4a91cd2a7cd1 Mon Sep 17 00:00:00 2001
+From f7b79d5fe7635b44e281a96ea32805777be8760b Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:52:40 +0700
-Subject: [PATCH] feat(decisions): decision panel on the issue page
+Subject: [PATCH 09/11] feat(decisions): decision panel on the issue page
 
 Open decisions show above the approval panel: the question, the options with
 the recommended one marked and preselected, an optional note, and Answer.
@@ -121,7 +121,7 @@ index 000000000..ab2bfcbbc
 +  });
 +}
 diff --git a/packages/core/package.json b/packages/core/package.json
-index 718dd7458..84eae561b 100644
+index e2ab6fb21..1774d4daa 100644
 --- a/packages/core/package.json
 +++ b/packages/core/package.json
 @@ -40,6 +40,7 @@
@@ -133,7 +133,7 @@ index 718dd7458..84eae561b 100644
      "./issues/batch": "./issues/batch.ts",
      "./issues/canonical-id": "./issues/canonical-id.ts",
 diff --git a/packages/views/issues/components/issue-detail.tsx b/packages/views/issues/components/issue-detail.tsx
-index 7b6d28de1..a41f8cd79 100644
+index d26686211..b7c55fd0e 100644
 --- a/packages/views/issues/components/issue-detail.tsx
 +++ b/packages/views/issues/components/issue-detail.tsx
 @@ -15,6 +15,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
@@ -144,7 +144,7 @@ index 7b6d28de1..a41f8cd79 100644
  import {
    Archive,
    Calendar,
-@@ -3314,6 +3315,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+@@ -3353,6 +3354,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                )
              }
            />
@@ -153,10 +153,10 @@ index 7b6d28de1..a41f8cd79 100644
            <div id={descriptionSectionId}>
            {titleLazy.active && (
 diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
-index 401b2e6c7..520e75ee0 100644
+index 82d9d43bc..e9d67648d 100644
 --- a/packages/views/locales/en/issues.json
 +++ b/packages/views/locales/en/issues.json
-@@ -1787,6 +1787,13 @@
+@@ -1790,6 +1790,13 @@
        "project_default": "Project workflow",
        "cancel": "Cancel",
        "save": "Save"
@@ -171,10 +171,10 @@ index 401b2e6c7..520e75ee0 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
-index ad1cf242f..245cb39b7 100644
+index 8671e69c5..cb0ae252b 100644
 --- a/packages/views/locales/fr/issues.json
 +++ b/packages/views/locales/fr/issues.json
-@@ -1786,6 +1786,13 @@
+@@ -1789,6 +1789,13 @@
        "project_default": "Workflow du projet",
        "cancel": "Annuler",
        "save": "Enregistrer"
@@ -189,10 +189,10 @@ index ad1cf242f..245cb39b7 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
-index e4871c220..116b3d40e 100644
+index b36bb455c..2ee49eeee 100644
 --- a/packages/views/locales/ja/issues.json
 +++ b/packages/views/locales/ja/issues.json
-@@ -1721,6 +1721,13 @@
+@@ -1724,6 +1724,13 @@
        "project_default": "プロジェクトのワークフロー",
        "cancel": "キャンセル",
        "save": "保存"
@@ -207,10 +207,10 @@ index e4871c220..116b3d40e 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
-index f1d6af56a..5657b5507 100644
+index 21e85caa2..b775f8626 100644
 --- a/packages/views/locales/ko/issues.json
 +++ b/packages/views/locales/ko/issues.json
-@@ -1721,6 +1721,13 @@
+@@ -1724,6 +1724,13 @@
        "project_default": "프로젝트 워크플로",
        "cancel": "취소",
        "save": "저장"
@@ -225,10 +225,10 @@ index f1d6af56a..5657b5507 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
-index 18391312c..d468e1964 100644
+index 5dbf75414..4a39e6815 100644
 --- a/packages/views/locales/zh-Hans/issues.json
 +++ b/packages/views/locales/zh-Hans/issues.json
-@@ -1721,6 +1721,13 @@
+@@ -1724,6 +1724,13 @@
        "project_default": "项目工作流",
        "cancel": "取消",
        "save": "保存"
@@ -243,10 +243,10 @@ index 18391312c..d468e1964 100644
    },
    "hover_card": {
 diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
-index 139a4a708..c248c4b8f 100644
+index 9fbdb5730..fa5f4551f 100644
 --- a/packages/views/locales/zh-Hant/issues.json
 +++ b/packages/views/locales/zh-Hant/issues.json
-@@ -1720,6 +1720,13 @@
+@@ -1723,6 +1723,13 @@
        "project_default": "專案工作流程",
        "cancel": "取消",
        "save": "儲存"

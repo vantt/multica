@@ -1,7 +1,7 @@
-From ca724949bf87b6a1ec9cebc8ebfdaddd3e9d536d Mon Sep 17 00:00:00 2001
+From 4ad15e287f1d384b86bffdd5e0c2cf4af6c3534a Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:50:37 +0700
-Subject: [PATCH] feat(decisions): structured decisions on issues
+Subject: [PATCH 08/11] feat(decisions): structured decisions on issues
 
 Table issue_decision (add-only, no foreign keys): a question, 2-8 options
 (at most one recommended), due date, who asked (member or agent), and the
@@ -36,10 +36,10 @@ Patch-Id: decisions
  create mode 100644 server/pkg/db/queries/issue_decision.sql
 
 diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
-index 7b5a0151a..6dbe4ead1 100644
+index 4d6c9bcc1..0c102801d 100644
 --- a/server/cmd/server/router.go
 +++ b/server/cmd/server/router.go
-@@ -2031,6 +2031,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+@@ -2034,6 +2034,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
  				r.Get("/search", h.SearchIssues)
  				r.Get("/child-progress", h.ChildIssueProgress)
  				r.Get("/children", h.ListChildrenByParents)
@@ -47,7 +47,7 @@ index 7b5a0151a..6dbe4ead1 100644
  				r.Get("/grouped", h.ListGroupedIssues)
  				r.Get("/", h.ListIssues)
  				// POST twin of GET /api/issues for oversized filter sets
-@@ -2051,6 +2052,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+@@ -2054,6 +2055,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
  					r.Get("/comments", h.ListComments)
  					r.Get("/timeline", h.ListTimeline)
  					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)

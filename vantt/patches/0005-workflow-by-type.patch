@@ -1,7 +1,7 @@
-From b69b66ec01e9122301fcd0d5c3f8239cb30b0280 Mon Sep 17 00:00:00 2001
+From 926896968d9d9ef1c478e2872cd3e6190dc59842 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:39:26 +0700
-Subject: [PATCH] feat(workflow): pick a project's workflow by a select
+Subject: [PATCH 05/11] feat(workflow): pick a project's workflow by a select
  property (Type)
 
 Table project_workflow_rule (add-only, no foreign keys): in a project, an
@@ -19,6 +19,7 @@ Patch-Id: workflow-by-type
  server/internal/handler/issue.go              |   3 +-
  server/internal/handler/issue_trigger.go      |   2 +-
  .../internal/handler/issue_workflow_entry.go  |   6 +-
+ server/internal/handler/pr_auto_complete.go   |   2 +-
  server/internal/handler/property.go           |   9 +
  .../internal/handler/vantt_workflow_rules.go  | 219 ++++++++++++++++++
  .../handler/vantt_workflow_rules_test.go      |  94 ++++++++
@@ -34,7 +35,7 @@ Patch-Id: workflow-by-type
  .../pkg/db/generated/workspace_delete.sql.go  |   3 +
  .../pkg/db/queries/project_workflow_rule.sql  |  13 ++
  server/pkg/db/queries/workspace_delete.sql    |   3 +
- 19 files changed, 543 insertions(+), 6 deletions(-)
+ 20 files changed, 544 insertions(+), 7 deletions(-)
  create mode 100644 server/internal/handler/vantt_workflow_rules.go
  create mode 100644 server/internal/handler/vantt_workflow_rules_test.go
  create mode 100644 server/migrations/9005_vantt_project_workflow_rule.down.sql
@@ -45,10 +46,10 @@ Patch-Id: workflow-by-type
  create mode 100644 server/pkg/db/queries/project_workflow_rule.sql
 
 diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
-index dbc0de513..7b5a0151a 100644
+index 1b8b70712..4d6c9bcc1 100644
 --- a/server/cmd/server/router.go
 +++ b/server/cmd/server/router.go
-@@ -2171,6 +2171,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+@@ -2174,6 +2174,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
  					r.Put("/", h.UpdateProject)
  					r.Delete("/", h.DeleteProject)
  					r.Post("/workflow", h.SetProjectWorkflow)
@@ -115,8 +116,21 @@ index 342747059..f0e3b000a 100644
  	if err != nil {
  		slog.Warn("task claim: failed to load project workflow for brief injection",
  			"issue_id", uuidToString(issue.ID), "error", err)
+diff --git a/server/internal/handler/pr_auto_complete.go b/server/internal/handler/pr_auto_complete.go
+index ee9b0190b..79e57a55e 100644
+--- a/server/internal/handler/pr_auto_complete.go
++++ b/server/internal/handler/pr_auto_complete.go
+@@ -209,7 +209,7 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
+ 	// rule a manual status change follows (applyIssueWorkflow). Default and
+ 	// issues outside any project accept every status. The issue page shows
+ 	// nothing for this state: the issue just stays where it is.
+-	def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
++	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID, issue.Properties)
+ 	if err != nil {
+ 		return prAutoCompleteDecision{}, err
+ 	}
 diff --git a/server/internal/handler/property.go b/server/internal/handler/property.go
-index cfb29d294..d387aa868 100644
+index 3b89204d8..acb5d925f 100644
 --- a/server/internal/handler/property.go
 +++ b/server/internal/handler/property.go
 @@ -683,6 +683,14 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {

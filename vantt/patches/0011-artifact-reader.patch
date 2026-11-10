@@ -1,7 +1,7 @@
-From 89f8ace859f62dbcde87a449cb9db17bdb484f41 Mon Sep 17 00:00:00 2001
+From 4214cc6ce14e5d00f145df982c6cea89859b0d78 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:57:29 +0700
-Subject: [PATCH] feat(attachments): reading view for markdown documents
+Subject: [PATCH 11/11] feat(attachments): reading view for markdown documents
 
 Markdown attachments open in a reader with a reading-progress bar and, for
 documents with three or more headings, an outline beside the text on wide
@@ -36,7 +36,7 @@ index 2e8cf0541..457710239 100644
            download: "Download",
            copy_image: "Copy image",
 diff --git a/packages/views/editor/attachment-preview-modal.tsx b/packages/views/editor/attachment-preview-modal.tsx
-index 7b7792ffd..905122a10 100644
+index 0ac3dee65..568ab9125 100644
 --- a/packages/views/editor/attachment-preview-modal.tsx
 +++ b/packages/views/editor/attachment-preview-modal.tsx
 @@ -71,6 +71,7 @@ import { openExternal } from "../platform";

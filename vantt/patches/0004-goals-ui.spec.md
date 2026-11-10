@@ -27,8 +27,8 @@ Reference: Atlassian Goals, Linear initiatives.
   `core/paths/paths.ts`, `core/paths/route-icons.ts` (`Target`, `goals` keys and page),
   `core/paths/tab-subject.ts`, `core/paths/consistency.test.ts`,
   `views/layout/app-sidebar.tsx`, `views/layout/route-icon-components.tsx`,
-  `views/search/search-command.tsx` (keywords), desktop `routes.tsx`, path mocks in
-  4 view tests, locales.
+  `views/search/use-root-model.ts` (palette keywords; was `search-command.tsx` before v0.7.2), desktop `routes.tsx`, path mocks in
+  3 layout tests, locales.
 
 ## On conflict
 Re-add each registration next to `projects`. If upstream adds a page registry or

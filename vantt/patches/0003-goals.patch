@@ -1,8 +1,8 @@
-From 4653a721b9aa90e7cf5d9485041c5a684e68e3e3 Mon Sep 17 00:00:00 2001
+From 9b2d7b92c647d62dd2b66b4af8b9d8b928d5adf8 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:22:47 +0700
-Subject: [PATCH] feat(goals): goals with a number, a deadline, history and
- linked work
+Subject: [PATCH 03/11] feat(goals): goals with a number, a deadline, history
+ and linked work
 
 Tables goal, goal_value, goal_link (add-only, no foreign keys). API under
 /api/goals: list, get with history, create/update/delete (owner/admin),
@@ -45,10 +45,10 @@ Patch-Id: goals
  create mode 100644 server/pkg/db/queries/goal.sql
 
 diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
-index 1f1b70a8c..dbc0de513 100644
+index 8b9bd7896..1b8b70712 100644
 --- a/server/cmd/server/router.go
 +++ b/server/cmd/server/router.go
-@@ -2236,6 +2236,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+@@ -2239,6 +2239,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
  			// Saved issue views (MUL-4796).
  			r.Get("/api/issue-view-preferences", h.GetIssueViewPreference)
  			r.Put("/api/issue-view-preferences", h.PutIssueViewPreference)
