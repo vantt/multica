@@ -99,6 +99,8 @@ import { PAGE_GUTTER, PageHeader } from "../../layout/page-header";
 import { useTimeAgo } from "./inbox-list-item";
 import { InboxList } from "./inbox-list";
 import { InboxFilterMenu } from "./inbox-filter-menu";
+import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
+import { EMPTY_NEEDS, InboxTabs, NeedsYouContext, effectiveTab, itemsForTab, needsYouIndex, type InboxTab } from "./inbox-tabs"; // vantt inbox-split
 import { InboxContextMenuProvider } from "./inbox-context-menu";
 import { ARCHIVED_VIEW_PARAM, type InboxView } from "./inbox-view";
 import { useTypeLabels } from "./inbox-detail-label";
@@ -217,7 +219,23 @@ export function InboxPage() {
       ...filterInboxItems(lookupItems, effectiveFilters, filterContext),
     ]);
   }, [isArchivedView, selectedOnPage, filteredItems, lookupItems, effectiveFilters, filterContext]);
-  const visibleItems = isArchivedView && pinnedKey ? selectionItems : filteredItems;
+  // vantt inbox-split (D11): the active inbox shows one tab at a time.
+  const [chosenTab, setChosenTab] = useState<InboxTab | null>(null);
+  const { categoryOf: tabCategoryOf } = useIssueStatuses(wsId);
+  const needsIndex = useMemo(
+    () => needsYouIndex(rawItems, (i) => {
+      const category = i.issue_status ? tabCategoryOf(i.issue_status) : null;
+      return category === "done" || category === "closed";
+    }),
+    [rawItems, tabCategoryOf],
+  );
+  const needsCount = useMemo(() => itemsForTab(filteredItems, needsIndex, "needs").length, [filteredItems, needsIndex]);
+  const tab = effectiveTab(chosenTab, needsCount);
+  const tabItems = useMemo(
+    () => (isArchivedView ? filteredItems : itemsForTab(filteredItems, needsIndex, tab)),
+    [isArchivedView, filteredItems, needsIndex, tab],
+  );
+  const visibleItems = isArchivedView && pinnedKey ? selectionItems : tabItems;
   const selected = selectionItems.find((i) => (i.issue_id ?? i.id) === selectedKey) ?? null;
   const selectedInView = selectedOnPage ?? (isArchivedView ? lookupItems.find((i) => (i.issue_id ?? i.id) === selectedKey) : null);
   const selectionFilteredOut = !!selectedKey && !!selectedInView && !selected;
@@ -703,6 +721,7 @@ export function InboxPage() {
       </div>
     </div>
   ) : (
+    <NeedsYouContext.Provider value={isArchivedView ? EMPTY_NEEDS : needsIndex}>
     <InboxContextMenuProvider
       view={view}
       actions={{
@@ -739,12 +758,16 @@ export function InboxPage() {
         }
       />
     </InboxContextMenuProvider>
+    </NeedsYouContext.Provider>
   );
 
   const listPanel = (
     <>
       {listHeader}
       {isArchivedView && archivedBackRow}
+      {!isArchivedView && (
+        <InboxTabs tab={tab} needsCount={needsCount} fyiCount={filteredItems.length - needsCount} onChange={setChosenTab} />
+      )}
       {lookupLoading && (
         <p role="status" className="shrink-0 border-b px-3 py-2 text-caption text-muted-foreground">
           {t(($) => $.list.loading_selection)}
@@ -770,6 +793,9 @@ export function InboxPage() {
     <>
       {listHeader}
       {isArchivedView && archivedBackRow}
+      {!isArchivedView && (
+        <InboxTabs tab={tab} needsCount={needsCount} fyiCount={filteredItems.length - needsCount} onChange={setChosenTab} />
+      )}
       <div className="flex-1 min-h-0 overflow-hidden px-2 py-1">
         {Array.from({ length: 6 }).map((_, i) => (
           <div key={i} className="flex items-center gap-3 px-2 py-2.5">
