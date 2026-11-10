@@ -1770,6 +1770,28 @@
           "waiting": "En attente du retour"
         }
       }
+    },
+    "approval": {
+      "prs_label": "Pull requests",
+      "approve_on_github": "Approuver sur GitHub",
+      "pr_then_approve": "Approuvez la PR sur GitHub avec votre compte, puis Approuvez ici.",
+      "title": "En attente de votre approbation",
+      "gate_note": "Les agents ne peuvent pas faire sortir ce ticket de cette étape.",
+      "approve": "Approuver",
+      "send_back": "Renvoyer",
+      "moves_to": "Approuver le passe à {{status}}",
+      "reason_label": "Que faut-il changer ?",
+      "send_back_to": "Renvoyer à {{status}}",
+      "cancel": "Annuler"
+    },
+    "rules": {
+      "label": "Par type",
+      "none": "Identique pour chaque type",
+      "help": "Les tickets dont la propriété a l’une de ces valeurs suivent un autre workflow. Les autres suivent celui du projet.",
+      "choose_by": "Choisir le workflow selon",
+      "project_default": "Workflow du projet",
+      "cancel": "Annuler",
+      "save": "Enregistrer"
     }
   },
   "hover_card": {

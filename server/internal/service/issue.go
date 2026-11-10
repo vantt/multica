@@ -245,6 +245,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	if err != nil {
 		return IssueCreateResult{}, err
 	}
+	// vantt derived-property: e.g. Domain from Type.
+	if properties, err = ApplyDerivedProperties(ctx, qtx, p.WorkspaceID, properties); err != nil {
+		return IssueCreateResult{}, err
+	}
 
 	if p.SourceContext != nil {
 		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
@@ -858,7 +862,12 @@ func (s *IssueService) createWorkflow(ctx context.Context, qtx *db.Queries, p Is
 		}
 		projectID = parent.ProjectID
 	}
-	def, _, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID)
+	props := make(map[string]json.RawMessage, len(p.Properties))
+	for id, v := range p.Properties {
+		props[util.UUIDToString(id)] = v
+	}
+	bag, _ := json.Marshal(props)
+	def, _, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, projectID, bag)
 	return def, err
 }
 

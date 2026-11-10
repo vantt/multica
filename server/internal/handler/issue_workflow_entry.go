@@ -46,7 +46,7 @@ type workflowHandoff struct {
 // move the issue from the step it works on. It returns the handoff that write
 // triggers, or nil.
 func (h *Handler) applyIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, prev.WorkspaceID, params.ProjectID)
+	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, prev.WorkspaceID, params.ProjectID, prev.Properties)
 	if err != nil || def == nil {
 		return nil, err
 	}
@@ -130,6 +130,18 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	var gate *issueworkflow.GateError
+	if errors.As(err, &gate) {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":  gate.Error(),
+			"code":   "owner_gate",
+			"status": gate.Status,
+		})
+		return true
+	}
+	if writeSendBackLimitError(w, err) { // vantt send-back-limit
+		return true
+	}
 	var moved *issueworkflow.StepMovedError
 	if errors.As(err, &moved) {
 		writeJSON(w, http.StatusConflict, map[string]any{
@@ -141,6 +153,31 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		return true
 	}
 	return false
+}
+
+// refuseAgentLeavingGate stops an agent from moving an issue out of a step a
+// person handles, by changing its status or its project. Members are not
+// affected (vantt owner-gates).
+func (h *Handler) refuseAgentLeavingGate(ctx context.Context, prev db.Issue, params db.UpdateIssueParams, callerType string) error {
+	if callerType != "agent" {
+		return nil
+	}
+	statusChanging := params.Status.Valid && params.Status.String != prev.Status
+	projectMoving := params.ProjectID != prev.ProjectID
+	if !statusChanging && !projectMoving {
+		return nil
+	}
+	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, prev.WorkspaceID, prev.ProjectID, prev.Properties)
+	if err != nil {
+		return err
+	}
+	if issueworkflow.PersonGate(def, prev.Status, project, prev.CreatorType, prev.CreatorID) {
+		return &issueworkflow.GateError{Status: prev.Status}
+	}
+	if statusChanging && !projectMoving {
+		return h.refuseSendBackOverLimit(ctx, def, prev, params.Status.String) // vantt send-back-limit
+	}
+	return nil
 }
 
 // agentRunOnIssue returns the calling agent's run when it works on this issue,
@@ -335,7 +372,7 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, issue db.Issue) []db.A
 // legacyRuntimeRules is true for a daemon that does not advertise
 // protocol.DaemonCapabilityWorkflowStatusRulesV1; see BriefInput.
 func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue, legacyRuntimeRules bool) *TaskProjectWorkflowData {
-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
+	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID, issue.Properties)
 	if err != nil {
 		slog.Warn("task claim: failed to load project workflow for brief injection",
 			"issue_id", uuidToString(issue.ID), "error", err)

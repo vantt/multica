@@ -1,5 +1,6 @@
 "use client";
 
+import { ruleProperties, workflowRulesOptions } from "@multica/core/workflow-rules"; // vantt workflow-by-type
 import {
   issueBehavesAs,
   issueBehavesAsAny,
@@ -14,6 +15,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
+import { ApprovalPanel } from "../../workflows/approval-panel";
 import {
   Archive,
   Calendar,
@@ -2569,6 +2571,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // still carry a value written before the archive, and that row must stay
   // renderable (read-only) until someone clears it.
   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId, true));
+  // vantt workflow-by-type: the property the project's rules read (Type) always has a row.
+  const { data: detailRules } = useQuery({ ...workflowRulesOptions(wsId, issue?.project_id ?? ""), enabled: Boolean(issue?.project_id) });
+  const pinnedProperties = ruleProperties(detailRules);
 
   // Sub-issue rows only surface live definitions: the display picker offers
   // non-archived properties, and chips render only ids that resolve here.
@@ -2965,7 +2970,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             .filter(
               (p) =>
                 issue.properties?.[p.id] !== undefined ||
-                (!p.archived && visibleCustomProps.has(p.id)),
+                (!p.archived && (visibleCustomProps.has(p.id) || pinnedProperties.has(p.id))),
             )
             .map((p) => (
               <PropRow
@@ -3352,6 +3357,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               )
             }
           />
+          <ApprovalPanel issue={issue} onUpdateField={(updates) => handleUpdateField(updates)} />
           <div id={descriptionSectionId}>
           {titleLazy.active && (
             <div className={titleLazy.ready ? undefined : "hidden"}>
