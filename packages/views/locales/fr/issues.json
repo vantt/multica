@@ -1800,5 +1800,8 @@
   },
   "hover_card": {
     "created_updated": "a créé {{created}} · mis à jour {{updated}}"
+  },
+  "parent_chip": {
+    "title": "Sous-ticket de {{identifier}} · {{title}}"
   }
 }
