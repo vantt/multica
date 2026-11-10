@@ -804,6 +804,50 @@ type GithubPullRequestCheckSuite struct {
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
 }
 
+type Goal struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	ParentID         pgtype.UUID        `json:"parent_id"`
+	Title            string             `json:"title"`
+	Description      string             `json:"description"`
+	Unit             string             `json:"unit"`
+	Direction        string             `json:"direction"`
+	StartValue       float64            `json:"start_value"`
+	TargetValue      float64            `json:"target_value"`
+	CurrentValue     float64            `json:"current_value"`
+	DueDate          pgtype.Date        `json:"due_date"`
+	Status           string             `json:"status"`
+	MeasuredBy       string             `json:"measured_by"`
+	OwnerType        pgtype.Text        `json:"owner_type"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	Position         float64            `json:"position"`
+	SourceRef        pgtype.Text        `json:"source_ref"`
+	Pending          bool               `json:"pending"`
+	CurrentUpdatedAt pgtype.Timestamptz `json:"current_updated_at"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GoalLink struct {
+	GoalID      pgtype.UUID        `json:"goal_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TargetType  string             `json:"target_type"`
+	TargetID    pgtype.UUID        `json:"target_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type GoalValue struct {
+	ID          pgtype.UUID        `json:"id"`
+	GoalID      pgtype.UUID        `json:"goal_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Value       float64            `json:"value"`
+	Note        string             `json:"note"`
+	ActorType   string             `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	Synced      bool               `json:"synced"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type InboxItem struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
