@@ -185,3 +185,13 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["server/internal/service/vantt_derive.go", "server/internal/service/issue.go", "server/internal/handler/property.go"]
 test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Derived|PropertyDefinition' -count=1"
+
+[[patches]]
+id = "send-back-limit"
+name = "feat(workflow): cap how often agents send an issue back"
+patch_file = "0018-send-back-limit.patch"
+metadata_file = "0018-send-back-limit.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/handler/vantt_send_back_limit.go", "server/internal/handler/issue_workflow_entry.go", "server/cmd/server/router.go", "server/pkg/db/queries/workspace_delete.sql", "server/pkg/db/generated/workspace_delete.sql.go", "server/migrations/9009_vantt_workflow_limit.up.sql"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'SendBack|OwnerGate|WorkspaceDeletionManifest' -count=1"

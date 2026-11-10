@@ -1,0 +1,447 @@
+From a290d7ebdbdffe81ec3e8a467e95d03bd0632603 Mon Sep 17 00:00:00 2001
+From: Van Tran <trantoanvan@outlook.com>
+Date: Tue, 10 Nov 2026 21:33:49 +0700
+Subject: [PATCH] feat(workflow): cap how often agents send an issue back
+
+A workflow may set max_send_backs (GET/PUT /api/issue-workflows/{id}/limits,
+table vantt_workflow_limit). An agent moving an issue along a step's back
+edge after that many agent send-backs with no person's status move in
+between gets 409 {code: send_back_limit}; the batch endpoint skips it. A
+person's move is never refused and starts a fresh count. No limit set =
+upstream behaviour.
+
+Patch-Id: send-back-limit
+---
+ server/cmd/server/router.go                   |   2 +
+ .../internal/handler/issue_workflow_entry.go  |   6 +
+ .../internal/handler/vantt_send_back_limit.go | 192 ++++++++++++++++++
+ .../handler/vantt_send_back_limit_test.go     | 109 ++++++++++
+ .../handler/workspace_delete_manifest_test.go |   1 +
+ .../9009_vantt_workflow_limit.down.sql        |   1 +
+ .../9009_vantt_workflow_limit.up.sql          |  10 +
+ .../pkg/db/generated/workspace_delete.sql.go  |   4 +
+ server/pkg/db/queries/workspace_delete.sql    |   4 +
+ 9 files changed, 329 insertions(+)
+ create mode 100644 server/internal/handler/vantt_send_back_limit.go
+ create mode 100644 server/internal/handler/vantt_send_back_limit_test.go
+ create mode 100644 server/migrations/9009_vantt_workflow_limit.down.sql
+ create mode 100644 server/migrations/9009_vantt_workflow_limit.up.sql
+
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 720f34575..153642213 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -2167,6 +2167,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 					r.Delete("/", h.DeleteIssueWorkflow)
+ 					r.Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
+ 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
++					r.Get("/limits", h.GetIssueWorkflowLimits) // vantt send-back-limit
++					r.Put("/limits", h.SetIssueWorkflowLimits)
+ 				})
+ 			})
+ 
+diff --git a/server/internal/handler/issue_workflow_entry.go b/server/internal/handler/issue_workflow_entry.go
+index f0e3b000a..36f1b3f57 100644
+--- a/server/internal/handler/issue_workflow_entry.go
++++ b/server/internal/handler/issue_workflow_entry.go
+@@ -139,6 +139,9 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+ 		})
+ 		return true
+ 	}
++	if writeSendBackLimitError(w, err) { // vantt send-back-limit
++		return true
++	}
+ 	var moved *issueworkflow.StepMovedError
+ 	if errors.As(err, &moved) {
+ 		writeJSON(w, http.StatusConflict, map[string]any{
+@@ -171,6 +174,9 @@ func (h *Handler) refuseAgentLeavingGate(ctx context.Context, prev db.Issue, par
+ 	if issueworkflow.PersonGate(def, prev.Status, project, prev.CreatorType, prev.CreatorID) {
+ 		return &issueworkflow.GateError{Status: prev.Status}
+ 	}
++	if statusChanging && !projectMoving {
++		return h.refuseSendBackOverLimit(ctx, def, prev, params.Status.String) // vantt send-back-limit
++	}
+ 	return nil
+ }
+ 
+diff --git a/server/internal/handler/vantt_send_back_limit.go b/server/internal/handler/vantt_send_back_limit.go
+new file mode 100644
+index 000000000..db02ad2f2
+--- /dev/null
++++ b/server/internal/handler/vantt_send_back_limit.go
+@@ -0,0 +1,192 @@
++package handler
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"net/http"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/issueworkflow"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++// vantt send-back-limit: a workflow may cap how many times agents send an
++// issue back along a step's back edge (review → build, QA → build) with no
++// person moving the issue in between. Past the cap the server refuses the
++// agent's move with 409 {code: send_back_limit}; a person's move is never
++// refused and starts a fresh count. No row in vantt_workflow_limit = no cap.
++
++// SendBackLimitError refuses one more agent send-back.
++type SendBackLimitError struct {
++	Status, Back string
++	Count, Limit int
++}
++
++func (e *SendBackLimitError) Error() string {
++	return fmt.Sprintf("this issue was already sent back %d times by agents with no person in between (limit %d); "+
++		"do not send it back to %q again: leave it in %q, comment what is still in dispute and @mention a person",
++		e.Count, e.Limit, e.Back, e.Status)
++}
++
++func writeSendBackLimitError(w http.ResponseWriter, err error) bool {
++	var limit *SendBackLimitError
++	if !errors.As(err, &limit) {
++		return false
++	}
++	writeJSON(w, http.StatusConflict, map[string]any{
++		"error":  limit.Error(),
++		"code":   "send_back_limit",
++		"status": limit.Status,
++		"back":   limit.Back,
++		"count":  limit.Count,
++		"limit":  limit.Limit,
++	})
++	return true
++}
++
++// workflowSendBackLimit returns the workflow's cap, 0 when it has none.
++func (h *Handler) workflowSendBackLimit(ctx context.Context, workflowID pgtype.UUID) (int, error) {
++	var limit int
++	err := h.DB.QueryRow(ctx, `SELECT max_send_backs FROM vantt_workflow_limit WHERE workflow_id = $1`, workflowID).Scan(&limit)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return 0, nil
++	}
++	return limit, err
++}
++
++// refuseSendBackOverLimit runs for an agent's status change from prev.Status
++// to `to` inside workflow def.
++func (h *Handler) refuseSendBackOverLimit(ctx context.Context, def *issueworkflow.Definition, prev db.Issue, to string) error {
++	if def == nil || !def.ID.Valid {
++		return nil
++	}
++	step, ok := def.Step(prev.Status)
++	if !ok || step.BackStatusKey == "" || step.BackStatusKey != to {
++		return nil
++	}
++	limit, err := h.workflowSendBackLimit(ctx, def.ID)
++	if err != nil || limit == 0 {
++		return err
++	}
++	// Status moves since the last one a person made, oldest first. Each agent
++	// move along a back edge of the current workflow counts.
++	rows, err := h.DB.Query(ctx, `
++		SELECT COALESCE(details->>'from', ''), COALESCE(details->>'to', '')
++		FROM activity_log
++		WHERE issue_id = $1 AND action = 'status_changed' AND actor_type = 'agent'
++		  AND created_at > COALESCE((
++		      SELECT MAX(created_at) FROM activity_log
++		      WHERE issue_id = $1 AND action = 'status_changed' AND actor_type = 'member'
++		  ), '-infinity'::timestamptz)`, prev.ID)
++	if err != nil {
++		return err
++	}
++	defer rows.Close()
++	count := 0
++	for rows.Next() {
++		var from, toKey string
++		if err := rows.Scan(&from, &toKey); err != nil {
++			return err
++		}
++		if s, ok := def.Step(from); ok && s.BackStatusKey != "" && s.BackStatusKey == toKey {
++			count++
++		}
++	}
++	if err := rows.Err(); err != nil {
++		return err
++	}
++	if count >= limit {
++		return &SendBackLimitError{Status: prev.Status, Back: to, Count: count, Limit: limit}
++	}
++	return nil
++}
++
++type workflowLimitsBody struct {
++	MaxSendBacks *int `json:"max_send_backs"`
++}
++
++// GetIssueWorkflowLimits answers {max_send_backs: n | null}. Any member reads.
++func (h *Handler) GetIssueWorkflowLimits(w http.ResponseWriter, r *http.Request) {
++	workspaceID := h.resolveWorkspaceID(r)
++	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
++	if !ok {
++		return
++	}
++	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
++		return
++	}
++	idUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workflow id")
++	if !ok {
++		return
++	}
++	if _, err := h.Queries.GetIssueWorkflow(r.Context(), db.GetIssueWorkflowParams{ID: idUUID, WorkspaceID: wsUUID}); err != nil {
++		writeError(w, http.StatusNotFound, "workflow not found")
++		return
++	}
++	limit, err := h.workflowSendBackLimit(r.Context(), idUUID)
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to read workflow limits")
++		return
++	}
++	body := workflowLimitsBody{}
++	if limit > 0 {
++		body.MaxSendBacks = &limit
++	}
++	writeJSON(w, http.StatusOK, body)
++}
++
++// SetIssueWorkflowLimits sets or clears (null or 0) the cap. Same people who
++// may edit the workflow.
++func (h *Handler) SetIssueWorkflowLimits(w http.ResponseWriter, r *http.Request) {
++	workspaceID := h.resolveWorkspaceID(r)
++	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
++	if !ok {
++		return
++	}
++	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
++	if !ok {
++		return
++	}
++	idUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workflow id")
++	if !ok {
++		return
++	}
++	var body workflowLimitsBody
++	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	if body.MaxSendBacks != nil && *body.MaxSendBacks < 0 {
++		writeError(w, http.StatusBadRequest, "max_send_backs must be 0 (no limit) or more")
++		return
++	}
++	current, err := h.Queries.GetIssueWorkflow(r.Context(), db.GetIssueWorkflowParams{ID: idUUID, WorkspaceID: wsUUID})
++	if err != nil {
++		writeError(w, http.StatusNotFound, "workflow not found")
++		return
++	}
++	if !canEditIssueWorkflow(member, current) {
++		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
++		return
++	}
++	if body.MaxSendBacks == nil || *body.MaxSendBacks == 0 {
++		_, err = h.DB.Exec(r.Context(), `DELETE FROM vantt_workflow_limit WHERE workflow_id = $1`, idUUID)
++	} else {
++		_, err = h.DB.Exec(r.Context(), `
++			INSERT INTO vantt_workflow_limit (workflow_id, max_send_backs) VALUES ($1, $2)
++			ON CONFLICT (workflow_id) DO UPDATE SET max_send_backs = EXCLUDED.max_send_backs, updated_at = now()`,
++			idUUID, *body.MaxSendBacks)
++	}
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to save workflow limits")
++		return
++	}
++	if body.MaxSendBacks != nil && *body.MaxSendBacks == 0 {
++		body.MaxSendBacks = nil
++	}
++	writeJSON(w, http.StatusOK, body)
++}
+diff --git a/server/internal/handler/vantt_send_back_limit_test.go b/server/internal/handler/vantt_send_back_limit_test.go
+new file mode 100644
+index 000000000..efee1953e
+--- /dev/null
++++ b/server/internal/handler/vantt_send_back_limit_test.go
+@@ -0,0 +1,109 @@
++package handler
++
++import (
++	"context"
++	"net/http"
++	"testing"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++// vantt send-back-limit: agents may send an issue back along a back edge at
++// most max_send_backs times with no person moving it in between.
++
++func sendBackProject(t *testing.T, agentID string) (projectID, workflowID string) {
++	t.Helper()
++	projectID = deliveryProject(t, "Send-back project "+workflowTestSuffix(), agentID)
++	setColumnHandoff(t, projectID, "in_review", map[string]any{
++		"handler": map[string]any{"type": "agent", "id": agentID}, "instructions": "Review the PR.",
++		"back_status_key": "in_progress",
++	}).Want(http.StatusOK)
++	workflowID = projectWorkflowID(t, projectID)
++	t.Cleanup(func() {
++		testPool.Exec(context.Background(), `DELETE FROM vantt_workflow_limit WHERE workflow_id = $1`, workflowID)
++	})
++	return projectID, workflowID
++}
++
++func setSendBackLimit(t *testing.T, workflowID string, body map[string]any) *testutil.Response {
++	t.Helper()
++	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+workflowID+"/limits", body), "id", workflowID)
++	return testutil.Call(t, testHandler.SetIssueWorkflowLimits, req)
++}
++
++// recordStatusMove writes the timeline row the activity listener writes.
++func recordStatusMove(t *testing.T, issueID, actorType, actorID, from, to string) {
++	t.Helper()
++	if _, err := testPool.Exec(context.Background(), `
++		INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
++		VALUES ($1, $2, $3, $4, 'status_changed', jsonb_build_object('from', $5::text, 'to', $6::text))`,
++		testWorkspaceID, issueID, actorType, actorID, from, to); err != nil {
++		t.Fatalf("record status move: %v", err)
++	}
++}
++
++func TestAgentSendBackLimit(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID, workflowID := sendBackProject(t, agentID)
++	setSendBackLimit(t, workflowID, map[string]any{"max_send_backs": 2}).Want(http.StatusOK)
++
++	issueID := dbfx.Issue(t, "disputed", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	taskID := runningTask(t, agentID, issueID, "in_review")
++	// Two send-backs already, plus forward moves that do not count.
++	for i := 0; i < 2; i++ {
++		recordStatusMove(t, issueID, "agent", agentID, "in_review", "in_progress")
++		recordStatusMove(t, issueID, "agent", agentID, "in_progress", "in_review")
++	}
++
++	body := agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_progress"}).Want(http.StatusConflict).Map()
++	if body["code"] != "send_back_limit" || body["status"] != "in_review" || body["back"] != "in_progress" {
++		t.Fatalf("refusal = %v", body)
++	}
++	if status, _, _ := issueStatusAndAssignee(t, issueID); status != "in_review" {
++		t.Fatalf("status = %q, the refused move must not apply", status)
++	}
++	// Other moves out of the step are not send-backs.
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"title": "disputed, noted"}).Want(http.StatusOK)
++
++	// A person's move starts a fresh count.
++	recordStatusMove(t, issueID, "member", testUserID, "in_progress", "in_review")
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++}
++
++func TestMemberSendBackHasNoLimit(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID, workflowID := sendBackProject(t, agentID)
++	setSendBackLimit(t, workflowID, map[string]any{"max_send_backs": 1}).Want(http.StatusOK)
++
++	issueID := dbfx.Issue(t, "member sends back", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	recordStatusMove(t, issueID, "agent", agentID, "in_review", "in_progress")
++	recordStatusMove(t, issueID, "agent", agentID, "in_progress", "in_review")
++	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++}
++
++func TestSendBackWithoutLimitIsUpstream(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID, workflowID := sendBackProject(t, agentID)
++
++	issueID := dbfx.Issue(t, "no limit", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	taskID := runningTask(t, agentID, issueID, "in_review")
++	for i := 0; i < 5; i++ {
++		recordStatusMove(t, issueID, "agent", agentID, "in_review", "in_progress")
++	}
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++
++	// Clearing a limit (0) answers null.
++	setSendBackLimit(t, workflowID, map[string]any{"max_send_backs": 3}).Want(http.StatusOK)
++	got := setSendBackLimit(t, workflowID, map[string]any{"max_send_backs": 0}).Want(http.StatusOK).Map()
++	if got["max_send_backs"] != nil {
++		t.Fatalf("cleared limit = %v, want null", got["max_send_backs"])
++	}
++	read := testutil.Call(t, testHandler.GetIssueWorkflowLimits,
++		withURLParam(workflowRequest("GET", "/api/issue-workflows/"+workflowID+"/limits", nil), "id", workflowID)).Want(http.StatusOK).Map()
++	if read["max_send_backs"] != nil {
++		t.Fatalf("read limit = %v, want null", read["max_send_backs"])
++	}
++}
+diff --git a/server/internal/handler/workspace_delete_manifest_test.go b/server/internal/handler/workspace_delete_manifest_test.go
+index 671310cb9..e83d5e73c 100644
+--- a/server/internal/handler/workspace_delete_manifest_test.go
++++ b/server/internal/handler/workspace_delete_manifest_test.go
+@@ -122,6 +122,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
+ 	"goal_value":                         workspaceDelete,
+ 	"project_workflow_rule":              workspaceDelete,
+ 	"issue_decision":                     workspaceDelete,
++	"vantt_workflow_limit":               workspaceDelete, // by its workflow's workspace
+ 	"quick_action":                       workspaceDelete,
+ 	"runtime_profile":                    workspaceDelete,
+ 	"schema_migrations":                  workspaceDeleteKeep,
+diff --git a/server/migrations/9009_vantt_workflow_limit.down.sql b/server/migrations/9009_vantt_workflow_limit.down.sql
+new file mode 100644
+index 000000000..52ca9c2ce
+--- /dev/null
++++ b/server/migrations/9009_vantt_workflow_limit.down.sql
+@@ -0,0 +1 @@
++DROP TABLE IF EXISTS vantt_workflow_limit;
+diff --git a/server/migrations/9009_vantt_workflow_limit.up.sql b/server/migrations/9009_vantt_workflow_limit.up.sql
+new file mode 100644
+index 000000000..0d35bef90
+--- /dev/null
++++ b/server/migrations/9009_vantt_workflow_limit.up.sql
+@@ -0,0 +1,10 @@
++-- vantt send-back-limit: how many times agents may send an issue back along a
++-- step's back edge, with no person moving it in between, before the server
++-- refuses. One row per workflow; no row = no limit (upstream behaviour). Kept
++-- out of issue_workflow.steps so the workflow editor, which rebuilds steps,
++-- never drops it. No foreign keys.
++CREATE TABLE IF NOT EXISTS vantt_workflow_limit (
++    workflow_id    UUID PRIMARY KEY,
++    max_send_backs INT NOT NULL CHECK (max_send_backs >= 1),
++    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
++);
+diff --git a/server/pkg/db/generated/workspace_delete.sql.go b/server/pkg/db/generated/workspace_delete.sql.go
+index 02e739038..bf838befd 100644
+--- a/server/pkg/db/generated/workspace_delete.sql.go
++++ b/server/pkg/db/generated/workspace_delete.sql.go
+@@ -428,6 +428,10 @@ deleted_project_workflow_rules AS (
+ deleted_issue_decisions AS (
+     DELETE FROM issue_decision WHERE issue_decision.workspace_id = $1
+ ),
++deleted_vantt_workflow_limits AS (
++    DELETE FROM vantt_workflow_limit
++    WHERE vantt_workflow_limit.workflow_id IN (SELECT id FROM issue_workflow WHERE issue_workflow.workspace_id = $1)
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+diff --git a/server/pkg/db/queries/workspace_delete.sql b/server/pkg/db/queries/workspace_delete.sql
+index 732a25c93..a1403465c 100644
+--- a/server/pkg/db/queries/workspace_delete.sql
++++ b/server/pkg/db/queries/workspace_delete.sql
+@@ -441,6 +441,10 @@ deleted_project_workflow_rules AS (
+ deleted_issue_decisions AS (
+     DELETE FROM issue_decision WHERE issue_decision.workspace_id = $1
+ ),
++deleted_vantt_workflow_limits AS (
++    DELETE FROM vantt_workflow_limit
++    WHERE vantt_workflow_limit.workflow_id IN (SELECT id FROM issue_workflow WHERE issue_workflow.workspace_id = $1)
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+-- 
+2.53.0
+

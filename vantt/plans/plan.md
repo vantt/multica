@@ -18,7 +18,7 @@ inventing; every patch has a spec and aims upstream (proposals upstream need the
 |---|---|---|---|
 | [01](phase-01-foundation.md) | — | Fork, upstream remote, catchup, CI, images | done |
 | [02](phase-02-fork-identity.md) | F0 | Fork version shown; owner instance runs fork images | done (v0.7.2-vantt.3 live) |
-| [03](phase-03-owner-gates.md) | F1 | Server-enforced owner gates, Waiting on me, approval panel | done: 0001 server, 0002 panel, 0015 PRs + Approve on GitHub; Waiting on me = saved view from packages (no patch) |
+| [03](phase-03-owner-gates.md) | F1 | Server-enforced owner gates, Waiting on me, approval panel | done: 0001 server, 0002 panel, 0015 PRs + Approve on GitHub; Waiting on me = saved view from packages (no patch); 0018 send-back-limit (`max_send_backs` enforced: agents bouncing an issue back past the cap get 409) |
 | [04](phase-04-goals.md) | F2 | Goals with numbers | done: 0003 server, 0004 UI; the project repo is the source (plans/goals.md), two-way, repo wins |
 | [05](phase-05-workflow-by-type.md) | F3 | Workflow chosen by a select property (Type) | done: 0005 server, 0006 UI; opc.mjs `workflow_rules` |
 | [06](phase-06-boards.md) | F4 | Jira-style boards | done: 0007 columns for every rule workflow, 0014 lanes (To do · In progress · Awaiting approval · Done) for boards of several workflows + days in column; saved boards/swimlanes/filters = Multica built-ins (see 0007 spec) |
