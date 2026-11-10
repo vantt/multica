@@ -1715,6 +1715,15 @@
       "reason_label": "需要修改什么？",
       "send_back_to": "退回到 {{status}}",
       "cancel": "取消"
+    },
+    "rules": {
+      "label": "按类型",
+      "none": "所有类型相同",
+      "help": "属性为以下值之一的事项遵循另一个工作流，其余遵循项目的工作流。",
+      "choose_by": "按此属性选择工作流",
+      "project_default": "项目工作流",
+      "cancel": "取消",
+      "save": "保存"
     }
   },
   "hover_card": {
