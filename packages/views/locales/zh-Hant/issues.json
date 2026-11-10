@@ -1742,5 +1742,13 @@
     "status_bar": "依狀態的子任務：{{summary}}",
     "days": "{{count}}天",
     "days_title": "處於 {{status}} {{count}} 天"
+  },
+  "board_lanes": {
+    "todo": "待辦",
+    "in_progress": "進行中",
+    "awaiting_approval": "待審批",
+    "done": "已完成",
+    "gate_hint": "只有審批人能把卡片移出此欄",
+    "drop_blocked": "此任務的工作流程在該欄沒有步驟"
   }
 }

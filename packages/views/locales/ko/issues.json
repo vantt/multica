@@ -1743,5 +1743,13 @@
     "status_bar": "상태별 하위 이슈: {{summary}}",
     "days": "{{count}}일",
     "days_title": "{{status}} 상태로 {{count}}일"
+  },
+  "board_lanes": {
+    "todo": "할 일",
+    "in_progress": "진행 중",
+    "awaiting_approval": "승인 대기",
+    "done": "완료",
+    "gate_hint": "이 열에서는 승인자만 카드를 옮길 수 있습니다",
+    "drop_blocked": "이 이슈의 워크플로에는 이 열의 단계가 없습니다"
   }
 }
