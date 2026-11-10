@@ -22,3 +22,7 @@ Owner instance runs `v0.7.1-vantt.N`, everything behaves as before, version show
 ## Rollback
 Remove the patch from `series.toml` (or set the owner instance back to the previous
 `MULTICA_IMAGE_TAG`). Migrations only add, so the previous image keeps working on the data.
+
+## Current (2026-11-10)
+Owner instance runs `v0.7.2-vantt.3` (upstream v0.7.2 + 11 patches). Backups:
+`~/multica-spike/backups/pre-fork-*.sql.gz`, `pre-v072-*.sql.gz`; previous env `.env.bak-vantt2`.

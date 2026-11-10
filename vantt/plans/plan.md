@@ -1,6 +1,6 @@
 ---
 title: vantt/multica fork — minimal Multica patches that follow upstream
-status: in progress
+status: done except phase 09 (budgets, deferred by the owner)
 source: fgOPC multica/plans/2026-11-10-multica-fork.md (owner-approved 2026-11-10)
 design: ../design/ (approved D1–D7)
 ---
@@ -17,9 +17,9 @@ inventing; every patch has a spec and aims upstream (proposals upstream need the
 | Phase | Patch | What | Status |
 |---|---|---|---|
 | [01](phase-01-foundation.md) | — | Fork, upstream remote, catchup, CI, images | done |
-| [02](phase-02-fork-identity.md) | F0 | Fork version shown; owner instance runs fork images | done (v0.7.1-vantt.2 live) |
+| [02](phase-02-fork-identity.md) | F0 | Fork version shown; owner instance runs fork images | done (v0.7.2-vantt.3 live) |
 | [03](phase-03-owner-gates.md) | F1 | Server-enforced owner gates, Waiting on me, approval panel | done: 0001 server, 0002 panel; Waiting on me = saved view from packages (no patch) |
-| [04](phase-04-goals.md) | F2 | Goals with numbers | done: 0003 server, 0004 UI |
+| [04](phase-04-goals.md) | F2 | Goals with numbers | done: 0003 server, 0004 UI; the project repo is the source (plans/goals.md), two-way, repo wins |
 | [05](phase-05-workflow-by-type.md) | F3 | Workflow chosen by a select property (Type) | done: 0005 server, 0006 UI; opc.mjs `workflow_rules` |
 | [06](phase-06-boards.md) | F4 | Jira-style boards | done: 0007 columns for every rule workflow; saved boards/swimlanes/filters = Multica built-ins (see 0007 spec) |
 | [07](phase-07-decisions.md) | F5 | Structured decisions, one-tap answers | done: 0008 server, 0009 UI |
