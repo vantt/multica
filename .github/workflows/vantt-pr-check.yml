@@ -1,0 +1,49 @@
+name: vantt-pr-check
+
+# Commits on main of the fork must not touch upstream files: Multica code changes
+# only through vantt/patches. Merge commits are ignored (a sync with upstream brings
+# upstream files in through upstream's own commits). Pattern from vantt/obsidian-hybrid-search.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vantt-pr-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fork-files-only:
+    if: github.repository == 'vantt/multica'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Fetch upstream main and tags
+        run: |
+          git remote add -t main upstream https://github.com/multica-ai/multica
+          git fetch --quiet --tags upstream +refs/heads/main:refs/remotes/upstream/main
+      - name: Fork commits touch only fork files
+        run: |
+          allowed='^(vantt/|\.claude/skills/multica-|\.github/workflows/vantt-)'
+          bad=$(git -c core.quotepath=off log --no-merges --name-only --format='commit %h %s' upstream/main..HEAD \
+            | awk -v re="$allowed" '/^commit /{c=$0; next} NF && $0 !~ re {print c " -> " $0}')
+          if [ -n "$bad" ]; then
+            echo "::error::Commits on main touch upstream files. Change Multica code only through vantt/patches."
+            echo "$bad"
+            exit 1
+          fi
+          echo "All fork commits touch only vantt/, .claude/skills/multica-*, .github/workflows/vantt-*."
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate series.toml (dry run)
+        run: node vantt/scripts/catchup.mjs --dry-run

@@ -1,0 +1,103 @@
+name: vantt-catchup
+
+# Build the release branch vantt/<tag> (upstream tag + patch series), push it with
+# its v<tag>-vantt.N tag, then build the images. Runs by hand, or when the series or
+# the pin changes on main. No cron: the fork follows upstream when the owner decides.
+# On failure it opens one issue "[catchup] <ref>: <status>" (label catchup) and
+# comments on it after that.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream tag (empty = vantt/upstream.pin)
+        required: false
+        default: ''
+      skip_tests:
+        description: Skip patch test_command
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ['vantt/patches/**', 'vantt/upstream.pin', 'vantt/scripts/catchup.mjs']
+
+permissions:
+  contents: write
+  issues: write
+  packages: write
+
+concurrency:
+  group: vantt-catchup
+  cancel-in-progress: false
+
+jobs:
+  catchup:
+    if: github.repository == 'vantt/multica'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.run.outputs.version }}
+      existing: ${{ steps.run.outputs.existing }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+      - name: Fetch fork tags
+        run: git fetch --quiet --tags origin
+      - name: Run catchup
+        id: run
+        env:
+          REF: ${{ inputs.ref }}
+          SKIP: ${{ inputs.skip_tests }}
+        run: |
+          git config user.name "vantt-bot"
+          git config user.email "vantt-bot@users.noreply.github.com"
+          args=()
+          [ -n "$REF" ] && args+=(--ref "$REF")
+          [ "$SKIP" = "true" ] && args+=(--skip-tests)
+          set +e
+          node vantt/scripts/catchup.mjs "${args[@]}" | tee /tmp/catchup.log
+          code=${PIPESTATUS[0]}
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          [ "$code" = "0" ] || exit "$code"
+          line=$(tail -n 1 /tmp/catchup.log)
+          echo "version=$(echo "$line" | jq -r .version)" >> "$GITHUB_OUTPUT"
+          echo "existing=$(echo "$line" | jq -r .existing)" >> "$GITHUB_OUTPUT"
+          echo "branch=$(echo "$line" | jq -r .branch)" >> "$GITHUB_OUTPUT"
+      - name: Push release branch and tag
+        if: steps.run.outputs.existing == 'false'
+        run: |
+          git push --force origin "${{ steps.run.outputs.branch }}"
+          git push origin "${{ steps.run.outputs.version }}"
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref }}
+        run: |
+          ref=${REF:-$(cat vantt/upstream.pin)}
+          title="[catchup] $ref: exit ${{ steps.run.outputs.code || 'error' }}"
+          body="Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          $(tail -n 40 /tmp/catchup.log 2>/dev/null)"
+          gh label create catchup --color B60205 2>/dev/null || true
+          num=$(gh issue list --label catchup --state open --search "in:title [catchup] $ref" --json number -q '.[0].number')
+          if [ -n "$num" ]; then gh issue comment "$num" --body "$body"; else gh issue create --label catchup --title "$title" --body "$body"; fi
+
+  images:
+    needs: catchup
+    if: needs.catchup.outputs.existing == 'false'
+    uses: ./.github/workflows/vantt-images.yml
+    with:
+      version: ${{ needs.catchup.outputs.version }}
+    permissions:
+      contents: read
+      packages: write
