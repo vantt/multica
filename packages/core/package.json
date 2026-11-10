@@ -42,6 +42,7 @@
     "./workflow-rules": "./workflow-rules/index.ts",
     "./decisions": "./decisions/index.ts",
     "./board-gates": "./board-gates/index.ts",
+    "./triage": "./triage/index.ts",
     "./issues": "./issues/index.ts",
     "./issues/batch": "./issues/batch.ts",
     "./issues/canonical-id": "./issues/canonical-id.ts",

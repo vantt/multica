@@ -100,6 +100,7 @@ import {
 } from "../issues/components/pickers/custom-property-picker";
 import { IssuePickerModal } from "./issue-picker-modal";
 import { useT } from "../i18n";
+import { TriageSuggestBar } from "./triage-suggest"; // vantt triage-suggest
 import { SourceContextPreviewCard, useSourceContextFailureMessage } from "./source-context-preview";
 import { useIssueLimitUpgradePrompt } from "./use-issue-limit-upgrade-prompt";
 
@@ -1046,6 +1047,15 @@ export function ManualCreatePanel({
                 onExpandedChange={onSourceContextExpandedChange}
               />
             )}
+
+            {/* vantt triage-suggest (D12): project and Type the decision model is sure of. */}
+            <TriageSuggestBar
+              title={title}
+              projectId={projectId}
+              typePropertyValue={(id) => propertyValues[id]}
+              onApplyProject={(id) => updateProject(id)}
+              onApplyType={(propertyId, optionId) => updatePropertyValue(propertyId, optionId)}
+            />
 
             {/* Pre-trigger preview — a passive caption above the toolbar; reveals
                 when an agent assignee will pick the issue up. */}

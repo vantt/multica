@@ -1820,5 +1820,11 @@
     "done": "Terminé",
     "gate_hint": "Seul l'approbateur sort les cartes de cette colonne",
     "drop_blocked": "Le workflow de ce ticket n'a aucune étape dans cette colonne"
+  },
+  "triage": {
+    "suggested": "Suggéré",
+    "apply_both": "Appliquer les deux",
+    "dismiss": "Masquer la suggestion",
+    "source": "Clef · {{percent}} · d'après les projets, Types et tickets récents de l'espace"
   }
 }

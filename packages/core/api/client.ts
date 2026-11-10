@@ -4130,6 +4130,16 @@ export class ApiClient {
     });
   }
 
+  // vantt triage-suggest (patch 0021, design D12): project and Type the
+  // workspace's decision model is sure of; {} when off or unsure.
+  async triageSuggest(input: { title: string; description?: string; project_id?: string; has_type?: boolean }): Promise<import("../triage").TriageSuggestion> {
+    const raw = await this.fetch<Record<string, unknown>>("/api/issues/triage-suggest", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return (raw && typeof raw === "object" ? raw : {}) as import("../triage").TriageSuggestion;
+  }
+
   // vantt board-gates (design D3): when each open issue entered its status.
   async listIssueStatusSince(projectId: string | null): Promise<{ issues: Record<string, import("../board-gates").StatusSince> }> {
     const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";

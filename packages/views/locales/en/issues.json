@@ -1821,5 +1821,11 @@
     "done": "Done",
     "gate_hint": "Only the approver moves cards out of this column",
     "drop_blocked": "This issue's workflow has no step in that column"
+  },
+  "triage": {
+    "suggested": "Suggested",
+    "apply_both": "Apply both",
+    "dismiss": "Hide suggestion",
+    "source": "Clef · {{percent}} · from the workspace's projects, Types and recent issues"
   }
 }

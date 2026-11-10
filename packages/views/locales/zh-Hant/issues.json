@@ -1754,5 +1754,11 @@
     "done": "已完成",
     "gate_hint": "只有審批人能把卡片移出此欄",
     "drop_blocked": "此任務的工作流程在該欄沒有步驟"
+  },
+  "triage": {
+    "suggested": "建議",
+    "apply_both": "全部套用",
+    "dismiss": "隱藏建議",
+    "source": "Clef · {{percent}} · 根據工作區的專案、Type 與近期問題"
   }
 }

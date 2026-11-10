@@ -1755,5 +1755,11 @@
     "done": "완료",
     "gate_hint": "이 열에서는 승인자만 카드를 옮길 수 있습니다",
     "drop_blocked": "이 이슈의 워크플로에는 이 열의 단계가 없습니다"
+  },
+  "triage": {
+    "suggested": "제안",
+    "apply_both": "둘 다 적용",
+    "dismiss": "제안 숨기기",
+    "source": "Clef · {{percent}} · 워크스페이스의 프로젝트, Type, 최근 이슈 기반"
   }
 }
