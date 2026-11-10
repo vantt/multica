@@ -1705,6 +1705,16 @@
           "waiting": "返答待ち"
         }
       }
+    },
+    "approval": {
+      "title": "あなたの承認待ち",
+      "gate_note": "エージェントはこの課題をこのステップから移動できません。",
+      "approve": "承認",
+      "send_back": "差し戻し",
+      "moves_to": "承認すると {{status}} に移動します",
+      "reason_label": "何を変更する必要がありますか？",
+      "send_back_to": "{{status}} に差し戻す",
+      "cancel": "キャンセル"
     }
   },
   "hover_card": {
