@@ -4112,6 +4112,24 @@ export class ApiClient {
   }
 
   // Project resources
+  // vantt decisions (patch decisions-ui, F5).
+  async listIssueDecisions(issueId: string): Promise<{ decisions: import("../decisions").IssueDecision[] }> {
+    const raw = await this.fetch<{ decisions?: unknown }>(`/api/issues/${issueId}/decisions`);
+    const list = Array.isArray(raw?.decisions) ? (raw.decisions as import("../decisions").IssueDecision[]) : [];
+    return {
+      decisions: list
+        .filter((d) => typeof d?.id === "string" && typeof d?.question === "string")
+        .map((d) => ({ ...d, options: Array.isArray(d.options) ? d.options : [], answer_note: d.answer_note ?? "" })),
+    };
+  }
+
+  async answerIssueDecision(issueId: string, decisionId: string, optionId: string, note: string): Promise<unknown> {
+    return this.fetch(`/api/issues/${issueId}/decisions/${decisionId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ option_id: optionId, note }),
+    });
+  }
+
   // vantt workflow-by-type (patch workflow-by-type-ui, F3).
   async listProjectWorkflowRules(projectId: string): Promise<{ rules: { property_id: string; option_id: string; workflow_id: string }[] }> {
     const raw = await this.fetch<{ rules?: unknown }>(`/api/projects/${projectId}/workflow-rules`);

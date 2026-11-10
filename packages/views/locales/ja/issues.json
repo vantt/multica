@@ -1724,6 +1724,13 @@
       "project_default": "プロジェクトのワークフロー",
       "cancel": "キャンセル",
       "save": "保存"
+    },
+    "decision": {
+      "title": "あなたの判断",
+      "due": "期限 {{date}}",
+      "recommended": "推奨",
+      "note_placeholder": "メモを追加（任意）",
+      "answer": "回答：{{option}}"
     }
   },
   "hover_card": {
