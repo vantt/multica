@@ -27,9 +27,12 @@ const UPSTREAM_URL = 'https://github.com/multica-ai/multica.git';
 const STATE = path.join(ROOT, '.git', 'vantt-catchup-state.json');
 const SERIES = 'vantt/patches/series.toml';
 const EXIT = { ok: 0, usage: 2, conflict: 3, tests: 5, error: 7 };
-// Fork-owned paths copied onto the release branch (the same set vantt-pr-check allows on main).
-const FORK_PATHS = ['vantt', '.claude/skills', '.github/workflows'];
-const FORK_FILE = /^(vantt\/|\.claude\/skills\/multica-|\.github\/workflows\/vantt-)/;
+// Fork-owned paths copied onto the release branch. Workflows stay on main only: the
+// release branch carries none, so CI's token can push it (GitHub refuses a token
+// without the `workflows` permission any change to workflow files), and the image
+// workflow runs from main and checks out the release tag.
+const FORK_PATHS = ['vantt', '.claude/skills'];
+const FORK_FILE = /^(vantt\/|\.claude\/skills\/multica-)/;
 
 const git = (args, opts = {}) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim();
 const tryGit = (args) => spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
@@ -164,7 +167,7 @@ function main() {
   for (const f of git(['ls-files', '.github/workflows']).split('\n').filter(Boolean)) git(['rm', '--quiet', f]);
   for (const f of forkFiles) { mkdirSync(path.dirname(path.join(ROOT, f)), { recursive: true }); cpSync(path.join(tmp, f), path.join(ROOT, f)); }
   if (forkFiles.length) git(['add', '-f', '--', ...forkFiles]);
-  git(['commit', '--quiet', '--allow-empty', '-m', 'chore(vantt): fork maintenance files; drop upstream workflows']);
+  git(['commit', '--quiet', '--allow-empty', '-m', 'chore(vantt): fork maintenance files; no workflows on release branches']);
   rmSync(tmp, { recursive: true, force: true });
 
   const state = { tag, branch, from, hash, next: 0, conflict: null };

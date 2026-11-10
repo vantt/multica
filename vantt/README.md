@@ -5,7 +5,7 @@ untouched on `main`; fork changes live only in:
 
 - `vantt/`: patches, catchup script, plans, design, reviews.
 - `.claude/skills/multica-*`: agent instructions (catchup).
-- `.github/workflows/vantt-*`: fork CI. Upstream workflows are disabled on this fork.
+- `.github/workflows/vantt-*`: fork CI, on `main` only (release branches carry no workflows). Upstream workflows are disabled on this fork.
 
 Layout copied from [vantt/herdr](https://github.com/vantt/herdr) and
 [vantt/obsidian-hybrid-search](https://github.com/vantt/obsidian-hybrid-search).
