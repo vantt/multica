@@ -118,5 +118,10 @@
     "unarchive_failed": "보관 해제에 실패했습니다",
     "archived_load_failed": "보관된 알림을 불러오지 못했습니다",
     "filters_load_failed": "필터를 불러올 수 없습니다"
+  },
+  "tabs": {
+    "label": "받은함 보기",
+    "needs_you": "나에게 필요",
+    "for_your_info": "참고용"
   }
 }

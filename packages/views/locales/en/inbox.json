@@ -120,5 +120,10 @@
     "unarchive_failed": "Failed to unarchive",
     "archived_load_failed": "Failed to load archived notifications",
     "filters_load_failed": "Could not load filters"
+  },
+  "tabs": {
+    "label": "Inbox views",
+    "needs_you": "Needs you",
+    "for_your_info": "For your info"
   }
 }

@@ -118,5 +118,10 @@
     "unarchive_failed": "取消歸檔失敗",
     "archived_load_failed": "無法載入已歸檔通知",
     "filters_load_failed": "無法載入篩選項"
+  },
+  "tabs": {
+    "label": "收件匣檢視",
+    "needs_you": "需要你處理",
+    "for_your_info": "供你知悉"
   }
 }

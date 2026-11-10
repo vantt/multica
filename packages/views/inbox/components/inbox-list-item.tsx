@@ -11,6 +11,7 @@ import { Archive, ArchiveRestore } from "@multica/ui/icons";
 import type { InboxItem } from "@multica/core/types";
 import type { InboxView } from "./inbox-view";
 import { InboxDetailLabel, useTypeLabels } from "./inbox-detail-label";
+import { NeedsYouChip } from "./inbox-tabs"; // vantt inbox-split
 import {
   getInboxDisplayTitle,
   isAutopilotQuotaNotice,
@@ -193,6 +194,7 @@ export function InboxListItem({
         </div>
         <div className="mt-0.5 flex items-center justify-between gap-2">
           <p className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-caption ${showUnread ? "text-muted-foreground" : "text-muted-foreground"}`}>
+            <NeedsYouChip item={item} />
             <InboxDetailLabel item={item} />
           </p>
           <div className="flex shrink-0 items-center gap-1.5">
