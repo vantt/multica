@@ -24,7 +24,7 @@ inventing; every patch has a spec and aims upstream (proposals upstream need the
 | [06](phase-06-boards.md) | F4 | Jira-style boards: saved boards, automatic columns, swimlanes, quick filters | todo |
 | [07](phase-07-decisions.md) | F5 | Structured decisions, one-tap answers | todo |
 | [08](phase-08-parent-child-reader.md) | F7, F8 | Parent/child clarity; artifact reading page (design first) | todo |
-| [09](phase-09-budgets.md) | F6 | Budgets with caps (last) | todo |
+| [09](phase-09-budgets.md) | F6 | Budgets with caps | **deferred** (owner, 2026-11-10) |
 | [10](phase-10-upstream-catchup.md) | — | Review upstream v0.7.2, catch up, keep patches green | todo |
 
 Each phase: read the design, write the patch spec (`vantt/patches/NNNN-<id>.spec.md`),

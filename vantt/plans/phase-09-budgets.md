@@ -1,4 +1,4 @@
-# Phase 09 — F6 budgets (last)
+# Phase 09 — F6 budgets — DEFERRED (owner, 2026-11-10; not scheduled)
 
 ## Reference
 Paperclip `budget_policies`, `budget_incidents`.
