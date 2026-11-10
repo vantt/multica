@@ -1755,5 +1755,11 @@
     "done": "完了",
     "gate_hint": "この列から動かせるのは承認者だけです",
     "drop_blocked": "この課題のワークフローにはこの列のステップがありません"
+  },
+  "triage": {
+    "suggested": "提案",
+    "apply_both": "両方を適用",
+    "dismiss": "提案を隠す",
+    "source": "Clef · {{percent}} · ワークスペースのプロジェクト、Type、最近の課題から"
   }
 }
