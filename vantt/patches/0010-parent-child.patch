@@ -1,4 +1,4 @@
-From 79232a976eda486e1e3825cea420a688830153e3 Mon Sep 17 00:00:00 2001
+From 25c6159411a0a78df915ac5dc9fde0baf14152a1 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:55:15 +0700
 Subject: [PATCH 10/11] feat(issues): show a sub-issue's parent on board cards

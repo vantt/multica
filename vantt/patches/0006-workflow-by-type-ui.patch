@@ -1,4 +1,4 @@
-From 5c01d480cb0fbfe18d57818a0462017450e80324 Mon Sep 17 00:00:00 2001
+From 571f6071284afb90b81aede08512261e0bd6fe16 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:39:26 +0700
 Subject: [PATCH 06/11] feat(projects): edit workflows by Type in the project

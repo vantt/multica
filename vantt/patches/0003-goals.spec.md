@@ -55,7 +55,9 @@ Each project keeps goals, portfolio, plans and progress in its own git repo
   written back); `goal_value.synced` (false when a person entered it in the UI).
 - An agent (the PM) may create/update goals that carry `source_ref`, clear `pending`, add
   values with `recorded_at` (the repo row's date) and `POST /values/synced`. A person's
-  edit or value on a repo goal sets `pending` / `synced=false`. A goal created in the UI
+  edit or value on a repo goal sets `pending` / `synced=false`. A value sent with `recorded_at` is a
+  mirror of a repo row (keeps the date, `synced`); any writer may send `pending: false` (the owner
+  running the sync by hand mirrors like the PM). A goal created in the UI
   starts `pending` until the PM writes it into the repo.
 
 ## Workspace deletion
