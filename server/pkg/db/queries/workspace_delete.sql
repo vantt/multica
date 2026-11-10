@@ -426,6 +426,15 @@ deleted_squad_members AS (
 deleted_project_resources AS (
     DELETE FROM project_resource WHERE workspace_id = $1
 ),
+deleted_goal_links AS (
+    DELETE FROM goal_link WHERE goal_link.workspace_id = $1
+),
+deleted_goal_values AS (
+    DELETE FROM goal_value WHERE goal_value.workspace_id = $1
+),
+deleted_goals AS (
+    DELETE FROM goal WHERE goal.workspace_id = $1
+),
 deleted_autopilot_collaborators AS (
     DELETE FROM autopilot_collaborator
     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
