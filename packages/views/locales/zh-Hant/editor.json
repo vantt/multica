@@ -178,5 +178,9 @@
     "clear_filter": "清除篩選",
     "no_matches": "沒有匹配的行",
     "close": "關閉"
+  },
+  "reader": {
+    "outline": "本頁目錄",
+    "progress": "閱讀進度"
   }
 }

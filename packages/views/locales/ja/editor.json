@@ -178,5 +178,9 @@
     "clear_filter": "絞り込みを解除",
     "no_matches": "一致する行がありません",
     "close": "閉じる"
+  },
+  "reader": {
+    "outline": "このページの目次",
+    "progress": "読了の進み具合"
   }
 }
