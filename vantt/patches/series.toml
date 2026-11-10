@@ -35,3 +35,13 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["packages/views/workflows/approval-panel.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/views/locales/*/issues.json"]
 test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows/approval-panel.test.tsx locales"
+
+[[patches]]
+id = "goals"
+name = "feat(goals): goals with a number, a deadline, history and linked work"
+patch_file = "0003-goals.patch"
+metadata_file = "0003-goals.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/migrations/9001_vantt_goal*", "server/pkg/db/queries/goal.sql", "server/pkg/db/generated/goal.sql.go", "server/pkg/db/generated/models.go", "server/internal/handler/vantt_goal.go", "server/cmd/server/router.go"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Goal' -count=1"

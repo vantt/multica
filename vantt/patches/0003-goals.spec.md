@@ -1,4 +1,6 @@
-# Patch 0003 — goals (F2) · design D1, D2
+# Patch 0003 — goals (F2, server) · design D1, D2
+
+UI is patch 0004 goals-ui.
 
 ## Reference
 Atlassian Goals (status On track / At risk / Off track, regular updates, goal tree),
@@ -19,18 +21,18 @@ owner) — without numbers; we add target/current/unit/direction/due.
 ### Health (computed, never stored)
 - `progress` = (current − start) / (target − start), clamped 0..1 (direction-aware).
 - `expected` = elapsed share of [created_at, due_date].
-- `on_track` when progress ≥ expected − 0.1; `at_risk` when ≥ expected − 0.25;
-  else `off_track`. No due date → `no_target_date`.
+- ratio = progress / expected: `on_track` ≥ 0.9, `at_risk` ≥ 0.6, else `off_track`; before 5%
+  of the time is used everything is `on_track`. No due date → `no_target_date`.
 - `update_due` when measured_by = manual and current_updated_at older than 7 days.
 - Closed statuses (achieved, missed, cancelled) report their status instead.
 
 ### API (workspace-scoped, members read, owner/admin or goal owner write)
-- `GET/POST /api/goals`, `GET/PATCH/DELETE /api/goals/{id}` (delete = cancelled+archived? no:
-  real delete only when nothing links to it).
+- `GET/POST /api/goals`, `GET/PATCH/DELETE /api/goals/{id}` (delete refused while the goal has
+  child goals; its links and history are deleted with it).
 - `POST /api/goals/{id}/values` `{value, note}` → appends history, updates current.
   Agents may call it (Phương's daily script) when `measured_by = script`.
 - `PUT /api/goals/{id}/links` `{links:[{target_type,target_id}]}`.
-- `GET /api/goals?project_id=` and `GET /api/issues/{id}/goals` for chips.
+- Links come with every goal in the list, so clients resolve chips without another call.
 
 ### UI (D1, D2)
 - Sidebar "Goals". List: summary tiles (off track, on track, update due, open work without
