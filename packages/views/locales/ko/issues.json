@@ -1712,6 +1712,15 @@
       "reason_label": "무엇을 바꿔야 하나요?",
       "send_back_to": "{{status}}(으)로 되돌려 보내기",
       "cancel": "취소"
+    },
+    "rules": {
+      "label": "유형별",
+      "none": "모든 유형에 동일",
+      "help": "속성이 이 값 중 하나인 이슈는 다른 워크플로를 따릅니다. 나머지는 프로젝트 워크플로를 따릅니다.",
+      "choose_by": "워크플로 선택 기준",
+      "project_default": "프로젝트 워크플로",
+      "cancel": "취소",
+      "save": "저장"
     }
   },
   "hover_card": {
