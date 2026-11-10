@@ -21,6 +21,7 @@ import type {
   Issue,
   IssueAssigneeType,
   IssueStatus,
+  IssueWorkflow,
   Project,
   IssueProperty,
 } from "@multica/core/types";
@@ -33,6 +34,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { BoardColumn, BOARD_CARD_WIDTH, type BoardColumnGroup } from "./board-column";
 import { BoardWorkflowContext, type BoardWorkflowContextValue } from "./board-workflow-context";
 import {
+  defaultWorkflow,
   resolveProjectWorkflow,
   stepHandsOff,
   useIssueWorkflows,
@@ -75,6 +77,8 @@ import {
   projectGroupId,
 } from "../utils/drag-utils";
 import { useStatusLabel } from "../utils/status-label";
+import { statusSinceOptions } from "@multica/core/board-gates"; // vantt board-lanes
+import { BoardLaneContext, buildLaneGroups, lanePages, resolveLaneGroup, useBoardLanes, type Lane } from "./board-lanes"; // vantt board-lanes
 
 function isStatusGroup(
   group: BoardColumnGroup,
@@ -447,12 +451,59 @@ function BoardViewImpl({
       ]),
     ) as Record<string, IssueGroupPageState>;
   }, [groupBranches]);
+  // vantt board-lanes (D3d Automatic): several workflows -> four lanes.
+  const boardLanes = useBoardLanes(boardWsId, projectId);
+  // Project workflows (MUL-7420): a card can only move to a status its
+  // project's workflow lists, and a project board names each step's handler.
+  const { workflows } = useIssueWorkflows(boardWsId);
+  const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
+  const workflowOfIssue = useCallback(
+    (issue: Issue | null | undefined) => {
+      if (!issue?.project_id) return null;
+      if (boardLanes?.workflowOf && issue.project_id === projectId) return boardLanes.workflowOf(issue); // vantt board-lanes
+      return resolveProjectWorkflow(
+        workflows,
+        workspaceProjects?.find((p) => p.id === issue.project_id),
+      );
+    },
+    [workflows, workspaceProjects, boardLanes, projectId],
+  );
+  // Automatic columns (D3d): the workflows of the cards on the board (after
+  // filters). Several -> four lanes; one -> that workflow's steps.
+  const inUse = useMemo(() => {
+    const ids = new Map<string, IssueWorkflow>();
+    for (const issue of issues) {
+      const wf = workflowOfIssue(issue) ?? defaultWorkflow(workflows);
+      if (wf) ids.set(wf.id, wf);
+    }
+    return [...ids.values()];
+  }, [issues, workflowOfIssue, workflows]);
+  const laneMode = grouping === "status" && boardLanes !== null && inUse.length > 1;
+  const boardStatuses = useMemo(() => {
+    if (!boardLanes || inUse.length !== 1) return visibleStatuses;
+    const keys = new Set(inUse[0]!.steps.map((step) => step.status_key));
+    return visibleStatuses.filter((status) => keys.has(status));
+  }, [boardLanes, inUse, visibleStatuses]);
+  const { data: statusSince } = useQuery({ ...statusSinceOptions(boardWsId, projectId ?? null), enabled: laneMode });
+  const laneGroups = useMemo(
+    () =>
+      laneMode
+        ? buildLaneGroups(boardStatuses, catalog.categoryOf, boardLanes!.gates, (lane: Lane) => t(($) => $.board_lanes[lane]), statusSince)
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [laneMode, boardStatuses, catalog, boardLanes?.gates.join(","), statusSince, t],
+  );
+  const pagination = useMemo(
+    () => (laneGroups ? { ...(groupPagination ?? {}), ...lanePages(laneGroups, statusPagination) } : groupPagination),
+    [laneGroups, groupPagination, statusPagination],
+  );
   const groups = useMemo(
     () => {
       const built =
+        laneGroups ??
         hydratedAssigneeGroups ??
         hydratedProjectGroups ??
-        buildGroups(issues, visibleStatuses, grouping, {
+        buildGroups(issues, boardStatuses, grouping, {
           getActorName,
           groupingProperty,
           projectMap,
@@ -462,10 +513,10 @@ function BoardViewImpl({
         });
       return built.map((group) => ({
         ...group,
-        totalCount: groupPagination?.[group.id]?.total ?? group.totalCount,
+        totalCount: pagination?.[group.id]?.total ?? group.totalCount,
       }));
     },
-    [hydratedAssigneeGroups, hydratedProjectGroups, issues, visibleStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
+    [laneGroups, pagination, hydratedAssigneeGroups, hydratedProjectGroups, issues, boardStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
   );
   const groupIds = useMemo(
     () => new Set(groups.map((group) => group.id)),
@@ -489,20 +540,6 @@ function BoardViewImpl({
     anchors: ReturnType<typeof getMoveAnchors>;
   } | null>(null);
 
-  // Project workflows (MUL-7420): a card can only move to a status its
-  // project's workflow lists, and a project board names each step's handler.
-  const { workflows } = useIssueWorkflows(boardWsId);
-  const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
-  const workflowOfIssue = useCallback(
-    (issue: Issue | null | undefined) => {
-      if (!issue?.project_id) return null;
-      return resolveProjectWorkflow(
-        workflows,
-        workspaceProjects?.find((p) => p.id === issue.project_id),
-      );
-    },
-    [workflows, workspaceProjects],
-  );
   const scopeProject = projectId ? workspaceProjects?.find((p) => p.id === projectId) ?? null : null;
   const activeWorkflow = workflowOfIssue(activeIssue);
   const activeProject = activeIssue?.project_id
@@ -602,7 +639,11 @@ function BoardViewImpl({
         const activeCol = findColumn(prev, activeId, groupIds);
         const overCol = findColumn(prev, overId, groupIds);
         if (!activeCol || !overCol || activeCol === overCol) return prev;
-        const targetStatus = groups.find((group) => group.id === overCol)?.status;
+        const targetStatus = resolveLaneGroup(
+          groups.find((group) => group.id === overCol),
+          issueMapRef.current.get(activeId),
+          workflowOfIssue(issueMapRef.current.get(activeId)),
+        )?.status;
         if (targetStatus && catalog.entryOf(targetStatus)?.archived_at) return prev;
         if (targetStatus && !workflowAllowsStatus(workflowOfIssue(issueMapRef.current.get(activeId)), targetStatus)) {
           return prev;
@@ -667,9 +708,14 @@ function BoardViewImpl({
         resetColumns();
         return;
       }
-      const finalGroup = groupMap.get(finalCol);
+      const finalGroup = resolveLaneGroup(
+        groupMap.get(finalCol),
+        issueMapRef.current.get(activeId),
+        workflowOfIssue(issueMapRef.current.get(activeId)),
+      );
       if (!finalGroup) {
         resetColumns();
+        if (finalGroup === null) toast.info(t(($) => $.board_lanes.drop_blocked));
         return;
       }
 
@@ -813,6 +859,7 @@ function BoardViewImpl({
 
   return (
     <BoardWorkflowContext.Provider value={boardWorkflow}>
+    <BoardLaneContext.Provider value={laneMode}>
     <DndContext
       sensors={sensors}
       collisionDetection={collisionDetection}
@@ -866,7 +913,7 @@ function BoardViewImpl({
                 sortLabel={sortLabel}
               />
             ) : (
-              groupPagination?.[group.id] ? (
+              pagination?.[group.id] ? (
                 <ServerPaginatedBoardColumn
                   key={group.id}
                   group={group}
@@ -874,7 +921,7 @@ function BoardViewImpl({
                   issueMap={issueMapRef.current}
                   childProgressMap={childProgressMap}
                   projectMap={projectMap}
-                  page={groupPagination[group.id]!}
+                  page={pagination[group.id]!}
                   projectId={projectId}
                   onCreateIssue={onCreateIssue}
                   sortLabel={sortLabel}
@@ -922,6 +969,7 @@ function BoardViewImpl({
         ) : null}
       </DragOverlay>
     </DndContext>
+    </BoardLaneContext.Provider>
     <WorkflowHandoffConfirmDialog
       issue={pendingHandoff?.issue ?? null}
       toStatus={pendingHandoff?.status ?? ""}
