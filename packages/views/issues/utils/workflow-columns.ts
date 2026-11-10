@@ -40,5 +40,13 @@ export function useColumnWorkflow(
   const { data: rules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
   if (hasStatusFilter) return { workflow: null };
   if (projectId) return { workflow: mergeRuleWorkflows(projectWorkflow, rules ?? [], workflows) };
-  return { workflow: defaultWorkflow(workflows) };
+  // vantt board-lanes: the workspace board ("All issues", D3) lists the steps of
+  // every workflow, so issues in any workflow's status are loaded; the board
+  // folds them into lanes.
+  const base = defaultWorkflow(workflows);
+  if (workflows.length > 1) {
+    const all = workflows.map((w) => ({ property_id: "", option_id: "", workflow_id: w.id }));
+    return { workflow: mergeRuleWorkflows(base, all, workflows) };
+  }
+  return { workflow: base };
 }
