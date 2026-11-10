@@ -1,4 +1,4 @@
-From 4ad15e287f1d384b86bffdd5e0c2cf4af6c3534a Mon Sep 17 00:00:00 2001
+From 77426c5bc5bd47dcc25dac3214b78087e79e12f9 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:50:37 +0700
 Subject: [PATCH 08/11] feat(decisions): structured decisions on issues
@@ -36,7 +36,7 @@ Patch-Id: decisions
  create mode 100644 server/pkg/db/queries/issue_decision.sql
 
 diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
-index 4d6c9bcc1..0c102801d 100644
+index df9cf2369..0a1dcfc57 100644
 --- a/server/cmd/server/router.go
 +++ b/server/cmd/server/router.go
 @@ -2034,6 +2034,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
@@ -721,10 +721,10 @@ index 000000000..271af512c
 +	return items, nil
 +}
 diff --git a/server/pkg/db/generated/models.go b/server/pkg/db/generated/models.go
-index 8c6825841..dde447a83 100644
+index 7f5932f8b..d92120ff6 100644
 --- a/server/pkg/db/generated/models.go
 +++ b/server/pkg/db/generated/models.go
-@@ -919,6 +919,23 @@ type IssueChildEvent struct {
+@@ -922,6 +922,23 @@ type IssueChildEvent struct {
  	ProcessedAt  pgtype.Timestamptz `json:"processed_at"`
  }
  

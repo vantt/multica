@@ -1,4 +1,4 @@
-From 926896968d9d9ef1c478e2872cd3e6190dc59842 Mon Sep 17 00:00:00 2001
+From 01acc3e41c022056927a53bee7d873b97d9268de Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:39:26 +0700
 Subject: [PATCH 05/11] feat(workflow): pick a project's workflow by a select
@@ -46,7 +46,7 @@ Patch-Id: workflow-by-type
  create mode 100644 server/pkg/db/queries/project_workflow_rule.sql
 
 diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
-index 1b8b70712..4d6c9bcc1 100644
+index 49a0f656b..df9cf2369 100644
 --- a/server/cmd/server/router.go
 +++ b/server/cmd/server/router.go
 @@ -2174,6 +2174,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
@@ -638,10 +638,10 @@ index 000000000..fb9dedbdb
 @@ -0,0 +1 @@
 +CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_project_workflow_rule_workflow ON project_workflow_rule (workspace_id, workflow_id);
 diff --git a/server/pkg/db/generated/models.go b/server/pkg/db/generated/models.go
-index 3f8c49204..8c6825841 100644
+index 10451c526..7f5932f8b 100644
 --- a/server/pkg/db/generated/models.go
 +++ b/server/pkg/db/generated/models.go
-@@ -1425,6 +1425,16 @@ type ProjectResource struct {
+@@ -1428,6 +1428,16 @@ type ProjectResource struct {
  	CreatedBy    pgtype.UUID        `json:"created_by"`
  }
  

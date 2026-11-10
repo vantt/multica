@@ -1,4 +1,4 @@
-From 4214cc6ce14e5d00f145df982c6cea89859b0d78 Mon Sep 17 00:00:00 2001
+From 41df96365918e949f3118983cf586654808d1696 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:57:29 +0700
 Subject: [PATCH 11/11] feat(attachments): reading view for markdown documents

@@ -1,4 +1,4 @@
-From d7f306792177de8bac661a3c09854d126e154b74 Mon Sep 17 00:00:00 2001
+From 7b7b27bbb2497f438892f3b44f67e48bfbb05306 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:31:04 +0700
 Subject: [PATCH 04/11] feat(goals): Goals page and goal detail on web and
@@ -16,19 +16,19 @@ Patch-Id: goals-ui
  apps/desktop/src/renderer/src/routes.tsx      |  12 +
  .../(dashboard)/goals/[id]/page.tsx           |   9 +
  .../(dashboard)/goals/page.tsx                |   7 +
- packages/core/api/client.ts                   |  25 ++
+ packages/core/api/client.ts                   |  25 +
  packages/core/goals/index.ts                  |   3 +
  packages/core/goals/mutations.ts              |  32 ++
- packages/core/goals/queries.ts                |  50 +++
+ packages/core/goals/queries.ts                |  50 ++
  packages/core/goals/schemas.test.ts           |  40 ++
- packages/core/goals/schemas.ts                |  63 +++
- packages/core/goals/types.ts                  |  75 ++++
+ packages/core/goals/schemas.ts                |  66 +++
+ packages/core/goals/types.ts                  |  81 ++++
  packages/core/package.json                    |   1 +
  packages/core/paths/consistency.test.ts       |   1 +
  packages/core/paths/paths.ts                  |   2 +
  packages/core/paths/route-icons.ts            |   4 +
  packages/core/paths/tab-subject.ts            |   2 +
- packages/views/goals/goals-page.tsx           | 416 ++++++++++++++++++
+ packages/views/goals/goals-page.tsx           | 435 ++++++++++++++++++
  packages/views/goals/index.ts                 |   1 +
  packages/views/layout/app-sidebar.test.tsx    |   1 +
  packages/views/layout/app-sidebar.tsx         |   3 +
@@ -36,20 +36,20 @@ Patch-Id: goals-ui
  .../layout/global-shortcuts.history.test.tsx  |   1 +
  .../views/layout/route-icon-components.tsx    |   2 +
  packages/views/locales/en/layout.json         |   3 +-
- packages/views/locales/en/projects.json       |  49 +++
+ packages/views/locales/en/projects.json       |  51 ++
  packages/views/locales/fr/layout.json         |   3 +-
- packages/views/locales/fr/projects.json       |  49 +++
+ packages/views/locales/fr/projects.json       |  51 ++
  packages/views/locales/ja/layout.json         |   3 +-
- packages/views/locales/ja/projects.json       |  49 +++
+ packages/views/locales/ja/projects.json       |  51 ++
  packages/views/locales/ko/layout.json         |   3 +-
- packages/views/locales/ko/projects.json       |  49 +++
+ packages/views/locales/ko/projects.json       |  51 ++
  packages/views/locales/zh-Hans/layout.json    |   3 +-
- packages/views/locales/zh-Hans/projects.json  |  49 +++
+ packages/views/locales/zh-Hans/projects.json  |  51 ++
  packages/views/locales/zh-Hant/layout.json    |   3 +-
- packages/views/locales/zh-Hant/projects.json  |  49 +++
+ packages/views/locales/zh-Hant/projects.json  |  51 ++
  packages/views/package.json                   |   1 +
  packages/views/search/use-root-model.ts       |   1 +
- 37 files changed, 1069 insertions(+), 6 deletions(-)
+ 37 files changed, 1109 insertions(+), 6 deletions(-)
  create mode 100644 apps/desktop/src/renderer/src/pages/goal-detail-page.tsx
  create mode 100644 apps/web/app/[workspaceSlug]/(dashboard)/goals/[id]/page.tsx
  create mode 100644 apps/web/app/[workspaceSlug]/(dashboard)/goals/page.tsx
@@ -337,10 +337,10 @@ index 000000000..335bfbe74
 +});
 diff --git a/packages/core/goals/schemas.ts b/packages/core/goals/schemas.ts
 new file mode 100644
-index 000000000..f04962dde
+index 000000000..e7a929e52
 --- /dev/null
 +++ b/packages/core/goals/schemas.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,66 @@
 +import { z } from "zod";
 +import type { Goal, GoalDetail } from "./types";
 +
@@ -375,6 +375,8 @@ index 000000000..f04962dde
 +  links: z
 +    .array(z.object({ target_type: z.enum(["project", "issue"]), target_id: z.string() }))
 +    .catch([]),
++  source_ref: optStr,
++  pending: z.boolean().catch(false),
 +  progress: num,
 +  expected: optNum,
 +  // Unknown health values from a newer server read as on-track-neutral.
@@ -396,6 +398,7 @@ index 000000000..f04962dde
 +        note: str,
 +        actor_type: str,
 +        actor_id: optStr,
++        synced: z.boolean().catch(true),
 +        created_at: str,
 +      }),
 +    )
@@ -406,10 +409,10 @@ index 000000000..f04962dde
 +export const EMPTY_GOAL_DETAIL: GoalDetail | null = null;
 diff --git a/packages/core/goals/types.ts b/packages/core/goals/types.ts
 new file mode 100644
-index 000000000..9c7b4984b
+index 000000000..7d961b844
 --- /dev/null
 +++ b/packages/core/goals/types.ts
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,81 @@
 +/**
 + * vantt goals (patch goals-ui, F2): results with a number and a deadline that
 + * work moves. Health is computed by the server. Reference: Atlassian Goals.
@@ -451,6 +454,10 @@ index 000000000..9c7b4984b
 +  created_at: string;
 +  updated_at: string;
 +  links: GoalLink[];
++  /** Where the goal lives in the project repo (the source of truth), e.g. plans/goals.md#G1. */
++  source_ref: string | null;
++  /** Changed in the UI and not yet written back to the repo. */
++  pending: boolean;
 +  progress: number;
 +  expected: number | null;
 +  health: GoalHealth;
@@ -465,6 +472,8 @@ index 000000000..9c7b4984b
 +  note: string;
 +  actor_type: string;
 +  actor_id: string | null;
++  /** false: entered in the UI, not yet written back to the repo. */
++  synced: boolean;
 +  created_at: string;
 +}
 +
@@ -573,10 +582,10 @@ index 93cf6f5af..735347020 100644
      case "agents":
 diff --git a/packages/views/goals/goals-page.tsx b/packages/views/goals/goals-page.tsx
 new file mode 100644
-index 000000000..197e3b65f
+index 000000000..b0c0d7e0a
 --- /dev/null
 +++ b/packages/views/goals/goals-page.tsx
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,435 @@
 +"use client";
 +
 +import { useMemo, useState } from "react";
@@ -649,6 +658,22 @@ index 000000000..197e3b65f
 +  );
 +}
 +
++/** Where the goal lives in the repo, and whether UI changes still wait to be written there. */
++function RepoSource({ goal, unsynced = 0 }: { goal: Goal; unsynced?: number }) {
++  const { t } = useT("projects");
++  const waiting = goal.pending || unsynced > 0 || !goal.source_ref;
++  return (
++    <span className="inline-flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
++      {goal.source_ref ? <code className="rounded bg-muted px-1 py-0.5">{goal.source_ref}</code> : null}
++      {waiting && (
++        <span className="rounded-full bg-amber-100 px-2 py-0.5 font-medium text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
++          {t(($) => $.goals.waiting_repo)}
++        </span>
++      )}
++    </span>
++  );
++}
++
 +function ProgressBar({ goal }: { goal: Goal }) {
 +  return (
 +    <div className="h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden>
@@ -697,6 +722,7 @@ index 000000000..197e3b65f
 +      </PageHeader>
 +      <div className={cn(PAGE_RAIL, PAGE_GUTTER, "flex flex-col gap-4 overflow-y-auto py-5")}>
 +        <p className="text-caption text-muted-foreground">{t(($) => $.goals.subtitle)}</p>
++        <p className="text-caption text-muted-foreground">{t(($) => $.goals.repo_note)}</p>
 +        {creating && <NewGoalForm goals={goals} onDone={() => setCreating(false)} />}
 +        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
 +          <Tile label={t(($) => $.goals.health.off_track)} value={count((g) => g.health === "off_track")} tone="text-red-700 dark:text-red-400" />
@@ -728,6 +754,7 @@ index 000000000..197e3b65f
 +                      {goal.due_date && (
 +                        <div className="text-caption text-muted-foreground">{t(($) => $.goals.due, { date: goal.due_date })}</div>
 +                      )}
++                      <RepoSource goal={goal} />
 +                    </td>
 +                    <td className="w-56 px-3 py-2.5">
 +                      <div className="mb-1 flex justify-between text-caption">
@@ -929,6 +956,7 @@ index 000000000..197e3b65f
 +      <div className={cn(PAGE_RAIL, PAGE_GUTTER, "flex max-w-5xl flex-col gap-5 overflow-y-auto py-5")}>
 +        <div className="flex flex-wrap items-center gap-3">
 +          <HealthPill goal={goal} />
++          <RepoSource goal={goal} unsynced={history.filter((h) => !h.synced).length} />
 +          {goal.due_date && <span className="text-caption text-muted-foreground">{t(($) => $.goals.due, { date: goal.due_date })}</span>}
 +        </div>
 +        <div className="flex flex-wrap items-baseline gap-2">
@@ -1099,10 +1127,10 @@ index 76abed8af..c8304df6b 100644
    "tab": {
      "issue": "Issue",
 diff --git a/packages/views/locales/en/projects.json b/packages/views/locales/en/projects.json
-index ecb8aa14d..f67c10097 100644
+index ecb8aa14d..0a43bf302 100644
 --- a/packages/views/locales/en/projects.json
 +++ b/packages/views/locales/en/projects.json
-@@ -182,5 +182,54 @@
+@@ -182,5 +182,56 @@
      "direction_desc": "Descending",
      "section_columns": "Columns",
      "view": "View"
@@ -1154,7 +1182,9 @@ index ecb8aa14d..f67c10097 100644
 +      "achieved": "Achieved",
 +      "missed": "Missed",
 +      "cancelled": "Cancelled"
-+    }
++    },
++    "waiting_repo": "Waiting to be written to the repo",
++    "repo_note": "Goals live in each project's repo (plans/goals.md). Changes made here are written back by the PM."
    }
  }
 diff --git a/packages/views/locales/fr/layout.json b/packages/views/locales/fr/layout.json
@@ -1172,10 +1202,10 @@ index a9837df86..af912f632 100644
    "tab": {
      "issue": "Tâche",
 diff --git a/packages/views/locales/fr/projects.json b/packages/views/locales/fr/projects.json
-index f1978fa49..729b102e4 100644
+index f1978fa49..46e6ba87e 100644
 --- a/packages/views/locales/fr/projects.json
 +++ b/packages/views/locales/fr/projects.json
-@@ -182,5 +182,54 @@
+@@ -182,5 +182,56 @@
      "direction_desc": "Décroissant",
      "section_columns": "Colonnes",
      "view": "Vue"
@@ -1227,7 +1257,9 @@ index f1978fa49..729b102e4 100644
 +      "achieved": "Atteint",
 +      "missed": "Manqué",
 +      "cancelled": "Annulé"
-+    }
++    },
++    "waiting_repo": "En attente d’écriture dans le dépôt",
++    "repo_note": "Les objectifs vivent dans le dépôt de chaque projet (plans/goals.md). Les changements faits ici y sont réécrits par le PM."
    }
  }
 diff --git a/packages/views/locales/ja/layout.json b/packages/views/locales/ja/layout.json
@@ -1245,10 +1277,10 @@ index 2b566c01d..7f17e4f78 100644
    "tab": {
      "issue": "タスク",
 diff --git a/packages/views/locales/ja/projects.json b/packages/views/locales/ja/projects.json
-index b4730e602..d93dd9152 100644
+index b4730e602..bd5051b1b 100644
 --- a/packages/views/locales/ja/projects.json
 +++ b/packages/views/locales/ja/projects.json
-@@ -180,5 +180,54 @@
+@@ -180,5 +180,56 @@
      "direction_desc": "降順",
      "section_columns": "列",
      "view": "ビュー"
@@ -1300,7 +1332,9 @@ index b4730e602..d93dd9152 100644
 +      "achieved": "達成",
 +      "missed": "未達",
 +      "cancelled": "中止"
-+    }
++    },
++    "waiting_repo": "リポジトリへの書き戻し待ち",
++    "repo_note": "目標は各プロジェクトのリポジトリ（plans/goals.md）にあります。ここでの変更は PM が書き戻します。"
    }
  }
 diff --git a/packages/views/locales/ko/layout.json b/packages/views/locales/ko/layout.json
@@ -1318,10 +1352,10 @@ index a277f707f..d28ca179d 100644
    "tab": {
      "issue": "태스크",
 diff --git a/packages/views/locales/ko/projects.json b/packages/views/locales/ko/projects.json
-index acc280157..faced7d59 100644
+index acc280157..863a36c29 100644
 --- a/packages/views/locales/ko/projects.json
 +++ b/packages/views/locales/ko/projects.json
-@@ -180,5 +180,54 @@
+@@ -180,5 +180,56 @@
      "direction_desc": "내림차순",
      "section_columns": "열",
      "view": "보기"
@@ -1373,7 +1407,9 @@ index acc280157..faced7d59 100644
 +      "achieved": "달성",
 +      "missed": "미달",
 +      "cancelled": "취소됨"
-+    }
++    },
++    "waiting_repo": "저장소에 기록 대기 중",
++    "repo_note": "목표는 각 프로젝트 저장소(plans/goals.md)에 있습니다. 여기서 바꾼 내용은 PM이 다시 기록합니다."
    }
  }
 diff --git a/packages/views/locales/zh-Hans/layout.json b/packages/views/locales/zh-Hans/layout.json
@@ -1391,10 +1427,10 @@ index b68080c43..1c3864013 100644
    "tab": {
      "issue": "任务",
 diff --git a/packages/views/locales/zh-Hans/projects.json b/packages/views/locales/zh-Hans/projects.json
-index b8b6d8772..cd7a5f117 100644
+index b8b6d8772..8758696fb 100644
 --- a/packages/views/locales/zh-Hans/projects.json
 +++ b/packages/views/locales/zh-Hans/projects.json
-@@ -180,5 +180,54 @@
+@@ -180,5 +180,56 @@
      "direction_desc": "降序",
      "section_columns": "列",
      "view": "视图"
@@ -1446,7 +1482,9 @@ index b8b6d8772..cd7a5f117 100644
 +      "achieved": "已达成",
 +      "missed": "未达成",
 +      "cancelled": "已取消"
-+    }
++    },
++    "waiting_repo": "等待写回仓库",
++    "repo_note": "目标保存在各项目的仓库中（plans/goals.md）。在这里的修改由 PM 写回仓库。"
    }
  }
 diff --git a/packages/views/locales/zh-Hant/layout.json b/packages/views/locales/zh-Hant/layout.json
@@ -1464,10 +1502,10 @@ index 70741113f..e92e6a391 100644
    "tab": {
      "issue": "任務",
 diff --git a/packages/views/locales/zh-Hant/projects.json b/packages/views/locales/zh-Hant/projects.json
-index 4ba3e4269..7cd2e370f 100644
+index 4ba3e4269..b56b838e0 100644
 --- a/packages/views/locales/zh-Hant/projects.json
 +++ b/packages/views/locales/zh-Hant/projects.json
-@@ -180,5 +180,54 @@
+@@ -180,5 +180,56 @@
      "direction_desc": "降序",
      "section_columns": "列",
      "view": "檢視"
@@ -1519,7 +1557,9 @@ index 4ba3e4269..7cd2e370f 100644
 +      "achieved": "已達成",
 +      "missed": "未達成",
 +      "cancelled": "已取消"
-+    }
++    },
++    "waiting_repo": "等待寫回儲存庫",
++    "repo_note": "目標保存在各專案的儲存庫中（plans/goals.md）。在這裡的修改由 PM 寫回儲存庫。"
    }
  }
 diff --git a/packages/views/package.json b/packages/views/package.json

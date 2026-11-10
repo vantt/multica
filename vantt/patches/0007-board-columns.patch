@@ -1,4 +1,4 @@
-From 1fef666ee53170f38384c8617de239f95c50376a Mon Sep 17 00:00:00 2001
+From de93b095914ed763cb63a110653236739031e219 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:47:32 +0700
 Subject: [PATCH 07/11] feat(boards): a project board shows the columns of

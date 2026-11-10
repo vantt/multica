@@ -48,6 +48,16 @@ owner) — without numbers; we add target/current/unit/direction/due.
 2. Add-only schema; dropping the patch leaves unused tables.
 3. Strings in every locale.
 
+## The repo is the source of truth (owner, 2026-11-10)
+Each project keeps goals, portfolio, plans and progress in its own git repo
+(`plans/goals.md`); Multica draws them. Two-way, repo wins:
+- `goal.source_ref` (e.g. `plans/goals.md#G1`) and `goal.pending` (edited in the UI, not yet
+  written back); `goal_value.synced` (false when a person entered it in the UI).
+- An agent (the PM) may create/update goals that carry `source_ref`, clear `pending`, add
+  values with `recorded_at` (the repo row's date) and `POST /values/synced`. A person's
+  edit or value on a repo goal sets `pending` / `synced=false`. A goal created in the UI
+  starts `pending` until the PM writes it into the repo.
+
 ## Workspace deletion
 The tables have no foreign keys, so `pkg/db/queries/workspace_delete.sql` deletes their rows
 (`deleted_goal_links`, `deleted_goal_values`, `deleted_goals`, after `deleted_project_resources`)

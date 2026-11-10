@@ -1,4 +1,4 @@
-From 9b2d7b92c647d62dd2b66b4af8b9d8b928d5adf8 Mon Sep 17 00:00:00 2001
+From 734a54d0ab8a1021d74c159cf8cd8a62124285c5 Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:22:47 +0700
 Subject: [PATCH 03/11] feat(goals): goals with a number, a deadline, history
@@ -13,24 +13,24 @@ numbers, needed and actual pace per week.
 
 Patch-Id: goals
 ---
- server/cmd/server/router.go                   |  13 +
- server/internal/handler/vantt_goal.go         | 578 ++++++++++++++++++
- server/internal/handler/vantt_goal_test.go    | 135 ++++
+ server/cmd/server/router.go                   |  14 +
+ server/internal/handler/vantt_goal.go         | 688 ++++++++++++++++++
+ server/internal/handler/vantt_goal_test.go    | 193 +++++
  .../handler/workspace_delete_manifest_test.go |   3 +
  server/migrations/9001_vantt_goal.down.sql    |   3 +
- server/migrations/9001_vantt_goal.up.sql      |  43 ++
+ server/migrations/9001_vantt_goal.up.sql      |  49 ++
  .../9002_vantt_goal_workspace_index.down.sql  |   1 +
  .../9002_vantt_goal_workspace_index.up.sql    |   1 +
  .../9003_vantt_goal_value_goal_index.down.sql |   1 +
  .../9003_vantt_goal_value_goal_index.up.sql   |   1 +
  ...9004_vantt_goal_link_target_index.down.sql |   1 +
  .../9004_vantt_goal_link_target_index.up.sql  |   1 +
- server/pkg/db/generated/goal.sql.go           | 482 +++++++++++++++
- server/pkg/db/generated/models.go             |  41 ++
+ server/pkg/db/generated/goal.sql.go           | 522 +++++++++++++
+ server/pkg/db/generated/models.go             |  44 ++
  .../pkg/db/generated/workspace_delete.sql.go  |   9 +
- server/pkg/db/queries/goal.sql                |  78 +++
+ server/pkg/db/queries/goal.sql                |  84 +++
  server/pkg/db/queries/workspace_delete.sql    |   9 +
- 17 files changed, 1400 insertions(+)
+ 17 files changed, 1624 insertions(+)
  create mode 100644 server/internal/handler/vantt_goal.go
  create mode 100644 server/internal/handler/vantt_goal_test.go
  create mode 100644 server/migrations/9001_vantt_goal.down.sql
@@ -45,10 +45,10 @@ Patch-Id: goals
  create mode 100644 server/pkg/db/queries/goal.sql
 
 diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
-index 8b9bd7896..1b8b70712 100644
+index 8b9bd7896..49a0f656b 100644
 --- a/server/cmd/server/router.go
 +++ b/server/cmd/server/router.go
-@@ -2239,6 +2239,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+@@ -2239,6 +2239,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
  			// Saved issue views (MUL-4796).
  			r.Get("/api/issue-view-preferences", h.GetIssueViewPreference)
  			r.Put("/api/issue-view-preferences", h.PutIssueViewPreference)
@@ -61,6 +61,7 @@ index 8b9bd7896..1b8b70712 100644
 +					r.Patch("/", h.UpdateGoal)
 +					r.Delete("/", h.DeleteGoal)
 +					r.Post("/values", h.AddGoalValue)
++					r.Post("/values/synced", h.MarkGoalValuesSynced)
 +					r.Put("/links", h.SetGoalLinks)
 +				})
 +			})
@@ -70,10 +71,10 @@ index 8b9bd7896..1b8b70712 100644
  				r.Post("/", h.CreateIssueView)
 diff --git a/server/internal/handler/vantt_goal.go b/server/internal/handler/vantt_goal.go
 new file mode 100644
-index 000000000..6f00b900c
+index 000000000..9bc66d8ce
 --- /dev/null
 +++ b/server/internal/handler/vantt_goal.go
-@@ -0,0 +1,578 @@
+@@ -0,0 +1,688 @@
 +package handler
 +
 +// vantt goals (patch goals, F2): results with a number and a deadline that work
@@ -123,6 +124,10 @@ index 000000000..6f00b900c
 +	CreatedAt        string         `json:"created_at"`
 +	UpdatedAt        string         `json:"updated_at"`
 +	Links            []GoalLinkJSON `json:"links"`
++	// Repo is the source of truth (vantt): where the goal lives, and whether the
++	// UI changed it since the last write-back.
++	SourceRef *string `json:"source_ref"`
++	Pending   bool    `json:"pending"`
 +	// Computed.
 +	Progress      float64  `json:"progress"`
 +	Expected      *float64 `json:"expected"`
@@ -138,6 +143,7 @@ index 000000000..6f00b900c
 +	Note      string  `json:"note"`
 +	ActorType string  `json:"actor_type"`
 +	ActorID   *string `json:"actor_id"`
++	Synced    bool    `json:"synced"`
 +	CreatedAt string  `json:"created_at"`
 +}
 +
@@ -230,6 +236,8 @@ index 000000000..6f00b900c
 +		CreatedAt:        timestampToString(g.CreatedAt),
 +		UpdatedAt:        timestampToString(g.UpdatedAt),
 +		Links:            links,
++		SourceRef:        textToPtr(g.SourceRef),
++		Pending:          g.Pending,
 +		Progress:         progress,
 +		Expected:         expected,
 +		Health:           health,
@@ -321,7 +329,7 @@ index 000000000..6f00b900c
 +	for _, v := range values {
 +		history = append(history, GoalValueResponse{
 +			ID: uuidToString(v.ID), Value: v.Value, Note: v.Note, ActorType: v.ActorType,
-+			ActorID: uuidToPtr(v.ActorID), CreatedAt: timestampToString(v.CreatedAt),
++			ActorID: uuidToPtr(v.ActorID), Synced: v.Synced, CreatedAt: timestampToString(v.CreatedAt),
 +		})
 +	}
 +	writeJSON(w, http.StatusOK, map[string]any{"goal": goalToResponse(g, links[uuidToString(g.ID)], time.Now()), "history": history})
@@ -342,6 +350,8 @@ index 000000000..6f00b900c
 +	OwnerType   *string  `json:"owner_type"`
 +	OwnerID     *string  `json:"owner_id"`
 +	Position    *float64 `json:"position"`
++	SourceRef   *string  `json:"source_ref"`
++	Pending     *bool    `json:"pending"`
 +}
 +
 +func validGoalEnum(v string, allowed ...string) bool {
@@ -395,6 +405,12 @@ index 000000000..6f00b900c
 +	if req.Position != nil {
 +		g.Position = *req.Position
 +	}
++	if _, sent := raw["source_ref"]; sent {
++		g.SourceRef = pgtype.Text{}
++		if req.SourceRef != nil && strings.TrimSpace(*req.SourceRef) != "" {
++			g.SourceRef = pgtype.Text{String: strings.TrimSpace(*req.SourceRef), Valid: true}
++		}
++	}
 +	if _, sent := raw["due_date"]; sent {
 +		g.DueDate = pgtype.Date{}
 +		if req.DueDate != nil && *req.DueDate != "" {
@@ -437,6 +453,28 @@ index 000000000..6f00b900c
 +	return 0, ""
 +}
 +
++// goalWriter checks who may write a goal and reports whether the caller is an
++// agent. Owners/admins always; an agent (the PM mirroring the repo) when the
++// goal comes from the repo (source_ref).
++func (h *Handler) goalWriter(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, fromRepo bool) (agent bool, ok bool) {
++	userID, ok := requireUserID(w, r)
++	if !ok {
++		return false, false
++	}
++	actorType, _ := h.resolveActor(r, userID, uuidToString(wsUUID))
++	if actorType == "agent" {
++		if !fromRepo {
++			writeError(w, http.StatusForbidden, "agents only write goals that come from the project repo (source_ref)")
++			return true, false
++		}
++		return true, true
++	}
++	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "workspace not found", "owner", "admin"); !ok {
++		return false, false
++	}
++	return false, true
++}
++
 +func decodeGoalWrite(w http.ResponseWriter, r *http.Request) (GoalWriteRequest, map[string]json.RawMessage, bool) {
 +	var raw map[string]json.RawMessage
 +	var req GoalWriteRequest
@@ -450,7 +488,7 @@ index 000000000..6f00b900c
 +
 +func (h *Handler) CreateGoal(w http.ResponseWriter, r *http.Request) {
 +	wsID := h.resolveWorkspaceID(r)
-+	if _, ok := h.requireWorkspaceRole(w, r, wsID, "workspace not found", "owner", "admin"); !ok {
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
 +		return
 +	}
 +	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
@@ -458,6 +496,10 @@ index 000000000..6f00b900c
 +		return
 +	}
 +	req, raw, ok := decodeGoalWrite(w, r)
++	if !ok {
++		return
++	}
++	agent, ok := h.goalWriter(w, r, wsUUID, req.SourceRef != nil && strings.TrimSpace(*req.SourceRef) != "")
 +	if !ok {
 +		return
 +	}
@@ -474,11 +516,15 @@ index 000000000..6f00b900c
 +		WorkspaceID: wsUUID, ParentID: g.ParentID, Title: g.Title, Description: g.Description, Unit: g.Unit,
 +		Direction: g.Direction, StartValue: g.StartValue, TargetValue: g.TargetValue, CurrentValue: g.StartValue,
 +		DueDate: g.DueDate, Status: g.Status, MeasuredBy: g.MeasuredBy, OwnerType: g.OwnerType, OwnerID: g.OwnerID,
-+		Position: g.Position,
++		Position: g.Position, SourceRef: g.SourceRef,
 +	})
 +	if err != nil {
 +		writeError(w, http.StatusInternalServerError, "failed to create goal")
 +		return
++	}
++	// A goal made in the UI is a proposal until the PM writes it into the repo.
++	if !agent {
++		created, _ = h.Queries.UpdateGoal(r.Context(), updateParams(created, true))
 +	}
 +	writeJSON(w, http.StatusCreated, goalToResponse(created, nil, time.Now()))
 +}
@@ -488,7 +534,8 @@ index 000000000..6f00b900c
 +	if !ok {
 +		return
 +	}
-+	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "workspace not found", "owner", "admin"); !ok {
++	agent, ok := h.goalWriter(w, r, wsUUID, g.SourceRef.Valid)
++	if !ok {
 +		return
 +	}
 +	req, raw, ok := decodeGoalWrite(w, r)
@@ -499,18 +546,28 @@ index 000000000..6f00b900c
 +		writeError(w, code, msg)
 +		return
 +	}
-+	updated, err := h.Queries.UpdateGoal(r.Context(), db.UpdateGoalParams{
-+		ID: g.ID, WorkspaceID: wsUUID, ParentID: g.ParentID, Title: g.Title, Description: g.Description,
-+		Unit: g.Unit, Direction: g.Direction, StartValue: g.StartValue, TargetValue: g.TargetValue,
-+		DueDate: g.DueDate, Status: g.Status, MeasuredBy: g.MeasuredBy, OwnerType: g.OwnerType,
-+		OwnerID: g.OwnerID, Position: g.Position,
-+	})
++	// A person's edit waits to be written back to the repo; the PM's mirror
++	// clears it by sending pending=false.
++	pending := g.Pending || !agent
++	if agent && req.Pending != nil {
++		pending = *req.Pending
++	}
++	updated, err := h.Queries.UpdateGoal(r.Context(), updateParams(g, pending))
 +	if err != nil {
 +		writeError(w, http.StatusInternalServerError, "failed to update goal")
 +		return
 +	}
 +	links, _ := h.goalLinksByGoal(r, wsUUID)
 +	writeJSON(w, http.StatusOK, goalToResponse(updated, links[uuidToString(updated.ID)], time.Now()))
++}
++
++func updateParams(g db.Goal, pending bool) db.UpdateGoalParams {
++	return db.UpdateGoalParams{
++		ID: g.ID, WorkspaceID: g.WorkspaceID, ParentID: g.ParentID, Title: g.Title, Description: g.Description,
++		Unit: g.Unit, Direction: g.Direction, StartValue: g.StartValue, TargetValue: g.TargetValue,
++		DueDate: g.DueDate, Status: g.Status, MeasuredBy: g.MeasuredBy, OwnerType: g.OwnerType,
++		OwnerID: g.OwnerID, Position: g.Position, SourceRef: g.SourceRef, Pending: pending,
++	}
 +}
 +
 +func (h *Handler) DeleteGoal(w http.ResponseWriter, r *http.Request) {
@@ -549,6 +606,8 @@ index 000000000..6f00b900c
 +type GoalValueRequest struct {
 +	Value *float64 `json:"value"`
 +	Note  string   `json:"note"`
++	// RecordedAt (agents only): the date the repo's progress row carries.
++	RecordedAt *string `json:"recorded_at"`
 +}
 +
 +// AddGoalValue records a new current value. Owners and admins may always;
@@ -564,10 +623,13 @@ index 000000000..6f00b900c
 +		return
 +	}
 +	actorType, actorID := h.resolveActor(r, userID, uuidToString(wsUUID))
-+	if g.MeasuredBy != "script" || actorType != "agent" {
-+		if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "workspace not found", "owner", "admin"); !ok {
++	if actorType == "agent" {
++		if g.MeasuredBy != "script" && !g.SourceRef.Valid {
++			writeError(w, http.StatusForbidden, "agents only record values of script or repo goals")
 +			return
 +		}
++	} else if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "workspace not found", "owner", "admin"); !ok {
++		return
 +	}
 +	var req GoalValueRequest
 +	body, err := io.ReadAll(r.Body)
@@ -576,8 +638,24 @@ index 000000000..6f00b900c
 +		return
 +	}
 +	actor, _ := util.ParseUUID(actorID)
++	var recorded pgtype.Timestamptz
++	if actorType == "agent" && req.RecordedAt != nil && *req.RecordedAt != "" {
++		ts, err := time.Parse(time.RFC3339, *req.RecordedAt)
++		if err != nil {
++			d, derr := time.Parse("2006-01-02", *req.RecordedAt)
++			if derr != nil {
++				writeError(w, http.StatusBadRequest, "recorded_at must be RFC3339 or YYYY-MM-DD")
++				return
++			}
++			ts = d
++		}
++		recorded = pgtype.Timestamptz{Time: ts, Valid: true}
++	}
++	// A number a person enters on a repo goal waits to be written back.
++	synced := actorType == "agent" || !g.SourceRef.Valid
 +	if _, err := h.Queries.CreateGoalValue(r.Context(), db.CreateGoalValueParams{
 +		GoalID: g.ID, WorkspaceID: wsUUID, Value: *req.Value, Note: req.Note, ActorType: actorType, ActorID: actor,
++		Synced: synced, RecordedAt: recorded,
 +	}); err != nil {
 +		writeError(w, http.StatusInternalServerError, "failed to record value")
 +		return
@@ -591,6 +669,39 @@ index 000000000..6f00b900c
 +	writeJSON(w, http.StatusOK, goalToResponse(updated, links[uuidToString(updated.ID)], time.Now()))
 +}
 +
++// MarkGoalValuesSynced records that values entered in the UI are now in the repo.
++func (h *Handler) MarkGoalValuesSynced(w http.ResponseWriter, r *http.Request) {
++	g, wsUUID, ok := h.loadGoal(w, r)
++	if !ok {
++		return
++	}
++	if _, ok := h.goalWriter(w, r, wsUUID, true); !ok {
++		return
++	}
++	var req struct {
++		IDs []string `json:"ids"`
++	}
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	ids := make([]pgtype.UUID, 0, len(req.IDs))
++	for _, s := range req.IDs {
++		id, err := util.ParseUUID(s)
++		if err != nil {
++			writeError(w, http.StatusBadRequest, "invalid id")
++			return
++		}
++		ids = append(ids, id)
++	}
++	if err := h.Queries.MarkGoalValuesSynced(r.Context(), db.MarkGoalValuesSyncedParams{GoalID: g.ID, WorkspaceID: wsUUID, Ids: ids}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to mark values")
++		return
++	}
++	w.WriteHeader(http.StatusNoContent)
++}
++
 +type GoalLinksRequest struct {
 +	Links []GoalLinkJSON `json:"links"`
 +}
@@ -601,7 +712,7 @@ index 000000000..6f00b900c
 +	if !ok {
 +		return
 +	}
-+	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "workspace not found", "owner", "admin"); !ok {
++	if _, ok := h.goalWriter(w, r, wsUUID, g.SourceRef.Valid); !ok {
 +		return
 +	}
 +	var req GoalLinksRequest
@@ -654,10 +765,10 @@ index 000000000..6f00b900c
 +}
 diff --git a/server/internal/handler/vantt_goal_test.go b/server/internal/handler/vantt_goal_test.go
 new file mode 100644
-index 000000000..a5fd5d904
+index 000000000..fc7395bba
 --- /dev/null
 +++ b/server/internal/handler/vantt_goal_test.go
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,193 @@
 +package handler
 +
 +import (
@@ -793,6 +904,64 @@ index 000000000..a5fd5d904
 +	testutil.Call(t, testHandler.CreateGoal, goalRequest("POST", "/api/goals", map[string]any{"title": "x", "target_value": 1, "direction": "sideways"})).Want(http.StatusBadRequest)
 +	testutil.Call(t, testHandler.CreateGoal, goalRequest("POST", "/api/goals", map[string]any{"title": "x", "target_value": 1, "due_date": "31/12"})).Want(http.StatusBadRequest)
 +}
++
++// The repo is the source of truth: the PM mirrors repo goals, a person's edit
++// or number on a repo goal waits to be written back.
++func TestGoalRepoSourceRules(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	issueID := dbfx.Issue(t, "pm run", testutil.Cols{"status": "todo"})
++	taskID := runningTask(t, agentID, issueID, "todo")
++	asAgent := func(req *http.Request) *http.Request {
++		req.Header.Set("X-Actor-Source", "task_token")
++		req.Header.Set("X-Agent-ID", agentID)
++		req.Header.Set("X-Task-ID", taskID)
++		return req
++	}
++
++	// An agent cannot create a goal that is not from the repo.
++	testutil.Call(t, testHandler.CreateGoal, asAgent(goalRequest("POST", "/api/goals", map[string]any{"title": "x", "target_value": 1}))).Want(http.StatusForbidden)
++
++	// It can mirror one from the repo; mirrored goals are not pending.
++	var g GoalResponse
++	testutil.Call(t, testHandler.CreateGoal, asAgent(goalRequest("POST", "/api/goals", map[string]any{
++		"title": "Paying customers", "target_value": 50, "source_ref": "plans/goals.md#G1",
++	}))).Want(http.StatusCreated).JSON(&g)
++	t.Cleanup(func() {
++		dbfx.Exec(t, `DELETE FROM goal_value WHERE goal_id = $1`, g.ID)
++		dbfx.Exec(t, `DELETE FROM goal WHERE id = $1`, g.ID)
++	})
++	if g.SourceRef == nil || *g.SourceRef != "plans/goals.md#G1" || g.Pending {
++		t.Fatalf("mirrored goal = %+v", g)
++	}
++
++	// A person's edit marks it pending; the PM's write-back clears it.
++	var edited GoalResponse
++	testutil.Call(t, testHandler.UpdateGoal, withURLParam(goalRequest("PATCH", "/api/goals/"+g.ID, map[string]any{"target_value": 60}), "id", g.ID)).
++		Want(http.StatusOK).JSON(&edited)
++	if !edited.Pending || edited.TargetValue != 60 {
++		t.Fatalf("after a person's edit = %+v", edited)
++	}
++	var cleared GoalResponse
++	testutil.Call(t, testHandler.UpdateGoal, asAgent(withURLParam(goalRequest("PATCH", "/api/goals/"+g.ID, map[string]any{"pending": false}), "id", g.ID))).
++		Want(http.StatusOK).JSON(&cleared)
++	if cleared.Pending {
++		t.Fatal("PM write-back did not clear pending")
++	}
++
++	// A person's number is unsynced; the PM's mirrored number keeps the repo date.
++	testutil.Call(t, testHandler.AddGoalValue, withURLParam(goalRequest("POST", "/api/goals/"+g.ID+"/values", map[string]any{"value": 7}), "id", g.ID)).Want(http.StatusOK)
++	testutil.Call(t, testHandler.AddGoalValue, asAgent(withURLParam(goalRequest("POST", "/api/goals/"+g.ID+"/values", map[string]any{"value": 5, "recorded_at": "2026-11-01"}), "id", g.ID))).Want(http.StatusOK)
++	var detail struct {
++		History []GoalValueResponse `json:"history"`
++	}
++	testutil.Call(t, testHandler.GetGoal, withURLParam(goalRequest("GET", "/api/goals/"+g.ID, nil), "id", g.ID)).Want(http.StatusOK).JSON(&detail)
++	if len(detail.History) != 2 || detail.History[0].Value != 5 || !detail.History[0].Synced || detail.History[1].Synced {
++		t.Fatalf("history = %+v", detail.History)
++	}
++	testutil.Call(t, testHandler.MarkGoalValuesSynced, asAgent(withURLParam(goalRequest("POST", "/api/goals/"+g.ID+"/values/synced",
++		map[string]any{"ids": []string{detail.History[1].ID}}), "id", g.ID))).Want(http.StatusNoContent)
++}
 diff --git a/server/internal/handler/workspace_delete_manifest_test.go b/server/internal/handler/workspace_delete_manifest_test.go
 index d08fe18ba..6854cb5d6 100644
 --- a/server/internal/handler/workspace_delete_manifest_test.go
@@ -818,10 +987,10 @@ index 000000000..eac116c68
 +DROP TABLE IF EXISTS goal;
 diff --git a/server/migrations/9001_vantt_goal.up.sql b/server/migrations/9001_vantt_goal.up.sql
 new file mode 100644
-index 000000000..a50fe9a27
+index 000000000..8dfade635
 --- /dev/null
 +++ b/server/migrations/9001_vantt_goal.up.sql
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,49 @@
 +-- vantt goals (patch goals, F2): results with a number and a deadline that work
 +-- moves. No foreign keys: relationships are validated in the handler.
 +CREATE TABLE IF NOT EXISTS goal (
@@ -841,6 +1010,10 @@ index 000000000..a50fe9a27
 +    owner_type         TEXT,
 +    owner_id           UUID,
 +    position           DOUBLE PRECISION NOT NULL DEFAULT 0,
++    -- The goal's home in the project repo (e.g. plans/goals.md#G1). The repo is the
++    -- source of truth; pending marks edits made in the UI not yet written back.
++    source_ref         TEXT,
++    pending            BOOLEAN NOT NULL DEFAULT false,
 +    current_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 +    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
 +    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -854,6 +1027,8 @@ index 000000000..a50fe9a27
 +    note         TEXT NOT NULL DEFAULT '',
 +    actor_type   TEXT NOT NULL,
 +    actor_id     UUID,
++    -- false: entered in the UI on a repo goal, not yet written back to the repo.
++    synced       BOOLEAN NOT NULL DEFAULT true,
 +    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 +);
 +
@@ -909,10 +1084,10 @@ index 000000000..6ab3b2da9
 +CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_goal_link_target ON goal_link (workspace_id, target_type, target_id);
 diff --git a/server/pkg/db/generated/goal.sql.go b/server/pkg/db/generated/goal.sql.go
 new file mode 100644
-index 000000000..a7e3854c5
+index 000000000..869299247
 --- /dev/null
 +++ b/server/pkg/db/generated/goal.sql.go
-@@ -0,0 +1,482 @@
+@@ -0,0 +1,522 @@
 +// Code generated by sqlc. DO NOT EDIT.
 +// versions:
 +//   sqlc v1.31.1
@@ -946,10 +1121,10 @@ index 000000000..a7e3854c5
 +INSERT INTO goal (
 +    workspace_id, parent_id, title, description, unit, direction,
 +    start_value, target_value, current_value, due_date, status, measured_by,
-+    owner_type, owner_id, position
++    owner_type, owner_id, position, source_ref
 +) VALUES (
-+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
-+) RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, current_updated_at, created_at, updated_at
++    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
++) RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at
 +`
 +
 +type CreateGoalParams struct {
@@ -968,6 +1143,7 @@ index 000000000..a7e3854c5
 +	OwnerType    pgtype.Text `json:"owner_type"`
 +	OwnerID      pgtype.UUID `json:"owner_id"`
 +	Position     float64     `json:"position"`
++	SourceRef    pgtype.Text `json:"source_ref"`
 +}
 +
 +func (q *Queries) CreateGoal(ctx context.Context, arg CreateGoalParams) (Goal, error) {
@@ -987,6 +1163,7 @@ index 000000000..a7e3854c5
 +		arg.OwnerType,
 +		arg.OwnerID,
 +		arg.Position,
++		arg.SourceRef,
 +	)
 +	var i Goal
 +	err := row.Scan(
@@ -1006,6 +1183,8 @@ index 000000000..a7e3854c5
 +		&i.OwnerType,
 +		&i.OwnerID,
 +		&i.Position,
++		&i.SourceRef,
++		&i.Pending,
 +		&i.CurrentUpdatedAt,
 +		&i.CreatedAt,
 +		&i.UpdatedAt,
@@ -1037,18 +1216,20 @@ index 000000000..a7e3854c5
 +}
 +
 +const createGoalValue = `-- name: CreateGoalValue :one
-+INSERT INTO goal_value (goal_id, workspace_id, value, note, actor_type, actor_id)
-+VALUES ($1, $2, $3, $4, $5, $6)
-+RETURNING id, goal_id, workspace_id, value, note, actor_type, actor_id, created_at
++INSERT INTO goal_value (goal_id, workspace_id, value, note, actor_type, actor_id, synced, created_at)
++VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, now()))
++RETURNING id, goal_id, workspace_id, value, note, actor_type, actor_id, synced, created_at
 +`
 +
 +type CreateGoalValueParams struct {
-+	GoalID      pgtype.UUID `json:"goal_id"`
-+	WorkspaceID pgtype.UUID `json:"workspace_id"`
-+	Value       float64     `json:"value"`
-+	Note        string      `json:"note"`
-+	ActorType   string      `json:"actor_type"`
-+	ActorID     pgtype.UUID `json:"actor_id"`
++	GoalID      pgtype.UUID        `json:"goal_id"`
++	WorkspaceID pgtype.UUID        `json:"workspace_id"`
++	Value       float64            `json:"value"`
++	Note        string             `json:"note"`
++	ActorType   string             `json:"actor_type"`
++	ActorID     pgtype.UUID        `json:"actor_id"`
++	Synced      bool               `json:"synced"`
++	RecordedAt  pgtype.Timestamptz `json:"recorded_at"`
 +}
 +
 +func (q *Queries) CreateGoalValue(ctx context.Context, arg CreateGoalValueParams) (GoalValue, error) {
@@ -1059,6 +1240,8 @@ index 000000000..a7e3854c5
 +		arg.Note,
 +		arg.ActorType,
 +		arg.ActorID,
++		arg.Synced,
++		arg.RecordedAt,
 +	)
 +	var i GoalValue
 +	err := row.Scan(
@@ -1069,6 +1252,7 @@ index 000000000..a7e3854c5
 +		&i.Note,
 +		&i.ActorType,
 +		&i.ActorID,
++		&i.Synced,
 +		&i.CreatedAt,
 +	)
 +	return i, err
@@ -1117,7 +1301,7 @@ index 000000000..a7e3854c5
 +}
 +
 +const getGoalInWorkspace = `-- name: GetGoalInWorkspace :one
-+SELECT id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, current_updated_at, created_at, updated_at FROM goal
++SELECT id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at FROM goal
 +WHERE id = $1 AND workspace_id = $2
 +`
 +
@@ -1146,6 +1330,8 @@ index 000000000..a7e3854c5
 +		&i.OwnerType,
 +		&i.OwnerID,
 +		&i.Position,
++		&i.SourceRef,
++		&i.Pending,
 +		&i.CurrentUpdatedAt,
 +		&i.CreatedAt,
 +		&i.UpdatedAt,
@@ -1186,7 +1372,7 @@ index 000000000..a7e3854c5
 +}
 +
 +const listGoalValues = `-- name: ListGoalValues :many
-+SELECT id, goal_id, workspace_id, value, note, actor_type, actor_id, created_at FROM goal_value
++SELECT id, goal_id, workspace_id, value, note, actor_type, actor_id, synced, created_at FROM goal_value
 +WHERE goal_id = $1 AND workspace_id = $2
 +ORDER BY created_at ASC, id ASC
 +`
@@ -1213,6 +1399,7 @@ index 000000000..a7e3854c5
 +			&i.Note,
 +			&i.ActorType,
 +			&i.ActorID,
++			&i.Synced,
 +			&i.CreatedAt,
 +		); err != nil {
 +			return nil, err
@@ -1227,7 +1414,7 @@ index 000000000..a7e3854c5
 +
 +const listGoals = `-- name: ListGoals :many
 +
-+SELECT id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, current_updated_at, created_at, updated_at FROM goal
++SELECT id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at FROM goal
 +WHERE workspace_id = $1
 +ORDER BY position ASC, created_at ASC
 +`
@@ -1259,6 +1446,8 @@ index 000000000..a7e3854c5
 +			&i.OwnerType,
 +			&i.OwnerID,
 +			&i.Position,
++			&i.SourceRef,
++			&i.Pending,
 +			&i.CurrentUpdatedAt,
 +			&i.CreatedAt,
 +			&i.UpdatedAt,
@@ -1273,13 +1462,29 @@ index 000000000..a7e3854c5
 +	return items, nil
 +}
 +
++const markGoalValuesSynced = `-- name: MarkGoalValuesSynced :exec
++UPDATE goal_value SET synced = true
++WHERE goal_id = $1 AND workspace_id = $2 AND id = ANY($3::uuid[])
++`
++
++type MarkGoalValuesSyncedParams struct {
++	GoalID      pgtype.UUID   `json:"goal_id"`
++	WorkspaceID pgtype.UUID   `json:"workspace_id"`
++	Ids         []pgtype.UUID `json:"ids"`
++}
++
++func (q *Queries) MarkGoalValuesSynced(ctx context.Context, arg MarkGoalValuesSyncedParams) error {
++	_, err := q.db.Exec(ctx, markGoalValuesSynced, arg.GoalID, arg.WorkspaceID, arg.Ids)
++	return err
++}
++
 +const setGoalCurrent = `-- name: SetGoalCurrent :one
 +UPDATE goal SET
 +    current_value      = $3,
 +    current_updated_at = now(),
 +    updated_at         = now()
 +WHERE id = $1 AND workspace_id = $2
-+RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, current_updated_at, created_at, updated_at
++RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at
 +`
 +
 +type SetGoalCurrentParams struct {
@@ -1308,6 +1513,8 @@ index 000000000..a7e3854c5
 +		&i.OwnerType,
 +		&i.OwnerID,
 +		&i.Position,
++		&i.SourceRef,
++		&i.Pending,
 +		&i.CurrentUpdatedAt,
 +		&i.CreatedAt,
 +		&i.UpdatedAt,
@@ -1330,9 +1537,11 @@ index 000000000..a7e3854c5
 +    owner_type   = $13,
 +    owner_id     = $14,
 +    position     = $15,
++    source_ref   = $16,
++    pending      = $17,
 +    updated_at   = now()
 +WHERE id = $1 AND workspace_id = $2
-+RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, current_updated_at, created_at, updated_at
++RETURNING id, workspace_id, parent_id, title, description, unit, direction, start_value, target_value, current_value, due_date, status, measured_by, owner_type, owner_id, position, source_ref, pending, current_updated_at, created_at, updated_at
 +`
 +
 +type UpdateGoalParams struct {
@@ -1351,6 +1560,8 @@ index 000000000..a7e3854c5
 +	OwnerType   pgtype.Text `json:"owner_type"`
 +	OwnerID     pgtype.UUID `json:"owner_id"`
 +	Position    float64     `json:"position"`
++	SourceRef   pgtype.Text `json:"source_ref"`
++	Pending     bool        `json:"pending"`
 +}
 +
 +func (q *Queries) UpdateGoal(ctx context.Context, arg UpdateGoalParams) (Goal, error) {
@@ -1370,6 +1581,8 @@ index 000000000..a7e3854c5
 +		arg.OwnerType,
 +		arg.OwnerID,
 +		arg.Position,
++		arg.SourceRef,
++		arg.Pending,
 +	)
 +	var i Goal
 +	err := row.Scan(
@@ -1389,6 +1602,8 @@ index 000000000..a7e3854c5
 +		&i.OwnerType,
 +		&i.OwnerID,
 +		&i.Position,
++		&i.SourceRef,
++		&i.Pending,
 +		&i.CurrentUpdatedAt,
 +		&i.CreatedAt,
 +		&i.UpdatedAt,
@@ -1396,10 +1611,10 @@ index 000000000..a7e3854c5
 +	return i, err
 +}
 diff --git a/server/pkg/db/generated/models.go b/server/pkg/db/generated/models.go
-index d544c0c01..3f8c49204 100644
+index d544c0c01..10451c526 100644
 --- a/server/pkg/db/generated/models.go
 +++ b/server/pkg/db/generated/models.go
-@@ -804,6 +804,47 @@ type GithubPullRequestCheckSuite struct {
+@@ -804,6 +804,50 @@ type GithubPullRequestCheckSuite struct {
  	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
  }
  
@@ -1420,6 +1635,8 @@ index d544c0c01..3f8c49204 100644
 +	OwnerType        pgtype.Text        `json:"owner_type"`
 +	OwnerID          pgtype.UUID        `json:"owner_id"`
 +	Position         float64            `json:"position"`
++	SourceRef        pgtype.Text        `json:"source_ref"`
++	Pending          bool               `json:"pending"`
 +	CurrentUpdatedAt pgtype.Timestamptz `json:"current_updated_at"`
 +	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 +	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
@@ -1441,6 +1658,7 @@ index d544c0c01..3f8c49204 100644
 +	Note        string             `json:"note"`
 +	ActorType   string             `json:"actor_type"`
 +	ActorID     pgtype.UUID        `json:"actor_id"`
++	Synced      bool               `json:"synced"`
 +	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 +}
 +
@@ -1469,10 +1687,10 @@ index 2d067d0f4..9d055bb88 100644
      WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
 diff --git a/server/pkg/db/queries/goal.sql b/server/pkg/db/queries/goal.sql
 new file mode 100644
-index 000000000..025e6c312
+index 000000000..42cca3ab7
 --- /dev/null
 +++ b/server/pkg/db/queries/goal.sql
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,84 @@
 +-- vantt goals (patch goals, F2).
 +
 +-- name: ListGoals :many
@@ -1488,9 +1706,9 @@ index 000000000..025e6c312
 +INSERT INTO goal (
 +    workspace_id, parent_id, title, description, unit, direction,
 +    start_value, target_value, current_value, due_date, status, measured_by,
-+    owner_type, owner_id, position
++    owner_type, owner_id, position, source_ref
 +) VALUES (
-+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
++    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
 +) RETURNING *;
 +
 +-- name: UpdateGoal :one
@@ -1508,6 +1726,8 @@ index 000000000..025e6c312
 +    owner_type   = $13,
 +    owner_id     = $14,
 +    position     = $15,
++    source_ref   = $16,
++    pending      = $17,
 +    updated_at   = now()
 +WHERE id = $1 AND workspace_id = $2
 +RETURNING *;
@@ -1527,9 +1747,13 @@ index 000000000..025e6c312
 +SELECT count(*) FROM goal WHERE parent_id = $1 AND workspace_id = $2;
 +
 +-- name: CreateGoalValue :one
-+INSERT INTO goal_value (goal_id, workspace_id, value, note, actor_type, actor_id)
-+VALUES ($1, $2, $3, $4, $5, $6)
++INSERT INTO goal_value (goal_id, workspace_id, value, note, actor_type, actor_id, synced, created_at)
++VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE(sqlc.narg('recorded_at')::timestamptz, now()))
 +RETURNING *;
++
++-- name: MarkGoalValuesSynced :exec
++UPDATE goal_value SET synced = true
++WHERE goal_id = $1 AND workspace_id = $2 AND id = ANY(sqlc.arg('ids')::uuid[]);
 +
 +-- name: ListGoalValues :many
 +SELECT * FROM goal_value
