@@ -1707,6 +1707,9 @@
       }
     },
     "approval": {
+      "prs_label": "拉取请求",
+      "approve_on_github": "在 GitHub 上批准",
+      "pr_then_approve": "先用你的账号在 GitHub 上批准 PR，再在这里批准。",
       "title": "等待你的审批",
       "gate_note": "智能体无法将此事项移出此步骤。",
       "approve": "批准",

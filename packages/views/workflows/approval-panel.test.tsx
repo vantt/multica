@@ -31,6 +31,7 @@ vi.mock("@multica/core/issue-workflows", async (importOriginal) => {
     useProjectWithWorkflow: () => ({ project: { lead_type: null, lead_id: null }, workflow: state.workflow }),
   };
 });
+vi.mock("./approval-prs", () => ({ ApprovalPullRequests: () => null }));
 vi.mock("../issues/utils/status-label", () => ({ useStatusLabel: () => (key: string) => key }));
 
 function delivery(): IssueWorkflow {
