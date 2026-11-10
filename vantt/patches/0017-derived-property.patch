@@ -1,0 +1,269 @@
+From d8a7b8436768635c0d01b69a1951c95112d71b0a Mon Sep 17 00:00:00 2001
+From: Van Tran <trantoanvan@outlook.com>
+Date: Tue, 10 Nov 2026 21:06:04 +0700
+Subject: [PATCH] feat(properties): a select property derived from another
+ (Domain from Type)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A select property whose description says "Derived from <Source>" takes the
+option named like the part of the source option before " · " (Type "Tech ·
+Feature" → Domain "Tech"), when an issue is created and whenever the source
+changes. Left alone when no option matches. One property to pick, the other
+follows.
+
+Patch-Id: derived-property
+---
+ server/internal/handler/property.go          |  13 +++
+ server/internal/handler/vantt_derive_test.go |  83 +++++++++++++++
+ server/internal/service/issue.go             |   4 +
+ server/internal/service/vantt_derive.go      | 100 +++++++++++++++++++
+ 4 files changed, 200 insertions(+)
+ create mode 100644 server/internal/handler/vantt_derive_test.go
+ create mode 100644 server/internal/service/vantt_derive.go
+
+diff --git a/server/internal/handler/property.go b/server/internal/handler/property.go
+index acb5d925f..5bce295de 100644
+--- a/server/internal/handler/property.go
++++ b/server/internal/handler/property.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/jackc/pgx/v5/pgtype"
+ 	"github.com/multica-ai/multica/server/internal/issueproperty"
+ 	"github.com/multica-ai/multica/server/internal/logger"
++	"github.com/multica-ai/multica/server/internal/service"
+ 	"github.com/multica-ai/multica/server/internal/util"
+ 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+ 	"github.com/multica-ai/multica/server/pkg/protocol"
+@@ -742,6 +743,18 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
+ 			}
+ 			return err
+ 		}
++		// vantt derived-property: e.g. Domain follows Type.
++		derived, err := service.DerivedPropertyValues(r.Context(), q, issue.WorkspaceID, updated.Properties)
++		if err != nil {
++			return err
++		}
++		for key, v := range derived {
++			if updated, err = q.SetIssuePropertyValue(r.Context(), db.SetIssuePropertyValueParams{
++				ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: key, Value: v,
++			}); err != nil {
++				return err
++			}
++		}
+ 		return nil
+ 	})
+ 	if err != nil {
+diff --git a/server/internal/handler/vantt_derive_test.go b/server/internal/handler/vantt_derive_test.go
+new file mode 100644
+index 000000000..447bfccc8
+--- /dev/null
++++ b/server/internal/handler/vantt_derive_test.go
+@@ -0,0 +1,83 @@
++package handler
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++
++	"testing"
++)
++
++// Domain follows Type: a select property described "Derived from <Type>" takes the
++// option named like the part of the Type option before " · ".
++func TestDerivedPropertyFollowsSource(t *testing.T) {
++	typ := createTestProperty(t, map[string]any{"name": "VType", "type": "select", "config": map[string]any{"options": []map[string]any{
++		{"name": "Tech · Feature", "color": "#2563eb"}, {"name": "Marketing · Post", "color": "#db2777"}, {"name": "Other", "color": "#71717a"},
++	}}})
++	dom := createTestProperty(t, map[string]any{"name": "VDomain", "type": "select", "description": "Derived from VType (the part before ·).", "config": map[string]any{"options": []map[string]any{
++		{"name": "Tech", "color": "#2563eb"}, {"name": "Marketing", "color": "#db2777"},
++	}}})
++	opt := func(p PropertyResponse, name string) string {
++		for _, o := range p.Config.Options {
++			if o.Name == name {
++				return o.ID
++			}
++		}
++		t.Fatalf("no option %s", name)
++		return ""
++	}
++	domainOf := func(issueID string) string {
++		var raw []byte
++		if err := testPool.QueryRow(context.Background(), `SELECT properties FROM issue WHERE id = $1`, issueID).Scan(&raw); err != nil {
++			t.Fatal(err)
++		}
++		bag := map[string]string{}
++		_ = json.Unmarshal(raw, &bag)
++		return bag[dom.ID]
++	}
++	var first IssueResponse
++	w0 := httptestRecorderCall(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": "derive me", "status": "todo"}))
++	if w0.Code != http.StatusCreated {
++		t.Fatalf("create: %d %s", w0.Code, w0.Body.String())
++	}
++	_ = json.Unmarshal(w0.Body.Bytes(), &first)
++	issueID := first.ID
++	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
++	if w := setIssuePropertyRaw(t, issueID, typ.ID, opt(typ, "Tech · Feature")); w.Code != http.StatusOK {
++		t.Fatalf("set type: %d %s", w.Code, w.Body.String())
++	}
++	if got := domainOf(issueID); got != opt(dom, "Tech") {
++		t.Fatalf("domain = %q, want Tech", got)
++	}
++	setIssuePropertyRaw(t, issueID, typ.ID, opt(typ, "Marketing · Post"))
++	if got := domainOf(issueID); got != opt(dom, "Marketing") {
++		t.Fatalf("domain after change = %q, want Marketing", got)
++	}
++	// No matching option: the derived value is left alone.
++	setIssuePropertyRaw(t, issueID, typ.ID, opt(typ, "Other"))
++	if got := domainOf(issueID); got != opt(dom, "Marketing") {
++		t.Fatalf("domain changed without a matching option: %q", got)
++	}
++
++	// On create, too.
++	var created IssueResponse
++	w := httptestRecorderCall(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
++		"title": "derive on create", "properties": map[string]any{typ.ID: opt(typ, "Tech · Feature")},
++	}))
++	if w.Code != http.StatusCreated {
++		t.Fatalf("create: %d %s", w.Code, w.Body.String())
++	}
++	_ = json.Unmarshal(w.Body.Bytes(), &created)
++	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, created.ID) })
++	if got := domainOf(created.ID); got != opt(dom, "Tech") {
++		t.Fatalf("domain on create = %q, want Tech", got)
++	}
++}
++
++func httptestRecorderCall(t *testing.T, req *http.Request) *httptest.ResponseRecorder {
++	t.Helper()
++	w := httptest.NewRecorder()
++	testHandler.CreateIssue(w, req)
++	return w
++}
+diff --git a/server/internal/service/issue.go b/server/internal/service/issue.go
+index 86ae1d4b8..73a52d852 100644
+--- a/server/internal/service/issue.go
++++ b/server/internal/service/issue.go
+@@ -245,6 +245,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
+ 	if err != nil {
+ 		return IssueCreateResult{}, err
+ 	}
++	// vantt derived-property: e.g. Domain from Type.
++	if properties, err = ApplyDerivedProperties(ctx, qtx, p.WorkspaceID, properties); err != nil {
++		return IssueCreateResult{}, err
++	}
+ 
+ 	if p.SourceContext != nil {
+ 		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+diff --git a/server/internal/service/vantt_derive.go b/server/internal/service/vantt_derive.go
+new file mode 100644
+index 000000000..e770fbe77
+--- /dev/null
++++ b/server/internal/service/vantt_derive.go
+@@ -0,0 +1,100 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"regexp"
++	"strings"
++
++	"github.com/jackc/pgx/v5/pgtype"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++// vantt derived-property: a select property whose description says
++// "Derived from <Source>" takes its value from the source select property's
++// option name, the part before " · " ("Tech · Feature" → "Tech"). The owner
++// picks Type; Domain fills itself (owner, 2026-11-10). Set only when the
++// derived property has an option with that name; otherwise left alone.
++
++var derivedFrom = regexp.MustCompile(`(?i)derived from\s+([^.(\n]+)`)
++
++type selectOption struct {
++	ID   string `json:"id"`
++	Name string `json:"name"`
++}
++
++func optionsOf(config []byte) []selectOption {
++	var c struct {
++		Options []selectOption `json:"options"`
++	}
++	_ = json.Unmarshal(config, &c)
++	return c.Options
++}
++
++// DerivedPropertyValues returns the derived values implied by props (an issue's
++// properties bag): derived property id → option id (JSON string). Only changes
++// are returned.
++func DerivedPropertyValues(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, props []byte) (map[string]json.RawMessage, error) {
++	bag := map[string]json.RawMessage{}
++	if len(props) > 0 {
++		_ = json.Unmarshal(props, &bag)
++	}
++	if len(bag) == 0 {
++		return nil, nil
++	}
++	defs, err := q.ListIssueProperties(ctx, db.ListIssuePropertiesParams{WorkspaceID: workspaceID})
++	if err != nil {
++		return nil, err
++	}
++	byName := map[string]db.ListIssuePropertiesRow{}
++	for _, d := range defs {
++		byName[strings.ToLower(strings.TrimSpace(d.Name))] = d
++	}
++	out := map[string]json.RawMessage{}
++	for _, d := range defs {
++		m := derivedFrom.FindStringSubmatch(d.Description)
++		if d.Type != "select" || m == nil {
++			continue
++		}
++		src, ok := byName[strings.ToLower(strings.TrimSpace(m[1]))]
++		if !ok || src.Type != "select" {
++			continue
++		}
++		var picked string
++		if raw, ok := bag[uuidString(src.ID)]; !ok || json.Unmarshal(raw, &picked) != nil || picked == "" {
++			continue
++		}
++		var name string
++		for _, o := range optionsOf(src.Config) {
++			if o.ID == picked {
++				name = o.Name
++			}
++		}
++		head := strings.TrimSpace(strings.SplitN(name, "·", 2)[0])
++		for _, o := range optionsOf(d.Config) {
++			if head != "" && strings.EqualFold(o.Name, head) {
++				var cur string
++				_ = json.Unmarshal(bag[uuidString(d.ID)], &cur)
++				if cur != o.ID {
++					v, _ := json.Marshal(o.ID)
++					out[uuidString(d.ID)] = v
++				}
++			}
++		}
++	}
++	return out, nil
++}
++
++// ApplyDerivedProperties merges the derived values into a properties bag.
++func ApplyDerivedProperties(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, props []byte) ([]byte, error) {
++	derived, err := DerivedPropertyValues(ctx, q, workspaceID, props)
++	if err != nil || len(derived) == 0 {
++		return props, err
++	}
++	bag := map[string]json.RawMessage{}
++	_ = json.Unmarshal(props, &bag)
++	for k, v := range derived {
++		bag[k] = v
++	}
++	return json.Marshal(bag)
++}
+-- 
+2.53.0
+
