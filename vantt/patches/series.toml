@@ -195,3 +195,13 @@ upstream_status = "unsubmitted"
 upstream_ref = ""
 touches = ["server/internal/handler/vantt_send_back_limit.go", "server/internal/handler/issue_workflow_entry.go", "server/cmd/server/router.go", "server/pkg/db/queries/workspace_delete.sql", "server/pkg/db/generated/workspace_delete.sql.go", "server/migrations/9009_vantt_workflow_limit.up.sql"]
 test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'SendBack|OwnerGate|WorkspaceDeletionManifest' -count=1"
+
+[[patches]]
+id = "telegram-push"
+name = "feat(telegram): inbox notifications in the member's DM; decision buttons"
+patch_file = "0019-telegram-push.patch"
+metadata_file = "0019-telegram-push.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/integrations/telegram/vantt_push.go", "server/internal/integrations/telegram/api.go", "server/internal/integrations/telegram/telegram_channel.go", "server/internal/handler/vantt_decision_notify.go", "server/internal/handler/vantt_decision.go", "server/cmd/server/router.go", "packages/core/types/inbox.ts", "packages/views/inbox/components/inbox-detail-label.tsx", "packages/views/locales/*/inbox.json"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Decision' -count=1 && go test ./internal/integrations/telegram/ -count=1"
