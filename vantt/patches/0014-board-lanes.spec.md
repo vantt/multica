@@ -1,0 +1,40 @@
+# Patch 0014 — board-lanes (F4) · designs D3, D3d "Automatic"
+
+Needs 0005–0007 (workflow rules), 0012 (status-age), 0013 (DaysInStatus).
+
+## Requirement
+A project board grouped by status whose Type rules use at least one workflow other
+than the project's shows **four lanes**, each holding several statuses:
+To do (unstarted), In progress (started), **Awaiting approval** (every step a person
+handles that has a next status, from all the workflows; lock icon in the heading),
+Done (done and closed). Lanes without a visible status are not shown.
+- Cards name their real status (built-in statuses get a chip; custom ones already do).
+- Every card shows days in column (from one day; red from five).
+- Dropping on a lane: the card keeps its status if it is already in the lane, else
+  takes the lane's first status its own workflow allows (the Type rule's workflow,
+  else the project's); no such status → refused with a toast.
+- "+" in a lane creates in its first status; none in Awaiting approval.
+- A board of one workflow is unchanged (one column per step, D3b).
+Reference: Jira board column mapping (several statuses per column), days in column.
+
+Fixes the deviation in 0007: that patch showed every status of every workflow as its
+own column on such boards; D3d asked for status groups.
+
+Not built: Awaiting approval "oldest first" ordering (cards keep the board's sort);
+Goal chip on cards.
+
+## Touch points
+`packages/views/issues/components/board-lanes.tsx` (+ test); `board-view.tsx`
+(lane groups, merged pages, rule-aware `workflowOfIssue`, lane resolution in drag over
+and drag end, `BoardLaneContext` provider); `board-column.tsx` (`lane`, `statuses` on
+`BoardColumnGroup`, `LaneHeading`); `board-card.tsx` (status chip, days);
+`utils/drag-utils.ts` `buildColumns` (several statuses per column); `board_lanes.*` in
+every locale.
+
+## On conflict
+Board grouping code moves often upstream. Keep: lanes built from the visible statuses,
+cards bucketed by status → lane, lane resolved to one concrete status before any of
+upstream's drop checks run.
+
+## Tests
+See series.toml.
