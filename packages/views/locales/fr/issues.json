@@ -1767,6 +1767,16 @@
           "waiting": "En attente du retour"
         }
       }
+    },
+    "approval": {
+      "title": "En attente de votre approbation",
+      "gate_note": "Les agents ne peuvent pas faire sortir ce ticket de cette étape.",
+      "approve": "Approuver",
+      "send_back": "Renvoyer",
+      "moves_to": "Approuver le passe à {{status}}",
+      "reason_label": "Que faut-il changer ?",
+      "send_back_to": "Renvoyer à {{status}}",
+      "cancel": "Annuler"
     }
   },
   "hover_card": {
