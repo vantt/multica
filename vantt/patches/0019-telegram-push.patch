@@ -1,15 +1,15 @@
-From c8cf029c46ef43c2d46ce15b44961e9208ac7de7 Mon Sep 17 00:00:00 2001
+From 3db4b79971ea1add5637ef23e49c799d94c5a49d Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 22:03:16 +0700
 Subject: [PATCH] feat(telegram): inbox notifications in the member's DM;
  decision buttons
 
-A member who bound a Telegram bot gets, in that bot's DM, the inbox items
-that ask something of them: mentions, assignments, review requests, new
-decisions, and anything above info severity. Comments on subscribed issues
-and status moves stay in the in-app inbox. The bot of the agent behind the
-item is preferred (FindChannelBindingForMemberOnAgentInstallation), else the
-member's newest binding. Same route as the WeCom smart bot's inbox push.
+A member who bound a Telegram bot gets every new inbox item in that bot's
+DM, like the WeCom smart bot's inbox push: what they mute in Multica's
+notification settings never becomes an item, so it is not sent either. The
+bot of the agent behind the item is preferred
+(FindChannelBindingForMemberOnAgentInstallation), else the member's newest
+binding. A mention carries its comment text.
 
 A new decision (patch 0008) now raises an inbox item "decision_requested"
 (action required) for the issue's member subscribers, else the workspace's
@@ -34,9 +34,9 @@ Patch-Id: telegram-push
  .../handler/vantt_decision_notify_test.go     |  58 +++
  server/internal/integrations/telegram/api.go  |   5 +-
  .../integrations/telegram/telegram_channel.go |  18 +-
- .../integrations/telegram/vantt_push.go       | 395 ++++++++++++++++++
- .../integrations/telegram/vantt_push_test.go  | 151 +++++++
- 16 files changed, 811 insertions(+), 4 deletions(-)
+ .../integrations/telegram/vantt_push.go       | 386 ++++++++++++++++++
+ .../integrations/telegram/vantt_push_test.go  | 143 +++++++
+ 16 files changed, 794 insertions(+), 4 deletions(-)
  create mode 100644 server/internal/handler/vantt_decision_notify.go
  create mode 100644 server/internal/handler/vantt_decision_notify_test.go
  create mode 100644 server/internal/integrations/telegram/vantt_push.go
@@ -505,10 +505,10 @@ index 74688dfd2..c72b98244 100644
  }
 diff --git a/server/internal/integrations/telegram/vantt_push.go b/server/internal/integrations/telegram/vantt_push.go
 new file mode 100644
-index 000000000..934ab8b64
+index 000000000..c74e2601d
 --- /dev/null
 +++ b/server/internal/integrations/telegram/vantt_push.go
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,386 @@
 +package telegram
 +
 +// vantt patch 0019 (telegram-push): a member's inbox notifications reach their
@@ -606,7 +606,7 @@ index 000000000..934ab8b64
 +		return
 +	}
 +	item, ok := payload["item"].(map[string]any)
-+	if !ok || pushString(item["recipient_type"]) != "member" || !worthPushing(item) {
++	if !ok || pushString(item["recipient_type"]) != "member" {
 +		return
 +	}
 +	p.spawn(func() {
@@ -619,19 +619,10 @@ index 000000000..934ab8b64
 +	})
 +}
 +
-+// pushTypes are the info-level items that ask something of the person; other
-+// info items (comments on subscribed issues, status moves) stay in the in-app
-+// inbox, or a busy agent team would flood the chat. Anything above info goes.
-+var pushTypes = map[string]bool{
-+	InboxTypeDecisionRequested: true, "mentioned": true, "issue_assigned": true, "review_requested": true,
-+}
-+
-+func worthPushing(item map[string]any) bool {
-+	return pushTypes[pushString(item["type"])] || (pushString(item["severity"]) != "" && pushString(item["severity"]) != "info")
-+}
-+
-+// Deliver sends one inbox item to its recipient's Telegram DM. A recipient
-+// with no Telegram binding is not an error: the in-app inbox still has it.
++// Deliver sends one inbox item to its recipient's Telegram DM. Every item
++// that reached the inbox goes: what a member mutes in their notification
++// settings never becomes an item (same as the WeCom push). A recipient with
++// no Telegram binding is not an error: the in-app inbox still has it.
 +func (p *Pusher) Deliver(ctx context.Context, item map[string]any) error {
 +	workspaceID, err := util.ParseUUID(pushString(item["workspace_id"]))
 +	if err != nil {
@@ -906,10 +897,10 @@ index 000000000..934ab8b64
 +}
 diff --git a/server/internal/integrations/telegram/vantt_push_test.go b/server/internal/integrations/telegram/vantt_push_test.go
 new file mode 100644
-index 000000000..4fa914c85
+index 000000000..04931915c
 --- /dev/null
 +++ b/server/internal/integrations/telegram/vantt_push_test.go
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,143 @@
 +package telegram
 +
 +import (
@@ -951,15 +942,7 @@ index 000000000..4fa914c85
 +	return srv, func() []botCall { mu.Lock(); defer mu.Unlock(); return append([]botCall(nil), calls...) }
 +}
 +
-+func TestPushWorthPushing(t *testing.T) {
-+	for typ, want := range map[string]bool{"mentioned": true, "decision_requested": true, "new_comment": false, "status_changed": false} {
-+		if got := worthPushing(map[string]any{"type": typ, "severity": "info"}); got != want {
-+			t.Errorf("%s: %v", typ, got)
-+		}
-+	}
-+	if !worthPushing(map[string]any{"type": "task_failed", "severity": "action_required"}) {
-+		t.Error("action_required must push")
-+	}
++func TestPushParseCallback(t *testing.T) {
 +	if _, _, ok := parseDecisionCallback("vd:not-a-uuid:1"); ok {
 +		t.Error("bad uuid accepted")
 +	}

@@ -4,9 +4,9 @@
 1. **Inbox → Telegram DM.** On `inbox:new` for a member who bound a Telegram bot
    (`channel_user_binding`), send the item to that bot's private chat with them:
    type label, title, body (a mention's comment text when the body is empty),
-   link to the issue. Pushed: `mentioned`, `issue_assigned`, `review_requested`,
-   `decision_requested`, and any severity above `info`. Other info items stay in
-   the in-app inbox (an agent team comments a lot).
+   link to the issue. Every item goes, as in the WeCom push: what a member mutes
+   in Multica's notification settings never becomes an item (owner decision
+   2026-11-10: use Multica's settings, no list of our own).
    Bot choice: the acting agent's bot, else the member's newest binding.
 2. **Decision inbox item.** `POST /api/issues/{id}/decisions` (patch 0008) also
    creates `decision_requested` (`action_required`, details `decision_id`) for the
