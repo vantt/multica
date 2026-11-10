@@ -1734,5 +1734,8 @@
   },
   "hover_card": {
     "created_updated": "建立於 {{created}} · 更新於 {{updated}}"
+  },
+  "parent_chip": {
+    "title": "{{identifier}} 的子事項 · {{title}}"
   }
 }
