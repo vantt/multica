@@ -58,6 +58,15 @@ export function mergeRuleWorkflows<W extends { steps: { status_key: string }[] }
   return { ...project, steps };
 }
 
+/**
+ * The properties a project's rules read (e.g. Type): the issue's workflow depends
+ * on them, so the create form and the issue page show them without "Add property"
+ * (vantt workflow-by-type; Jira puts the work type first).
+ */
+export function ruleProperties(rules: readonly WorkflowRule[] | undefined): Set<string> {
+  return new Set((rules ?? []).map((r) => r.property_id));
+}
+
 export function useSetWorkflowRules(projectId: string) {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
