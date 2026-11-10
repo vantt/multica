@@ -1,4 +1,4 @@
-From 8442ecfaca997060d8d3007f96461da0481b7799 Mon Sep 17 00:00:00 2001
+From 59259bae4d650d46efad336aac19e331e2dd1c76 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 23:52:57 +0700
 Subject: [PATCH] feat(triage): suggest a new issue's project and Type with a
@@ -26,7 +26,7 @@ per option). Nothing about options is built in.
 - A chat /issue (origin *_chat) with no project gets project and Type when
   sure, plus a line "_Clef xếp: <project> 87% · <Type> 91%_"; any refusal
   creates the issue as typed.
-- MULTICA_WORKERS_AI_ACCOUNT_ID + MULTICA_WORKERS_AI_TOKEN turn it on;
+- MULTICA_CLOUDFLARE_AI_ACCOUNT_ID + MULTICA_CLOUDFLARE_AI_TOKEN turn it on;
   MULTICA_TRIAGE_FORM=off / MULTICA_TRIAGE_CHAT=off switch a job off.
 - Opt-in live eval (TRIAGE_LIVE_EVAL=1) against a workspace's issues or a
   fixture of requests.
@@ -91,7 +91,7 @@ index 8a6e5dc2c..ccd0906b3 100644
  				// POST twin of GET /api/issues for oversized filter sets
 diff --git a/server/internal/handler/vantt_triage.go b/server/internal/handler/vantt_triage.go
 new file mode 100644
-index 000000000..85c4f795b
+index 000000000..2fc5be9ae
 --- /dev/null
 +++ b/server/internal/handler/vantt_triage.go
 @@ -0,0 +1,54 @@
@@ -111,7 +111,7 @@ index 000000000..85c4f795b
 +	"github.com/multica-ai/multica/server/internal/triage"
 +)
 +
-+// Triage is set at boot when MULTICA_WORKERS_AI_* is configured; nil = off.
++// Triage is set at boot when MULTICA_CLOUDFLARE_AI_* is configured; nil = off.
 +var Triage *triage.Suggester
 +
 +type TriageSuggestRequest struct {
@@ -371,7 +371,7 @@ index 000000000..d9e131fca
 +func pct(p float64) int { return int(p*100 + 0.5) }
 diff --git a/server/internal/triage/clef.go b/server/internal/triage/clef.go
 new file mode 100644
-index 000000000..bcaa35952
+index 000000000..944148060
 --- /dev/null
 +++ b/server/internal/triage/clef.go
 @@ -0,0 +1,229 @@
@@ -447,15 +447,15 @@ index 000000000..bcaa35952
 +
 +var accountRE = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 +
-+// FromEnv reads MULTICA_WORKERS_AI_ACCOUNT_ID and MULTICA_WORKERS_AI_TOKEN
-+// (MULTICA_WORKERS_AI_BASE_URL for tests). Nil when either is missing.
++// FromEnv reads MULTICA_CLOUDFLARE_AI_ACCOUNT_ID and MULTICA_CLOUDFLARE_AI_TOKEN
++// (MULTICA_CLOUDFLARE_AI_BASE_URL for tests). Nil when either is missing.
 +func FromEnv(logger *slog.Logger) *Client {
-+	acct := strings.TrimSpace(os.Getenv("MULTICA_WORKERS_AI_ACCOUNT_ID"))
-+	token := strings.TrimSpace(os.Getenv("MULTICA_WORKERS_AI_TOKEN"))
++	acct := strings.TrimSpace(os.Getenv("MULTICA_CLOUDFLARE_AI_ACCOUNT_ID"))
++	token := strings.TrimSpace(os.Getenv("MULTICA_CLOUDFLARE_AI_TOKEN"))
 +	if !accountRE.MatchString(acct) || token == "" {
 +		return nil
 +	}
-+	return New(acct, token, os.Getenv("MULTICA_WORKERS_AI_BASE_URL"), logger)
++	return New(acct, token, os.Getenv("MULTICA_CLOUDFLARE_AI_BASE_URL"), logger)
 +}
 +
 +func New(accountID, token, baseURL string, logger *slog.Logger) *Client {
@@ -702,7 +702,7 @@ index 000000000..fe98d1a2f
 +}
 diff --git a/server/internal/triage/eval_test.go b/server/internal/triage/eval_test.go
 new file mode 100644
-index 000000000..ac60e2d10
+index 000000000..8fe5da194
 --- /dev/null
 +++ b/server/internal/triage/eval_test.go
 @@ -0,0 +1,106 @@
@@ -712,7 +712,7 @@ index 000000000..ac60e2d10
 +// when asked, like OpenMausBot's room-routing.eval.test.ts:
 +//
 +//	TRIAGE_LIVE_EVAL=1 TRIAGE_EVAL_DATABASE_URL=postgres://… TRIAGE_EVAL_WORKSPACE=<uuid> \
-+//	MULTICA_WORKERS_AI_ACCOUNT_ID=… MULTICA_WORKERS_AI_TOKEN=… go test ./internal/triage/ -run LiveEval -v
++//	MULTICA_CLOUDFLARE_AI_ACCOUNT_ID=… MULTICA_CLOUDFLARE_AI_TOKEN=… go test ./internal/triage/ -run LiveEval -v
 +//
 +// Every issue that already has a project and a Type is asked about with its
 +// answers hidden (and kept out of the examples); the report says how often a
@@ -734,7 +734,7 @@ index 000000000..ac60e2d10
 +	ctx := context.Background()
 +	client := FromEnv(nil)
 +	if client == nil {
-+		t.Fatal("set MULTICA_WORKERS_AI_ACCOUNT_ID and MULTICA_WORKERS_AI_TOKEN")
++		t.Fatal("set MULTICA_CLOUDFLARE_AI_ACCOUNT_ID and MULTICA_CLOUDFLARE_AI_TOKEN")
 +	}
 +	pool, err := pgxpool.New(ctx, os.Getenv("TRIAGE_EVAL_DATABASE_URL"))
 +	if err != nil {

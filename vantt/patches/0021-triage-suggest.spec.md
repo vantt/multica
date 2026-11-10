@@ -20,7 +20,7 @@ shape). Learned from OpenMausBot's decider and Linear's Triage Intelligence.
   as typed.
 - One log line per call: job, model, ok/reason, choice, p, margin, latency, input tokens,
   16-char state hash. Never the issue text, the options or the token.
-- Env: `MULTICA_WORKERS_AI_ACCOUNT_ID`, `MULTICA_WORKERS_AI_TOKEN` (empty = off),
+- Env: `MULTICA_CLOUDFLARE_AI_ACCOUNT_ID`, `MULTICA_CLOUDFLARE_AI_TOKEN` (empty = off),
   `MULTICA_TRIAGE_FORM=off`, `MULTICA_TRIAGE_CHAT=off`, `MULTICA_TRIAGE_MODEL=clef`.
 
 ## Eval (opt-in, real model)
