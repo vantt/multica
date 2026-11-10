@@ -2167,6 +2167,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/", h.DeleteIssueWorkflow)
 					r.Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
+					r.Get("/limits", h.GetIssueWorkflowLimits) // vantt send-back-limit
+					r.Put("/limits", h.SetIssueWorkflowLimits)
 				})
 			})
 
