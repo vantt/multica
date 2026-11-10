@@ -1702,6 +1702,16 @@
           "waiting": "회신 대기"
         }
       }
+    },
+    "approval": {
+      "title": "승인 대기 중",
+      "gate_note": "에이전트는 이 이슈를 이 단계에서 옮길 수 없습니다.",
+      "approve": "승인",
+      "send_back": "되돌려 보내기",
+      "moves_to": "승인하면 {{status}}(으)로 이동합니다",
+      "reason_label": "무엇을 바꿔야 하나요?",
+      "send_back_to": "{{status}}(으)로 되돌려 보내기",
+      "cancel": "취소"
     }
   },
   "hover_card": {

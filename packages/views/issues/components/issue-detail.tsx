@@ -14,6 +14,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { AppLink, useBackOrReplace } from "../../navigation";
 import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
+import { ApprovalPanel } from "../../workflows/approval-panel";
 import {
   Archive,
   Calendar,
@@ -3313,6 +3314,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               )
             }
           />
+          <ApprovalPanel issue={issue} onUpdateField={(updates) => handleUpdateField(updates)} />
           <div id={descriptionSectionId}>
           {titleLazy.active && (
             <div className={titleLazy.ready ? undefined : "hidden"}>
