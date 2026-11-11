@@ -1,0 +1,2782 @@
+From d5bbe23cc0b7b70fccc4d5e90bba30499784c03d Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:09:03 +0700
+Subject: [PATCH] feat(workflow): owner gates, workflows by Type and their
+ board columns, approval panel, send-back limit
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- feat(workflow): agents cannot move an issue out of a step a person handles
+
+  A step whose handler resolves to a member is an owner gate. An agent actor
+  (task token) changing the status or the project of an issue in such a step
+  gets 403 {code: owner_gate}; the batch endpoint skips the issue. Members are
+  unaffected; agents still move issues into the gate.
+
+- feat(issues): approval panel for the person a workflow step waits on
+
+  While an issue sits in a step whose handler is the viewer (a member, or the
+  creator when that is the viewer), the issue page shows an approval panel:
+  Approve moves it to the step's next status, Send back asks what must change,
+  posts it as a comment and moves it to the step's back status.
+
+- feat(workflow): pick a project's workflow by a select property (Type)
+
+  Table project_workflow_rule (add-only, no foreign keys): in a project, an
+  issue whose select property has an option follows another workflow; anything
+  else follows the project's workflow. ForIssue resolves rule -> project ->
+  Default for issue writes, create, the claim brief and the gate check.
+  API GET/PUT /api/projects/{id}/workflow-rules (owner/admin). Changing the
+  property moves a status the new workflow lacks to its equivalent, like a
+  project move; an agent cannot change it while the issue waits on a person.
+  Workspace deletion removes the rules.
+
+- feat(projects): edit workflows by Type in the project sidebar
+
+  A "By Type" row under the project's workflow: summary of the rules, and for
+  owners/admins a popover to pick the select property and, per option, the
+  workflow its issues follow (or the project's workflow).
+
+- feat(boards): a project board shows the columns of every workflow its rules use
+
+  When a project sends some Types to other workflows (workflow-by-type), its
+  board columns are the project workflow's steps plus each rule workflow's
+  middle steps, before blocked/done/cancelled, so every issue has a column.
+  Without rules nothing changes.
+
+- feat(issues): pull requests in the approval panel
+
+  While an issue waits for the viewer's approval, the panel lists its pull requests
+  — the PRs linked to the issue, then GitHub PR links in its description and
+  comments, newest first, up to three — each with "Approve on GitHub" (opens the
+  PR's review page) and a note to approve the PR there, then Approve here.
+  Reference: Jira's development panel on approvals.
+
+- feat(issues): the property a project's workflow depends on is always shown
+
+  In a project whose workflow rules read a property (Type), the create-issue form
+  and the issue page show that property without "Add property", so the work type
+  is picked first, as Jira puts the work type first. Core: ruleProperties.
+
+- feat(properties): a select property derived from another (Domain from Type)
+
+  A select property whose description says "Derived from <Source>" takes the
+  option named like the part of the source option before " · " (Type "Tech ·
+  Feature" → Domain "Tech"), when an issue is created and whenever the source
+  changes. Left alone when no option matches. One property to pick, the other
+  follows.
+
+- feat(workflow): cap how often agents send an issue back
+
+  A workflow may set max_send_backs (GET/PUT /api/issue-workflows/{id}/limits,
+  table vantt_workflow_limit). An agent moving an issue along a step's back
+  edge after that many agent send-backs with no person's status move in
+  between gets 409 {code: send_back_limit}; the batch endpoint skips it. A
+  person's move is never refused and starts a fresh count. No limit set =
+  upstream behaviour.
+
+Patch-Id: workflow
+---
+ packages/core/api/client.ts                   |  18 ++
+ packages/core/package.json                    |   1 +
+ packages/core/workflow-rules/index.test.ts    |  28 +++
+ packages/core/workflow-rules/index.ts         |  77 ++++++
+ .../views/issues/components/issue-detail.tsx  |   8 +-
+ .../issues/utils/workflow-columns.test.ts     |   3 +
+ .../views/issues/utils/workflow-columns.ts    |   7 +-
+ packages/views/locales/en/issues.json         |  22 ++
+ packages/views/locales/fr/issues.json         |  22 ++
+ packages/views/locales/ja/issues.json         |  22 ++
+ packages/views/locales/ko/issues.json         |  22 ++
+ packages/views/locales/zh-Hans/issues.json    |  22 ++
+ packages/views/locales/zh-Hant/issues.json    |  22 ++
+ packages/views/modals/create-issue.tsx        |   7 +-
+ .../components/project-detail.test.tsx        |   1 +
+ .../projects/components/project-detail.tsx    |  12 +
+ .../views/workflows/approval-panel.test.tsx   | 101 ++++++++
+ packages/views/workflows/approval-panel.tsx   | 134 +++++++++++
+ packages/views/workflows/approval-prs.test.ts |  21 ++
+ packages/views/workflows/approval-prs.tsx     |  74 ++++++
+ .../workflows/workflow-rules-row.test.tsx     |  40 ++++
+ .../views/workflows/workflow-rules-row.tsx    | 129 +++++++++++
+ server/cmd/server/router.go                   |   4 +
+ server/internal/handler/issue.go              |  14 +-
+ server/internal/handler/issue_trigger.go      |   2 +-
+ .../internal/handler/issue_workflow_entry.go  |  41 +++-
+ server/internal/handler/pr_auto_complete.go   |   2 +-
+ server/internal/handler/property.go           |  22 ++
+ server/internal/handler/vantt_derive_test.go  |  83 +++++++
+ .../handler/vantt_owner_gates_test.go         | 119 ++++++++++
+ .../internal/handler/vantt_send_back_limit.go | 192 +++++++++++++++
+ .../handler/vantt_send_back_limit_test.go     | 109 +++++++++
+ .../internal/handler/vantt_workflow_rules.go  | 219 ++++++++++++++++++
+ .../handler/vantt_workflow_rules_test.go      |  94 ++++++++
+ .../handler/workspace_delete_manifest_test.go |   2 +
+ .../internal/issueworkflow/issueworkflow.go   |  93 ++++++++
+ server/internal/service/issue.go              |  11 +-
+ server/internal/service/vantt_derive.go       | 100 ++++++++
+ .../9005_vantt_project_workflow_rule.down.sql |   1 +
+ .../9005_vantt_project_workflow_rule.up.sql   |  13 ++
+ ...ject_workflow_rule_workflow_index.down.sql |   1 +
+ ...roject_workflow_rule_workflow_index.up.sql |   1 +
+ .../9009_vantt_workflow_limit.down.sql        |   1 +
+ .../9009_vantt_workflow_limit.up.sql          |  10 +
+ server/pkg/db/generated/models.go             |  10 +
+ .../db/generated/project_workflow_rule.sql.go |  93 ++++++++
+ .../pkg/db/generated/workspace_delete.sql.go  |   7 +
+ .../pkg/db/queries/project_workflow_rule.sql  |  13 ++
+ server/pkg/db/queries/workspace_delete.sql    |   7 +
+ 49 files changed, 2048 insertions(+), 9 deletions(-)
+ create mode 100644 packages/core/workflow-rules/index.test.ts
+ create mode 100644 packages/core/workflow-rules/index.ts
+ create mode 100644 packages/views/workflows/approval-panel.test.tsx
+ create mode 100644 packages/views/workflows/approval-panel.tsx
+ create mode 100644 packages/views/workflows/approval-prs.test.ts
+ create mode 100644 packages/views/workflows/approval-prs.tsx
+ create mode 100644 packages/views/workflows/workflow-rules-row.test.tsx
+ create mode 100644 packages/views/workflows/workflow-rules-row.tsx
+ create mode 100644 server/internal/handler/vantt_derive_test.go
+ create mode 100644 server/internal/handler/vantt_owner_gates_test.go
+ create mode 100644 server/internal/handler/vantt_send_back_limit.go
+ create mode 100644 server/internal/handler/vantt_send_back_limit_test.go
+ create mode 100644 server/internal/handler/vantt_workflow_rules.go
+ create mode 100644 server/internal/handler/vantt_workflow_rules_test.go
+ create mode 100644 server/internal/service/vantt_derive.go
+ create mode 100644 server/migrations/9005_vantt_project_workflow_rule.down.sql
+ create mode 100644 server/migrations/9005_vantt_project_workflow_rule.up.sql
+ create mode 100644 server/migrations/9006_vantt_project_workflow_rule_workflow_index.down.sql
+ create mode 100644 server/migrations/9006_vantt_project_workflow_rule_workflow_index.up.sql
+ create mode 100644 server/migrations/9009_vantt_workflow_limit.down.sql
+ create mode 100644 server/migrations/9009_vantt_workflow_limit.up.sql
+ create mode 100644 server/pkg/db/generated/project_workflow_rule.sql.go
+ create mode 100644 server/pkg/db/queries/project_workflow_rule.sql
+
+diff --git a/packages/core/api/client.ts b/packages/core/api/client.ts
+index 2648e8bf0..741be5e5a 100644
+--- a/packages/core/api/client.ts
++++ b/packages/core/api/client.ts
+@@ -4110,6 +4110,24 @@ export class ApiClient {
+   }
+ 
+   // Project resources
++  // vantt workflow-by-type (patch workflow-by-type-ui, F3).
++  async listProjectWorkflowRules(projectId: string): Promise<{ rules: { property_id: string; option_id: string; workflow_id: string }[] }> {
++    const raw = await this.fetch<{ rules?: unknown }>(`/api/projects/${projectId}/workflow-rules`);
++    const rules = Array.isArray(raw?.rules)
++      ? (raw.rules as Record<string, unknown>[]).filter(
++          (r) => typeof r.property_id === "string" && typeof r.option_id === "string" && typeof r.workflow_id === "string",
++        )
++      : [];
++    return { rules: rules as { property_id: string; option_id: string; workflow_id: string }[] };
++  }
++
++  async setProjectWorkflowRules(
++    projectId: string,
++    rules: { property_id: string; option_id: string; workflow_id: string }[],
++  ): Promise<void> {
++    await this.fetch(`/api/projects/${projectId}/workflow-rules`, { method: "PUT", body: JSON.stringify({ rules }) });
++  }
++
+   async listProjectResources(
+     projectId: string,
+   ): Promise<ListProjectResourcesResponse> {
+diff --git a/packages/core/package.json b/packages/core/package.json
+index c25543b88..d2a61734a 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -38,6 +38,7 @@
+     "./issue-workflows/queries": "./issue-workflows/queries.ts",
+     "./issue-workflows/hooks": "./issue-workflows/hooks.ts",
+     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
++    "./workflow-rules": "./workflow-rules/index.ts",
+     "./issues": "./issues/index.ts",
+     "./issues/batch": "./issues/batch.ts",
+     "./issues/canonical-id": "./issues/canonical-id.ts",
+diff --git a/packages/core/workflow-rules/index.test.ts b/packages/core/workflow-rules/index.test.ts
+new file mode 100644
+index 000000000..532ee4d50
+--- /dev/null
++++ b/packages/core/workflow-rules/index.test.ts
+@@ -0,0 +1,28 @@
++// @vitest-environment node
++import { describe, expect, it } from "vitest";
++import { mergeRuleWorkflows } from "./index";
++
++const wf = (id: string, keys: string[]) => ({ id, steps: keys.map((status_key) => ({ status_key })) });
++
++describe("mergeRuleWorkflows", () => {
++  it("adds rule workflows' middle steps before the closing steps", () => {
++    const delivery = wf("d", ["backlog", "todo", "build", "in_review", "blocked", "done", "cancelled"]);
++    const content = wf("c", ["todo", "content_review", "in_review", "done", "cancelled"]);
++    const merged = mergeRuleWorkflows(delivery, [{ property_id: "p", option_id: "o", workflow_id: "c" }], [delivery, content], ["blocked", "done", "cancelled"]);
++    expect(merged?.steps.map((s) => s.status_key)).toEqual(["backlog", "todo", "build", "in_review", "content_review", "blocked", "done", "cancelled"]);
++  });
++
++  it("keeps the project workflow without rules", () => {
++    const delivery = wf("d", ["todo", "done"]);
++    expect(mergeRuleWorkflows(delivery, [], [delivery], ["done"])).toBe(delivery);
++  });
++});
++
++describe("ruleProperties", () => {
++  it("names the properties the rules read, once", async () => {
++    const { ruleProperties } = await import("./index");
++    const r = (p: string) => ({ property_id: p, option_id: "o", workflow_id: "w" });
++    expect([...ruleProperties([r("type"), r("type"), r("domain")])]).toEqual(["type", "domain"]);
++    expect(ruleProperties(undefined).size).toBe(0);
++  });
++});
+diff --git a/packages/core/workflow-rules/index.ts b/packages/core/workflow-rules/index.ts
+new file mode 100644
+index 000000000..aea7d03a0
+--- /dev/null
++++ b/packages/core/workflow-rules/index.ts
+@@ -0,0 +1,77 @@
++import { useMutation, useQueryClient } from "@tanstack/react-query";
++import { api } from "../api";
++import { useWorkspaceId } from "../hooks";
++
++/**
++ * vantt workflow-by-type (patch workflow-by-type-ui, F3): in a project, issues
++ * whose select property has an option follow another workflow. Reference: Jira
++ * workflow schemes.
++ */
++export interface WorkflowRule {
++  property_id: string;
++  option_id: string;
++  workflow_id: string;
++}
++
++export const workflowRuleKeys = {
++  project: (wsId: string, projectId: string) => ["workflow-rules", wsId, projectId] as const,
++};
++
++// A plain options object (not queryOptions) so surfaces whose tests mock
++// react-query with only useQuery can still read rules.
++export function workflowRulesOptions(wsId: string, projectId: string) {
++  return {
++    queryKey: workflowRuleKeys.project(wsId, projectId),
++    queryFn: () => api.listProjectWorkflowRules(projectId),
++    select: (data: { rules: WorkflowRule[] }) => data.rules,
++    staleTime: 60_000,
++  };
++}
++
++/**
++ * A project's columns when rules send some Types to other workflows (vantt
++ * board-columns, design D3d "Automatic"): the project workflow's steps, then
++ * each rule workflow's middle steps it does not have yet, before the closing
++ * steps (blocked, done, cancelled). Without rules: the project workflow.
++ */
++export function mergeRuleWorkflows<W extends { steps: { status_key: string }[] }>(
++  project: W | null,
++  rules: readonly WorkflowRule[],
++  workflows: readonly (W & { id: string })[],
++  tail: readonly string[] = ["blocked", "done", "cancelled"],
++): W | null {
++  if (!project || rules.length === 0) return project;
++  const steps = [...project.steps];
++  const has = new Set(steps.map((s) => s.status_key));
++  const tailAt = () => {
++    const i = steps.findIndex((s) => tail.includes(s.status_key));
++    return i < 0 ? steps.length : i;
++  };
++  for (const rule of rules) {
++    const wf = workflows.find((w) => w.id === rule.workflow_id);
++    for (const step of wf?.steps ?? []) {
++      if (has.has(step.status_key) || tail.includes(step.status_key)) continue;
++      steps.splice(tailAt(), 0, step);
++      has.add(step.status_key);
++    }
++  }
++  return { ...project, steps };
++}
++
++/**
++ * The properties a project's rules read (e.g. Type): the issue's workflow depends
++ * on them, so the create form and the issue page show them without "Add property"
++ * (vantt workflow-by-type; Jira puts the work type first).
++ */
++export function ruleProperties(rules: readonly WorkflowRule[] | undefined): Set<string> {
++  return new Set((rules ?? []).map((r) => r.property_id));
++}
++
++export function useSetWorkflowRules(projectId: string) {
++  const qc = useQueryClient();
++  const wsId = useWorkspaceId();
++  return useMutation({
++    mutationFn: (rules: WorkflowRule[]) => api.setProjectWorkflowRules(projectId, rules),
++    onSuccess: () => qc.invalidateQueries({ queryKey: workflowRuleKeys.project(wsId, projectId) }),
++  });
++}
+diff --git a/packages/views/issues/components/issue-detail.tsx b/packages/views/issues/components/issue-detail.tsx
+index 88d46beeb..b75d5bda6 100644
+--- a/packages/views/issues/components/issue-detail.tsx
++++ b/packages/views/issues/components/issue-detail.tsx
+@@ -1,5 +1,6 @@
+ "use client";
+ 
++import { ruleProperties, workflowRulesOptions } from "@multica/core/workflow-rules"; // vantt workflow-by-type
+ import {
+   issueBehavesAs,
+   issueBehavesAsAny,
+@@ -14,6 +15,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+ import { AppLink, useBackOrReplace } from "../../navigation";
+ import { IssueDuplicateBanner, IssueDuplicatesSection, isDuplicateIssue } from "./issue-duplicates";
++import { ApprovalPanel } from "../../workflows/approval-panel";
+ import {
+   Archive,
+   Calendar,
+@@ -2569,6 +2571,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+   // still carry a value written before the archive, and that row must stay
+   // renderable (read-only) until someone clears it.
+   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId, true));
++  // vantt workflow-by-type: the property the project's rules read (Type) always has a row.
++  const { data: detailRules } = useQuery({ ...workflowRulesOptions(wsId, issue?.project_id ?? ""), enabled: Boolean(issue?.project_id) });
++  const pinnedProperties = ruleProperties(detailRules);
+ 
+   // Sub-issue rows only surface live definitions: the display picker offers
+   // non-archived properties, and chips render only ids that resolve here.
+@@ -2965,7 +2970,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+             .filter(
+               (p) =>
+                 issue.properties?.[p.id] !== undefined ||
+-                (!p.archived && visibleCustomProps.has(p.id)),
++                (!p.archived && (visibleCustomProps.has(p.id) || pinnedProperties.has(p.id))),
+             )
+             .map((p) => (
+               <PropRow
+@@ -3352,6 +3357,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+               )
+             }
+           />
++          <ApprovalPanel issue={issue} onUpdateField={(updates) => handleUpdateField(updates)} />
+           <div id={descriptionSectionId}>
+           {titleLazy.active && (
+             <div className={titleLazy.ready ? undefined : "hidden"}>
+diff --git a/packages/views/issues/utils/workflow-columns.test.ts b/packages/views/issues/utils/workflow-columns.test.ts
+index cb27ea738..7fcf33d60 100644
+--- a/packages/views/issues/utils/workflow-columns.test.ts
++++ b/packages/views/issues/utils/workflow-columns.test.ts
+@@ -39,6 +39,9 @@ const { defaultWithoutBlocked } = vi.hoisted(() => ({
+   },
+ }));
+ 
++// vantt board-columns reads the project's workflow rules.
++vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: undefined }) }));
++
+ vi.mock("@multica/core/issue-workflows", () => ({
+   defaultWorkflow: () => defaultWithoutBlocked,
+   useIssueWorkflows: () => ({ workflows: [defaultWithoutBlocked] }),
+diff --git a/packages/views/issues/utils/workflow-columns.ts b/packages/views/issues/utils/workflow-columns.ts
+index 90aab3277..cbf930975 100644
+--- a/packages/views/issues/utils/workflow-columns.ts
++++ b/packages/views/issues/utils/workflow-columns.ts
+@@ -1,4 +1,6 @@
++import { useQuery } from "@tanstack/react-query";
+ import { defaultWorkflow, useIssueWorkflows, useProjectWorkflow } from "@multica/core/issue-workflows";
++import { mergeRuleWorkflows, workflowRulesOptions } from "@multica/core/workflow-rules";
+ import type { IssueStatus, IssueWorkflow } from "@multica/core/types";
+ 
+ /**
+@@ -33,7 +35,10 @@ export function useColumnWorkflow(
+ ): { workflow: IssueWorkflow | null } {
+   const { workflows } = useIssueWorkflows(wsId);
+   const projectWorkflow = useProjectWorkflow(wsId, projectId);
++  // vantt board-columns: a project whose rules send some Types to other
++  // workflows shows their steps too, so every issue has a column.
++  const { data: rules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
+   if (hasStatusFilter) return { workflow: null };
+-  if (projectId) return { workflow: projectWorkflow };
++  if (projectId) return { workflow: mergeRuleWorkflows(projectWorkflow, rules ?? [], workflows) };
+   return { workflow: defaultWorkflow(workflows) };
+ }
+diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
+index dce19d457..293e7148c 100644
+--- a/packages/views/locales/en/issues.json
++++ b/packages/views/locales/en/issues.json
+@@ -1771,6 +1771,28 @@
+           "waiting": "Waiting on reporter"
+         }
+       }
++    },
++    "approval": {
++      "prs_label": "Pull requests",
++      "approve_on_github": "Approve on GitHub",
++      "pr_then_approve": "Approve the PR on GitHub with your account, then Approve here.",
++      "title": "Waiting for your approval",
++      "gate_note": "Agents cannot move this issue out of this step.",
++      "approve": "Approve",
++      "send_back": "Send back",
++      "moves_to": "Approve moves it to {{status}}",
++      "reason_label": "What needs to change?",
++      "send_back_to": "Send back to {{status}}",
++      "cancel": "Cancel"
++    },
++    "rules": {
++      "label": "By Type",
++      "none": "Same for every Type",
++      "help": "Issues whose property has one of these values follow another workflow. Anything else follows the project's workflow.",
++      "choose_by": "Choose workflow by",
++      "project_default": "Project workflow",
++      "cancel": "Cancel",
++      "save": "Save"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
+index 737729ca0..c27c22d27 100644
+--- a/packages/views/locales/fr/issues.json
++++ b/packages/views/locales/fr/issues.json
+@@ -1770,6 +1770,28 @@
+           "waiting": "En attente du retour"
+         }
+       }
++    },
++    "approval": {
++      "prs_label": "Pull requests",
++      "approve_on_github": "Approuver sur GitHub",
++      "pr_then_approve": "Approuvez la PR sur GitHub avec votre compte, puis Approuvez ici.",
++      "title": "En attente de votre approbation",
++      "gate_note": "Les agents ne peuvent pas faire sortir ce ticket de cette étape.",
++      "approve": "Approuver",
++      "send_back": "Renvoyer",
++      "moves_to": "Approuver le passe à {{status}}",
++      "reason_label": "Que faut-il changer ?",
++      "send_back_to": "Renvoyer à {{status}}",
++      "cancel": "Annuler"
++    },
++    "rules": {
++      "label": "Par type",
++      "none": "Identique pour chaque type",
++      "help": "Les tickets dont la propriété a l’une de ces valeurs suivent un autre workflow. Les autres suivent celui du projet.",
++      "choose_by": "Choisir le workflow selon",
++      "project_default": "Workflow du projet",
++      "cancel": "Annuler",
++      "save": "Enregistrer"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
+index 5c5f706f9..925c387c9 100644
+--- a/packages/views/locales/ja/issues.json
++++ b/packages/views/locales/ja/issues.json
+@@ -1705,6 +1705,28 @@
+           "waiting": "返答待ち"
+         }
+       }
++    },
++    "approval": {
++      "prs_label": "プルリクエスト",
++      "approve_on_github": "GitHub で承認",
++      "pr_then_approve": "GitHub で自分のアカウントから PR を承認してから、ここで承認してください。",
++      "title": "あなたの承認待ち",
++      "gate_note": "エージェントはこの課題をこのステップから移動できません。",
++      "approve": "承認",
++      "send_back": "差し戻し",
++      "moves_to": "承認すると {{status}} に移動します",
++      "reason_label": "何を変更する必要がありますか？",
++      "send_back_to": "{{status}} に差し戻す",
++      "cancel": "キャンセル"
++    },
++    "rules": {
++      "label": "タイプ別",
++      "none": "すべてのタイプで同じ",
++      "help": "このプロパティがいずれかの値の課題は別のワークフローに従います。それ以外はプロジェクトのワークフローに従います。",
++      "choose_by": "ワークフローの選択基準",
++      "project_default": "プロジェクトのワークフロー",
++      "cancel": "キャンセル",
++      "save": "保存"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
+index be3a7b7e4..5539e8524 100644
+--- a/packages/views/locales/ko/issues.json
++++ b/packages/views/locales/ko/issues.json
+@@ -1705,6 +1705,28 @@
+           "waiting": "회신 대기"
+         }
+       }
++    },
++    "approval": {
++      "prs_label": "풀 리퀘스트",
++      "approve_on_github": "GitHub에서 승인",
++      "pr_then_approve": "GitHub에서 내 계정으로 PR을 승인한 뒤 여기서 승인하세요.",
++      "title": "승인 대기 중",
++      "gate_note": "에이전트는 이 이슈를 이 단계에서 옮길 수 없습니다.",
++      "approve": "승인",
++      "send_back": "되돌려 보내기",
++      "moves_to": "승인하면 {{status}}(으)로 이동합니다",
++      "reason_label": "무엇을 바꿔야 하나요?",
++      "send_back_to": "{{status}}(으)로 되돌려 보내기",
++      "cancel": "취소"
++    },
++    "rules": {
++      "label": "유형별",
++      "none": "모든 유형에 동일",
++      "help": "속성이 이 값 중 하나인 이슈는 다른 워크플로를 따릅니다. 나머지는 프로젝트 워크플로를 따릅니다.",
++      "choose_by": "워크플로 선택 기준",
++      "project_default": "프로젝트 워크플로",
++      "cancel": "취소",
++      "save": "저장"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
+index d55665495..011b8e1ba 100644
+--- a/packages/views/locales/zh-Hans/issues.json
++++ b/packages/views/locales/zh-Hans/issues.json
+@@ -1705,6 +1705,28 @@
+           "waiting": "等待反馈"
+         }
+       }
++    },
++    "approval": {
++      "prs_label": "拉取请求",
++      "approve_on_github": "在 GitHub 上批准",
++      "pr_then_approve": "先用你的账号在 GitHub 上批准 PR，再在这里批准。",
++      "title": "等待你的审批",
++      "gate_note": "智能体无法将此事项移出此步骤。",
++      "approve": "批准",
++      "send_back": "退回",
++      "moves_to": "批准后移至 {{status}}",
++      "reason_label": "需要修改什么？",
++      "send_back_to": "退回到 {{status}}",
++      "cancel": "取消"
++    },
++    "rules": {
++      "label": "按类型",
++      "none": "所有类型相同",
++      "help": "属性为以下值之一的事项遵循另一个工作流，其余遵循项目的工作流。",
++      "choose_by": "按此属性选择工作流",
++      "project_default": "项目工作流",
++      "cancel": "取消",
++      "save": "保存"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
+index bcfd21c18..af389d2b4 100644
+--- a/packages/views/locales/zh-Hant/issues.json
++++ b/packages/views/locales/zh-Hant/issues.json
+@@ -1704,6 +1704,28 @@
+           "waiting": "等待反饋"
+         }
+       }
++    },
++    "approval": {
++      "prs_label": "拉取請求",
++      "approve_on_github": "在 GitHub 上核准",
++      "pr_then_approve": "先用你的帳號在 GitHub 上核准 PR，再在這裡核准。",
++      "title": "等待你的審批",
++      "gate_note": "智慧代理無法將此事項移出此步驟。",
++      "approve": "批准",
++      "send_back": "退回",
++      "moves_to": "批准後移至 {{status}}",
++      "reason_label": "需要修改什麼？",
++      "send_back_to": "退回到 {{status}}",
++      "cancel": "取消"
++    },
++    "rules": {
++      "label": "依類型",
++      "none": "所有類型相同",
++      "help": "屬性為以下值之一的事項遵循另一個工作流程，其餘遵循專案的工作流程。",
++      "choose_by": "依此屬性選擇工作流程",
++      "project_default": "專案工作流程",
++      "cancel": "取消",
++      "save": "儲存"
+     }
+   },
+   "hover_card": {
+diff --git a/packages/views/modals/create-issue.tsx b/packages/views/modals/create-issue.tsx
+index 1e1c2b2b9..8ab238b00 100644
+--- a/packages/views/modals/create-issue.tsx
++++ b/packages/views/modals/create-issue.tsx
+@@ -82,6 +82,7 @@ import {
+ } from "@multica/core/issues/mutations";
+ import { useAttachLabelToIssue } from "@multica/core/labels";
+ import { propertyListOptions } from "@multica/core/properties";
++import { ruleProperties, workflowRulesOptions } from "@multica/core/workflow-rules"; // vantt workflow-by-type
+ import {
+   ApiError,
+   DuplicateIssueErrorBodySchema,
+@@ -349,6 +350,9 @@ export function ManualCreatePanel({
+   const queryClient = useQueryClient();
+   const { categoryOf: draftStatusCategory, colorOf, iconOf } = useIssueStatuses(wsId);
+   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(wsId));
++  // vantt workflow-by-type: the property the project's rules read (Type) is always offered.
++  const { data: createRules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
++  const pinnedProperties = ruleProperties(createRules);
+   const { data: parentIssue } = useQuery({
+     ...issueDetailOptions(wsId, parentIssueId ?? ""),
+     enabled: !!parentIssueId,
+@@ -1183,7 +1187,8 @@ export function ManualCreatePanel({
+                 .filter(
+                   (property) =>
+                     Object.prototype.hasOwnProperty.call(propertyValues, property.id) ||
+-                    customPropertyPickerId === property.id,
++                    customPropertyPickerId === property.id ||
++                    (!property.archived && pinnedProperties.has(property.id)),
+                 )
+                 .map((property) => {
+                   const value = propertyValues[property.id];
+diff --git a/packages/views/projects/components/project-detail.test.tsx b/packages/views/projects/components/project-detail.test.tsx
+index 2a4933fcd..9c9fba72c 100644
+--- a/packages/views/projects/components/project-detail.test.tsx
++++ b/packages/views/projects/components/project-detail.test.tsx
+@@ -23,6 +23,7 @@ vi.mock("@multica/ui/lib/clipboard", () => ({
+ 
+ vi.mock("../../workflows/project-workflow-menu", () => ({ ProjectWorkflowMenu: () => null }));
+ vi.mock("../../workflows/project-workflow-row", () => ({ ProjectWorkflowControl: () => null }));
++vi.mock("../../workflows/workflow-rules-row", () => ({ WorkflowRulesControl: () => null }));
+ 
+ vi.mock("@tanstack/react-query", () => ({
+   useQuery: (options: { queryKey?: readonly unknown[] }) => {
+diff --git a/packages/views/projects/components/project-detail.tsx b/packages/views/projects/components/project-detail.tsx
+index 9bfe389a8..6bc802f35 100644
+--- a/packages/views/projects/components/project-detail.tsx
++++ b/packages/views/projects/components/project-detail.tsx
+@@ -30,6 +30,7 @@ import { ProjectResourcesSection } from "./project-resources-section";
+ import { ProjectStartDatePicker } from "./project-start-date-picker";
+ import { ProjectDueDatePicker } from "./project-due-date-picker";
+ import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
++import { WorkflowRulesControl } from "../../workflows/workflow-rules-row";
+ import { ProjectWorkflowMenu } from "../../workflows/project-workflow-menu";
+ import { IssueSurface } from "../../issues/surface/issue-surface";
+ import { Skeleton } from "@multica/ui/components/ui/skeleton";
+@@ -108,6 +109,16 @@ function ProjectWorkflowPropRow({ project }: { project: Project }) {
+   );
+ }
+ 
++// Workflows by Type (vantt workflow-by-type-ui).
++function ProjectWorkflowRulesPropRow({ project }: { project: Project }) {
++  const { t } = useT("issues");
++  return (
++    <PropRow label={t(($) => $.workflows.rules.label)}>
++      <WorkflowRulesControl project={project} />
++    </PropRow>
++  );
++}
++
+ // ProjectDetail
+ 
+ export function ProjectDetail({ projectId }: { projectId: string }) {
+@@ -430,6 +441,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
+             <ProjectDueDatePicker dueDate={project.due_date} onUpdate={handleUpdateField} />
+           </PropRow>
+           <ProjectWorkflowPropRow project={project} />
++          <ProjectWorkflowRulesPropRow project={project} />
+         </div>}
+       </div>
+ 
+diff --git a/packages/views/workflows/approval-panel.test.tsx b/packages/views/workflows/approval-panel.test.tsx
+new file mode 100644
+index 000000000..875046615
+--- /dev/null
++++ b/packages/views/workflows/approval-panel.test.tsx
+@@ -0,0 +1,101 @@
++import { cleanup, fireEvent, screen } from "@testing-library/react";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import type { Issue, IssueWorkflow } from "@multica/core/types";
++import { renderWithI18n } from "../test/i18n";
++import { ApprovalPanel } from "./approval-panel";
++
++const state = vi.hoisted(() => ({
++  viewer: "owner-1",
++  workflow: null as IssueWorkflow | null,
++  comment: vi.fn(),
++}));
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace-1" }));
++vi.mock("@multica/core/auth", () => ({
++  useAuthStore: (select: (s: { user: { id: string } }) => unknown) => select({ user: { id: state.viewer } }),
++}));
++vi.mock("@multica/core/issues/mutations", () => ({
++  useCreateComment: () => ({
++    mutate: (vars: { content: string }, opts?: { onSuccess?: () => void }) => {
++      state.comment(vars.content);
++      opts?.onSuccess?.();
++    },
++    isPending: false,
++  }),
++}));
++vi.mock("@multica/core/issue-workflows", async (importOriginal) => {
++  const real = await importOriginal<typeof import("@multica/core/issue-workflows")>();
++  return {
++    workflowStep: real.workflowStep,
++    workflowNextStatus: real.workflowNextStatus,
++    useProjectWithWorkflow: () => ({ project: { lead_type: null, lead_id: null }, workflow: state.workflow }),
++  };
++});
++vi.mock("./approval-prs", () => ({ ApprovalPullRequests: () => null }));
++vi.mock("../issues/utils/status-label", () => ({ useStatusLabel: () => (key: string) => key }));
++
++function delivery(): IssueWorkflow {
++  return {
++    id: "wf-1",
++    workspace_id: "workspace-1",
++    name: "delivery",
++    description: "",
++    is_default: false,
++    owner_id: null,
++    steps: [
++      { status_key: "todo", handler: { type: "agent", id: "agent-1" }, instructions: "" },
++      {
++        status_key: "in_review",
++        handler: { type: "member", id: "owner-1" },
++        instructions: "",
++        next_status_key: "release",
++        back_status_key: "build",
++      },
++      { status_key: "release", handler: { type: "agent", id: "agent-2" }, instructions: "" },
++    ],
++    project_ids: ["project-1"],
++    created_at: "",
++    updated_at: "",
++  };
++}
++
++const issue = (status: string) =>
++  ({ id: "issue-1", status, project_id: "project-1", creator_type: "agent", creator_id: "agent-1" }) as Issue;
++
++beforeEach(() => {
++  state.viewer = "owner-1";
++  state.workflow = delivery();
++  state.comment.mockReset();
++});
++afterEach(cleanup);
++
++describe("ApprovalPanel", () => {
++  it("approves into the step's next status", () => {
++    const onUpdate = vi.fn();
++    renderWithI18n(<ApprovalPanel issue={issue("in_review")} onUpdateField={onUpdate} />);
++    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
++    expect(onUpdate).toHaveBeenCalledWith({ status: "release" });
++  });
++
++  it("sends back with a reason as a comment, into the step's back status", () => {
++    const onUpdate = vi.fn();
++    renderWithI18n(<ApprovalPanel issue={issue("in_review")} onUpdateField={onUpdate} />);
++    fireEvent.click(screen.getByRole("button", { name: "Send back" }));
++    const submit = screen.getByRole("button", { name: "Send back to build" });
++    expect((submit as HTMLButtonElement).disabled).toBe(true);
++    fireEvent.change(screen.getByLabelText("What needs to change?"), { target: { value: "Allow two machines" } });
++    fireEvent.click(submit);
++    expect(state.comment).toHaveBeenCalledWith("Allow two machines");
++    expect(onUpdate).toHaveBeenCalledWith({ status: "build" });
++  });
++
++  it("stays hidden for anyone but the step's person, and on agent steps", () => {
++    state.viewer = "someone-else";
++    const { unmount } = renderWithI18n(<ApprovalPanel issue={issue("in_review")} onUpdateField={vi.fn()} />);
++    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
++    unmount();
++    state.viewer = "owner-1";
++    renderWithI18n(<ApprovalPanel issue={issue("todo")} onUpdateField={vi.fn()} />);
++    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
++  });
++});
+diff --git a/packages/views/workflows/approval-panel.tsx b/packages/views/workflows/approval-panel.tsx
+new file mode 100644
+index 000000000..a78a0241e
+--- /dev/null
++++ b/packages/views/workflows/approval-panel.tsx
+@@ -0,0 +1,134 @@
++"use client";
++
++import { useState } from "react";
++import { Lock } from "lucide-react";
++import { useAuthStore } from "@multica/core/auth";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { useCreateComment } from "@multica/core/issues/mutations";
++import { useProjectWithWorkflow, workflowNextStatus, workflowStep } from "@multica/core/issue-workflows";
++import type { Issue, IssueWorkflowStep, UpdateIssueRequest } from "@multica/core/types";
++import { Button } from "@multica/ui/components/ui/button";
++import { Textarea } from "@multica/ui/components/ui/textarea";
++import { useStatusLabel } from "../issues/utils/status-label";
++import { useT } from "../i18n";
++import { stepHandlerActor } from "./step-handler";
++import { ApprovalPullRequests } from "./approval-prs"; // vantt approval-pr (D5b)
++
++/** Whether the viewer is the person a workflow step hands the issue to. */
++export function stepWaitsOnViewer(
++  step: IssueWorkflowStep | undefined,
++  project: Parameters<typeof stepHandlerActor>[1],
++  issue: Pick<Issue, "creator_type" | "creator_id">,
++  viewerId: string | null | undefined,
++): boolean {
++  if (!step || !viewerId) return false;
++  if (step.handler.type === "creator") return issue.creator_type === "member" && issue.creator_id === viewerId;
++  const actor = stepHandlerActor(step, project);
++  return actor?.type === "member" && actor.id === viewerId;
++}
++
++/**
++ * Approval panel (vantt owner-gates, design D5b): shown while the issue sits in
++ * a workflow step a person handles and the viewer is that person. Approve moves
++ * it to the step's next status; Send back records why and moves it to the
++ * step's back status. Agents cannot move the issue out of such a step.
++ * Reference: Jira approvals (Approve / Decline).
++ */
++export function ApprovalPanel({
++  issue,
++  onUpdateField,
++}: {
++  issue: Issue;
++  onUpdateField: (updates: Partial<UpdateIssueRequest>) => void;
++}) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const viewerId = useAuthStore((s) => s.user?.id);
++  const labelOf = useStatusLabel(wsId);
++  const { project, workflow } = useProjectWithWorkflow(wsId, issue.project_id);
++  const createComment = useCreateComment(issue.id);
++  const [sendingBack, setSendingBack] = useState(false);
++  const [reason, setReason] = useState("");
++
++  const step = workflowStep(workflow, issue.status);
++  if (!workflow || !stepWaitsOnViewer(step, project, issue, viewerId)) return null;
++  const next = workflowNextStatus(workflow, issue.status);
++  const back = step?.back_status_key ?? "";
++  if (!next && !back) return null;
++
++  const sendBack = () => {
++    const note = reason.trim();
++    if (!note) return;
++    createComment.mutate(
++      { content: note },
++      {
++        onSuccess: () => {
++          onUpdateField({ status: back });
++          setSendingBack(false);
++          setReason("");
++        },
++      },
++    );
++  };
++
++  return (
++    <section
++      aria-label={t(($) => $.workflows.approval.title)}
++      className="mb-4 flex flex-col gap-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-body dark:border-amber-500/40 dark:bg-amber-500/10"
++    >
++      <div className="flex flex-wrap items-center gap-2">
++        <Lock aria-hidden className="size-4 shrink-0 text-amber-700 dark:text-amber-400" />
++        <span className="font-semibold text-amber-900 dark:text-amber-200">{t(($) => $.workflows.approval.title)}</span>
++        <span className="text-caption text-amber-800 dark:text-amber-300">{labelOf(issue.status)}</span>
++      </div>
++      <p className="text-caption text-amber-900 dark:text-amber-200">{t(($) => $.workflows.approval.gate_note)}</p>
++      <ApprovalPullRequests issue={issue} />
++
++      {!sendingBack ? (
++        <div className="flex flex-wrap items-center gap-2">
++          {next && (
++            <Button type="button" onClick={() => onUpdateField({ status: next })}>
++              {t(($) => $.workflows.approval.approve)}
++            </Button>
++          )}
++          {back && (
++            <Button type="button" variant="outline" onClick={() => setSendingBack(true)}>
++              {t(($) => $.workflows.approval.send_back)}
++            </Button>
++          )}
++          {next && (
++            <span className="text-caption text-muted-foreground">
++              {t(($) => $.workflows.approval.moves_to, { status: labelOf(next) })}
++            </span>
++          )}
++        </div>
++      ) : (
++        <div className="flex flex-col gap-2">
++          <label htmlFor={`send-back-${issue.id}`} className="font-medium">
++            {t(($) => $.workflows.approval.reason_label)}
++          </label>
++          <Textarea
++            id={`send-back-${issue.id}`}
++            rows={3}
++            value={reason}
++            onChange={(e) => setReason(e.target.value)}
++            className="bg-background"
++          />
++          <div className="flex flex-wrap items-center gap-2">
++            <Button
++              type="button"
++              onClick={sendBack}
++              disabled={!reason.trim() || createComment.isPending}
++              aria-busy={createComment.isPending}
++            >
++              {t(($) => $.workflows.approval.send_back_to, { status: labelOf(back) })}
++            </Button>
++            <Button type="button" variant="outline" onClick={() => setSendingBack(false)}>
++              {t(($) => $.workflows.approval.cancel)}
++            </Button>
++          </div>
++        </div>
++      )}
++    </section>
++  );
++}
+diff --git a/packages/views/workflows/approval-prs.test.ts b/packages/views/workflows/approval-prs.test.ts
+new file mode 100644
+index 000000000..b935b9c5b
+--- /dev/null
++++ b/packages/views/workflows/approval-prs.test.ts
+@@ -0,0 +1,21 @@
++import { describe, expect, it } from "vitest";
++import { collectPrs } from "./approval-prs";
++
++describe("collectPrs", () => {
++  it("lists linked PRs, then PR links from text, newest mention first, once each", () => {
++    const linked = [{ html_url: "https://github.com/vantt/momentry/pull/3", repo_owner: "vantt", repo_name: "momentry", number: 3, title: "goals", state: "open" }];
++    const texts = [
++      "spec in https://github.com/vantt/momentry/pull/3",
++      "Approve PR https://github.com/vantt/opc-studio-app/pull/8 on GitHub",
++      "new round: https://github.com/vantt/opc-studio-app/pull/9",
++    ];
++    expect(collectPrs(linked, texts).map((p) => `${p.repo}#${p.number}`)).toEqual([
++      "vantt/momentry#3",
++      "vantt/opc-studio-app#9",
++      "vantt/opc-studio-app#8",
++    ]);
++  });
++  it("is empty without PRs", () => {
++    expect(collectPrs([], ["no link here"])).toEqual([]);
++  });
++});
+diff --git a/packages/views/workflows/approval-prs.tsx b/packages/views/workflows/approval-prs.tsx
+new file mode 100644
+index 000000000..02398f8d7
+--- /dev/null
++++ b/packages/views/workflows/approval-prs.tsx
+@@ -0,0 +1,74 @@
++"use client";
++
++import { useQuery } from "@tanstack/react-query";
++import { ExternalLink, GitPullRequest } from "lucide-react";
++import { issuePullRequestsOptions } from "@multica/core/github/queries";
++import { issueTimelineOptions } from "@multica/core/issues/queries";
++import type { Issue } from "@multica/core/types";
++import { useT } from "../i18n";
++
++const PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/g;
++
++export interface ApprovalPr {
++  url: string;
++  repo: string;
++  number: number;
++  title?: string;
++  state?: string;
++}
++
++/**
++ * Pull requests of an issue for the approval panel (vantt approval-pr, design D5b):
++ * the PRs linked to the issue, then GitHub PR links written in its description and
++ * comments (agents post "Approve PR <link>"), newest mention first, one per PR.
++ */
++export function collectPrs(
++  linked: readonly { html_url: string; repo_owner: string; repo_name: string; number: number; title: string; state: string }[],
++  texts: readonly string[],
++): ApprovalPr[] {
++  const out: ApprovalPr[] = [];
++  const seen = new Set<string>();
++  const add = (pr: ApprovalPr) => {
++    const key = `${pr.repo}#${pr.number}`.toLowerCase();
++    if (seen.has(key)) return;
++    seen.add(key);
++    out.push(pr);
++  };
++  for (const pr of linked) add({ url: pr.html_url, repo: `${pr.repo_owner}/${pr.repo_name}`, number: pr.number, title: pr.title, state: pr.state });
++  for (const text of [...texts].reverse()) {
++    for (const m of text.matchAll(PR_URL)) add({ url: m[0], repo: `${m[1]}/${m[2]}`, number: Number(m[3]) });
++  }
++  return out;
++}
++
++export function ApprovalPullRequests({ issue }: { issue: Pick<Issue, "id" | "description"> }) {
++  const { t } = useT("issues");
++  const { data: linked } = useQuery({ ...issuePullRequestsOptions(issue.id), retry: false });
++  const { data: timeline } = useQuery(issueTimelineOptions(issue.id));
++  const texts = [issue.description ?? "", ...(timeline ?? []).filter((e) => e.type === "comment").map((e) => e.content ?? "")];
++  const prs = collectPrs(linked?.pull_requests ?? [], texts).slice(0, 3);
++  if (!prs.length) return null;
++  return (
++    <ul aria-label={t(($) => $.workflows.approval.prs_label)} className="flex flex-col gap-1.5">
++      {prs.map((pr) => (
++        <li key={pr.url} className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-background px-3 py-2 dark:border-amber-500/30">
++          <GitPullRequest aria-hidden className="size-4 shrink-0 text-muted-foreground" />
++          <a href={pr.url} target="_blank" rel="noreferrer" className="min-w-0 truncate font-medium hover:underline">
++            {pr.repo}#{pr.number}{pr.title ? ` · ${pr.title}` : ""}
++          </a>
++          {pr.state && <span className="text-caption text-muted-foreground">{pr.state}</span>}
++          <a
++            href={`${pr.url}/files`}
++            target="_blank"
++            rel="noreferrer"
++            className="ml-auto inline-flex items-center gap-1 rounded-md border border-input bg-background px-2.5 py-1 text-caption font-medium hover:bg-accent"
++          >
++            {t(($) => $.workflows.approval.approve_on_github)}
++            <ExternalLink aria-hidden className="size-3" />
++          </a>
++        </li>
++      ))}
++      <li className="text-caption text-amber-900 dark:text-amber-200">{t(($) => $.workflows.approval.pr_then_approve)}</li>
++    </ul>
++  );
++}
+diff --git a/packages/views/workflows/workflow-rules-row.test.tsx b/packages/views/workflows/workflow-rules-row.test.tsx
+new file mode 100644
+index 000000000..49f11382a
+--- /dev/null
++++ b/packages/views/workflows/workflow-rules-row.test.tsx
+@@ -0,0 +1,40 @@
++import { cleanup, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { Project } from "@multica/core/types";
++import { renderWithI18n } from "../test/i18n";
++import { WorkflowRulesControl } from "./workflow-rules-row";
++
++const state = vi.hoisted(() => ({ rules: [] as { property_id: string; option_id: string; workflow_id: string }[], admin: false }));
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("@tanstack/react-query", () => ({
++  useQuery: (o: { queryKey: readonly unknown[] }) =>
++    o.queryKey[0] === "workflow-rules"
++      ? { data: state.rules }
++      : { data: [{ id: "prop-1", name: "Type", type: "select", archived: false, config: { options: [{ id: "opt-copy", name: "Copy" }] } }] },
++}));
++vi.mock("@multica/core/workflow-rules", () => ({
++  workflowRulesOptions: () => ({ queryKey: ["workflow-rules"] }),
++  useSetWorkflowRules: () => ({ mutate: vi.fn(), isPending: false }),
++}));
++vi.mock("@multica/core/properties/queries", () => ({ propertyListOptions: () => ({ queryKey: ["properties"] }) }));
++vi.mock("@multica/core/issue-workflows", () => ({ useIssueWorkflows: () => ({ workflows: [{ id: "wf-content", name: "content" }] }) }));
++vi.mock("./permissions", () => ({ useWorkflowPermissions: () => ({ canManageProject: state.admin, isAdmin: state.admin }) }));
++
++afterEach(() => {
++  cleanup();
++  state.rules = [];
++});
++
++describe("WorkflowRulesControl", () => {
++  it("says every Type is the same when there are no rules", () => {
++    renderWithI18n(<WorkflowRulesControl project={{ id: "p-1" } as Project} />);
++    expect(screen.getByText("Same for every Type")).toBeTruthy();
++  });
++
++  it("summarises rules as option → workflow", () => {
++    state.rules = [{ property_id: "prop-1", option_id: "opt-copy", workflow_id: "wf-content" }];
++    renderWithI18n(<WorkflowRulesControl project={{ id: "p-1" } as Project} />);
++    expect(screen.getByText("Copy → content")).toBeTruthy();
++  });
++});
+diff --git a/packages/views/workflows/workflow-rules-row.tsx b/packages/views/workflows/workflow-rules-row.tsx
+new file mode 100644
+index 000000000..97a42e0ed
+--- /dev/null
++++ b/packages/views/workflows/workflow-rules-row.tsx
+@@ -0,0 +1,129 @@
++"use client";
++
++import { useEffect, useMemo, useState } from "react";
++import { useQuery } from "@tanstack/react-query";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { useIssueWorkflows } from "@multica/core/issue-workflows";
++import { propertyListOptions } from "@multica/core/properties/queries";
++import type { Project } from "@multica/core/types";
++import { useSetWorkflowRules, workflowRulesOptions, type WorkflowRule } from "@multica/core/workflow-rules";
++import { Button } from "@multica/ui/components/ui/button";
++import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
++import { useT } from "../i18n";
++import { useWorkflowPermissions } from "./permissions";
++
++/**
++ * Workflows by Type (vantt workflow-by-type-ui, design D6): in this project an
++ * issue whose select property (Type) has an option follows another workflow;
++ * anything else follows the project's workflow. Reference: Jira workflow schemes.
++ */
++export function WorkflowRulesControl({ project }: { project: Project }) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const { workflows } = useIssueWorkflows(wsId);
++  const { data: properties = [] } = useQuery(propertyListOptions(wsId));
++  const { data: rules = [] } = useQuery(workflowRulesOptions(wsId, project.id));
++  const { canManageProject, isAdmin } = useWorkflowPermissions(project);
++  const save = useSetWorkflowRules(project.id);
++  const selects = useMemo(() => properties.filter((p) => p.type === "select" && !p.archived), [properties]);
++  const [open, setOpen] = useState(false);
++  const [propertyId, setPropertyId] = useState("");
++  const [draft, setDraft] = useState<Record<string, string>>({});
++
++  useEffect(() => {
++    if (!open) return;
++    const pid = rules[0]?.property_id ?? selects.find((p) => p.name.toLowerCase() === "type")?.id ?? selects[0]?.id ?? "";
++    setPropertyId(pid);
++    setDraft(Object.fromEntries(rules.filter((r) => r.property_id === pid).map((r) => [r.option_id, r.workflow_id])));
++  }, [open, rules, selects]);
++
++  const property = selects.find((p) => p.id === propertyId);
++  const nameOfWorkflow = (id: string) => workflows.find((w) => w.id === id)?.name ?? "?";
++  const optionName = (r: WorkflowRule) =>
++    properties.find((p) => p.id === r.property_id)?.config.options?.find((o) => o.id === r.option_id)?.name ?? "?";
++
++  const summary =
++    rules.length === 0
++      ? t(($) => $.workflows.rules.none)
++      : rules.map((r) => `${optionName(r)} → ${nameOfWorkflow(r.workflow_id)}`).join(", ");
++
++  if (!(canManageProject || isAdmin)) {
++    return <span className="truncate text-caption text-muted-foreground">{summary}</span>;
++  }
++
++  return (
++    <Popover open={open} onOpenChange={setOpen}>
++      <PopoverTrigger
++        render={
++          <button type="button" className="-ml-1 min-w-0 truncate rounded-md px-1 py-0.5 text-left text-caption hover:bg-accent">
++            {summary}
++          </button>
++        }
++      />
++      <PopoverContent align="start" className="w-96 p-3">
++        <p className="mb-2 text-caption text-muted-foreground">{t(($) => $.workflows.rules.help)}</p>
++        <label className="mb-3 flex items-center gap-2 text-caption">
++          <span className="text-muted-foreground">{t(($) => $.workflows.rules.choose_by)}</span>
++          <select
++            className="h-8 flex-1 rounded-md border bg-background px-2 text-body"
++            value={propertyId}
++            onChange={(e) => {
++              setPropertyId(e.target.value);
++              setDraft({});
++            }}
++          >
++            {selects.map((p) => (
++              <option key={p.id} value={p.id}>
++                {p.name}
++              </option>
++            ))}
++          </select>
++        </label>
++        {property && (
++          <ul className="mb-3 flex max-h-72 flex-col gap-1.5 overflow-y-auto">
++            {(property.config.options ?? []).map((o) => (
++              <li key={o.id} className="flex items-center gap-2 text-caption">
++                <span className="w-36 truncate">{o.name}</span>
++                <span aria-hidden className="text-muted-foreground">→</span>
++                <select
++                  aria-label={o.name}
++                  className="h-7 flex-1 rounded-md border bg-background px-1.5 text-caption"
++                  value={draft[o.id] ?? ""}
++                  onChange={(e) => setDraft((d) => ({ ...d, [o.id]: e.target.value }))}
++                >
++                  <option value="">{t(($) => $.workflows.rules.project_default)}</option>
++                  {workflows.map((w) => (
++                    <option key={w.id} value={w.id}>
++                      {w.name}
++                    </option>
++                  ))}
++                </select>
++              </li>
++            ))}
++          </ul>
++        )}
++        <div className="flex justify-end gap-2">
++          <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
++            {t(($) => $.workflows.rules.cancel)}
++          </Button>
++          <Button
++            type="button"
++            size="sm"
++            disabled={save.isPending}
++            aria-busy={save.isPending}
++            onClick={() =>
++              save.mutate(
++                Object.entries(draft)
++                  .filter(([, wf]) => wf)
++                  .map(([option_id, workflow_id]) => ({ property_id: propertyId, option_id, workflow_id })),
++                { onSuccess: () => setOpen(false) },
++              )
++            }
++          >
++            {t(($) => $.workflows.rules.save)}
++          </Button>
++        </div>
++      </PopoverContent>
++    </Popover>
++  );
++}
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 8b9bd7896..2134e1705 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -2161,6 +2161,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 					r.Delete("/", h.DeleteIssueWorkflow)
+ 					r.Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
+ 					r.Post("/brief", h.PreviewIssueWorkflowBrief)
++					r.Get("/limits", h.GetIssueWorkflowLimits) // vantt send-back-limit
++					r.Put("/limits", h.SetIssueWorkflowLimits)
+ 				})
+ 			})
+ 
+@@ -2174,6 +2176,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 					r.Put("/", h.UpdateProject)
+ 					r.Delete("/", h.DeleteProject)
+ 					r.Post("/workflow", h.SetProjectWorkflow)
++					r.Get("/workflow-rules", h.ListProjectWorkflowRules) // vantt workflow-by-type
++					r.Put("/workflow-rules", h.SetProjectWorkflowRules)
+ 					r.Get("/resources", h.ListProjectResources)
+ 					r.Post("/resources", h.CreateProjectResource)
+ 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
+diff --git a/server/internal/handler/issue.go b/server/internal/handler/issue.go
+index 8229e8082..6d38656bd 100644
+--- a/server/internal/handler/issue.go
++++ b/server/internal/handler/issue.go
+@@ -3299,7 +3299,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
+ 			workflowProjectID = parent.ProjectID
+ 		}
+ 	}
+-	createWorkflow, createWorkflowProject, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, workflowProjectID)
++	createProps, _ := json.Marshal(req.Properties)
++	createWorkflow, createWorkflowProject, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, workflowProjectID, createProps)
+ 	if err != nil {
+ 		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
+ 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+@@ -4018,6 +4019,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
+ 	// A handoff assignee passes the same gate as a hand-picked one.
+ 	// An agent's run may only move the issue from the step it works on.
+ 	callerType, _ := h.resolveActor(r, userID, workspaceID)
++	if err := h.refuseAgentLeavingGate(r.Context(), prevIssue, params, callerType); err != nil {
++		if writeIssueWorkflowError(w, err) {
++			return
++		}
++		slog.Error("update issue: owner gate", append(logger.RequestAttrs(r), "error", err)...)
++		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
++		return
++	}
+ 	callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
+ 	handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, callerRun)
+ 	if err != nil {
+@@ -4856,6 +4865,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
+ 		// not list the batch status is skipped like the other per-item guards;
+ 		// entering a handoff step reassigns this issue to the step's handler.
+ 		callerType, _ := h.resolveActor(r, userID, workspaceID)
++		if h.refuseAgentLeavingGate(r.Context(), prevIssue, params, callerType) != nil {
++			continue
++		}
+ 		callerRun := h.agentRunOnIssue(r, callerType, prevIssue)
+ 		handoff, err := h.applyIssueWorkflow(r.Context(), prevIssue, &params, req.Updates.Status != nil, batchTouchedType || batchTouchedID, false, callerRun)
+ 		if err != nil {
+diff --git a/server/internal/handler/issue_trigger.go b/server/internal/handler/issue_trigger.go
+index 19bd3a119..e8d8d143c 100644
+--- a/server/internal/handler/issue_trigger.go
++++ b/server/internal/handler/issue_trigger.go
+@@ -219,7 +219,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
+ 		// handoff when no assignee was picked. (MUL-7420)
+ 		if req.ProjectID != nil && *req.ProjectID != "" {
+ 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
+-				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
++				if def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, projectUUID, nil); err == nil && def != nil {
+ 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
+ 						if t, id, ok := issueworkflow.ResolveHandler(step, project, actorType, parseUUID(actorID)); ok {
+ 							candidate.AssigneeType = pgtype.Text{String: t, Valid: true}
+diff --git a/server/internal/handler/issue_workflow_entry.go b/server/internal/handler/issue_workflow_entry.go
+index 9c199cfbb..36f1b3f57 100644
+--- a/server/internal/handler/issue_workflow_entry.go
++++ b/server/internal/handler/issue_workflow_entry.go
+@@ -46,7 +46,7 @@ type workflowHandoff struct {
+ // move the issue from the step it works on. It returns the handoff that write
+ // triggers, or nil.
+ func (h *Handler) applyIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, run *db.AgentTaskQueue) (*workflowHandoff, error) {
+-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, prev.WorkspaceID, params.ProjectID)
++	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, prev.WorkspaceID, params.ProjectID, prev.Properties)
+ 	if err != nil || def == nil {
+ 		return nil, err
+ 	}
+@@ -130,6 +130,18 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+ 		})
+ 		return true
+ 	}
++	var gate *issueworkflow.GateError
++	if errors.As(err, &gate) {
++		writeJSON(w, http.StatusForbidden, map[string]any{
++			"error":  gate.Error(),
++			"code":   "owner_gate",
++			"status": gate.Status,
++		})
++		return true
++	}
++	if writeSendBackLimitError(w, err) { // vantt send-back-limit
++		return true
++	}
+ 	var moved *issueworkflow.StepMovedError
+ 	if errors.As(err, &moved) {
+ 		writeJSON(w, http.StatusConflict, map[string]any{
+@@ -143,6 +155,31 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
+ 	return false
+ }
+ 
++// refuseAgentLeavingGate stops an agent from moving an issue out of a step a
++// person handles, by changing its status or its project. Members are not
++// affected (vantt owner-gates).
++func (h *Handler) refuseAgentLeavingGate(ctx context.Context, prev db.Issue, params db.UpdateIssueParams, callerType string) error {
++	if callerType != "agent" {
++		return nil
++	}
++	statusChanging := params.Status.Valid && params.Status.String != prev.Status
++	projectMoving := params.ProjectID != prev.ProjectID
++	if !statusChanging && !projectMoving {
++		return nil
++	}
++	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, prev.WorkspaceID, prev.ProjectID, prev.Properties)
++	if err != nil {
++		return err
++	}
++	if issueworkflow.PersonGate(def, prev.Status, project, prev.CreatorType, prev.CreatorID) {
++		return &issueworkflow.GateError{Status: prev.Status}
++	}
++	if statusChanging && !projectMoving {
++		return h.refuseSendBackOverLimit(ctx, def, prev, params.Status.String) // vantt send-back-limit
++	}
++	return nil
++}
++
+ // agentRunOnIssue returns the calling agent's run when it works on this issue,
+ // nil for members and for runs on other issues. The task id is the
+ // server-trusted X-Task-ID resolveActor vouched for.
+@@ -335,7 +372,7 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, issue db.Issue) []db.A
+ // legacyRuntimeRules is true for a daemon that does not advertise
+ // protocol.DaemonCapabilityWorkflowStatusRulesV1; see BriefInput.
+ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue, legacyRuntimeRules bool) *TaskProjectWorkflowData {
+-	def, project, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
++	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID, issue.Properties)
+ 	if err != nil {
+ 		slog.Warn("task claim: failed to load project workflow for brief injection",
+ 			"issue_id", uuidToString(issue.ID), "error", err)
+diff --git a/server/internal/handler/pr_auto_complete.go b/server/internal/handler/pr_auto_complete.go
+index ee9b0190b..79e57a55e 100644
+--- a/server/internal/handler/pr_auto_complete.go
++++ b/server/internal/handler/pr_auto_complete.go
+@@ -209,7 +209,7 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
+ 	// rule a manual status change follows (applyIssueWorkflow). Default and
+ 	// issues outside any project accept every status. The issue page shows
+ 	// nothing for this state: the issue just stays where it is.
+-	def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
++	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID, issue.Properties)
+ 	if err != nil {
+ 		return prAutoCompleteDecision{}, err
+ 	}
+diff --git a/server/internal/handler/property.go b/server/internal/handler/property.go
+index 3b89204d8..5bce295de 100644
+--- a/server/internal/handler/property.go
++++ b/server/internal/handler/property.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/jackc/pgx/v5/pgtype"
+ 	"github.com/multica-ai/multica/server/internal/issueproperty"
+ 	"github.com/multica-ai/multica/server/internal/logger"
++	"github.com/multica-ai/multica/server/internal/service"
+ 	"github.com/multica-ai/multica/server/internal/util"
+ 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+ 	"github.com/multica-ai/multica/server/pkg/protocol"
+@@ -683,6 +684,14 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
+ 	if !ok {
+ 		return
+ 	}
++	if callerType, _ := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID)); callerType == "agent" {
++		if err := h.refuseAgentRuleChange(r.Context(), issue, propertyID, callerType); err != nil {
++			if !writeIssueWorkflowError(w, err) {
++				writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
++			}
++			return
++		}
++	}
+ 
+ 	// Validation and write share the property advisory lock with definition
+ 	// updates: the value written is guaranteed to reference the definition
+@@ -734,6 +743,18 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
+ 			}
+ 			return err
+ 		}
++		// vantt derived-property: e.g. Domain follows Type.
++		derived, err := service.DerivedPropertyValues(r.Context(), q, issue.WorkspaceID, updated.Properties)
++		if err != nil {
++			return err
++		}
++		for key, v := range derived {
++			if updated, err = q.SetIssuePropertyValue(r.Context(), db.SetIssuePropertyValueParams{
++				ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: key, Value: v,
++			}); err != nil {
++				return err
++			}
++		}
+ 		return nil
+ 	})
+ 	if err != nil {
+@@ -754,6 +775,7 @@ func (h *Handler) SetIssueProperty(w http.ResponseWriter, r *http.Request) {
+ 		"properties":     properties,
+ 		"issue_revision": updated.Revision,
+ 	})
++	h.followRuleWorkflow(r, issue, updated, actorType, actorID)
+ 	writeJSON(w, http.StatusOK, map[string]any{"properties": properties, "issue_revision": updated.Revision})
+ }
+ 
+diff --git a/server/internal/handler/vantt_derive_test.go b/server/internal/handler/vantt_derive_test.go
+new file mode 100644
+index 000000000..447bfccc8
+--- /dev/null
++++ b/server/internal/handler/vantt_derive_test.go
+@@ -0,0 +1,83 @@
++package handler
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++
++	"testing"
++)
++
++// Domain follows Type: a select property described "Derived from <Type>" takes the
++// option named like the part of the Type option before " · ".
++func TestDerivedPropertyFollowsSource(t *testing.T) {
++	typ := createTestProperty(t, map[string]any{"name": "VType", "type": "select", "config": map[string]any{"options": []map[string]any{
++		{"name": "Tech · Feature", "color": "#2563eb"}, {"name": "Marketing · Post", "color": "#db2777"}, {"name": "Other", "color": "#71717a"},
++	}}})
++	dom := createTestProperty(t, map[string]any{"name": "VDomain", "type": "select", "description": "Derived from VType (the part before ·).", "config": map[string]any{"options": []map[string]any{
++		{"name": "Tech", "color": "#2563eb"}, {"name": "Marketing", "color": "#db2777"},
++	}}})
++	opt := func(p PropertyResponse, name string) string {
++		for _, o := range p.Config.Options {
++			if o.Name == name {
++				return o.ID
++			}
++		}
++		t.Fatalf("no option %s", name)
++		return ""
++	}
++	domainOf := func(issueID string) string {
++		var raw []byte
++		if err := testPool.QueryRow(context.Background(), `SELECT properties FROM issue WHERE id = $1`, issueID).Scan(&raw); err != nil {
++			t.Fatal(err)
++		}
++		bag := map[string]string{}
++		_ = json.Unmarshal(raw, &bag)
++		return bag[dom.ID]
++	}
++	var first IssueResponse
++	w0 := httptestRecorderCall(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{"title": "derive me", "status": "todo"}))
++	if w0.Code != http.StatusCreated {
++		t.Fatalf("create: %d %s", w0.Code, w0.Body.String())
++	}
++	_ = json.Unmarshal(w0.Body.Bytes(), &first)
++	issueID := first.ID
++	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
++	if w := setIssuePropertyRaw(t, issueID, typ.ID, opt(typ, "Tech · Feature")); w.Code != http.StatusOK {
++		t.Fatalf("set type: %d %s", w.Code, w.Body.String())
++	}
++	if got := domainOf(issueID); got != opt(dom, "Tech") {
++		t.Fatalf("domain = %q, want Tech", got)
++	}
++	setIssuePropertyRaw(t, issueID, typ.ID, opt(typ, "Marketing · Post"))
++	if got := domainOf(issueID); got != opt(dom, "Marketing") {
++		t.Fatalf("domain after change = %q, want Marketing", got)
++	}
++	// No matching option: the derived value is left alone.
++	setIssuePropertyRaw(t, issueID, typ.ID, opt(typ, "Other"))
++	if got := domainOf(issueID); got != opt(dom, "Marketing") {
++		t.Fatalf("domain changed without a matching option: %q", got)
++	}
++
++	// On create, too.
++	var created IssueResponse
++	w := httptestRecorderCall(t, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
++		"title": "derive on create", "properties": map[string]any{typ.ID: opt(typ, "Tech · Feature")},
++	}))
++	if w.Code != http.StatusCreated {
++		t.Fatalf("create: %d %s", w.Code, w.Body.String())
++	}
++	_ = json.Unmarshal(w.Body.Bytes(), &created)
++	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, created.ID) })
++	if got := domainOf(created.ID); got != opt(dom, "Tech") {
++		t.Fatalf("domain on create = %q, want Tech", got)
++	}
++}
++
++func httptestRecorderCall(t *testing.T, req *http.Request) *httptest.ResponseRecorder {
++	t.Helper()
++	w := httptest.NewRecorder()
++	testHandler.CreateIssue(w, req)
++	return w
++}
+diff --git a/server/internal/handler/vantt_owner_gates_test.go b/server/internal/handler/vantt_owner_gates_test.go
+new file mode 100644
+index 000000000..3b0de02ff
+--- /dev/null
++++ b/server/internal/handler/vantt_owner_gates_test.go
+@@ -0,0 +1,119 @@
++package handler
++
++import (
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++// vantt owner-gates: a step whose handler is a person is a gate. An agent may
++// not move the issue out of it, by status or by project; a member may.
++
++// goalRequest is a request in the test workspace; the fork's handler tests
++// (workflow rules, goals) share it.
++func goalRequest(method, path string, body any) *http.Request {
++	return newRequest(method, path+"?workspace_id="+testWorkspaceID, body)
++}
++
++func ownerGateProject(t *testing.T, agentID string) string {
++	t.Helper()
++	projectID := deliveryProject(t, "Owner gate project "+workflowTestSuffix(), agentID)
++	setColumnHandoff(t, projectID, "in_review", map[string]any{
++		"handler": map[string]any{"type": "member", "id": testUserID}, "instructions": "Approve the PR.",
++	}).Want(http.StatusOK)
++	return projectID
++}
++
++func runningTask(t *testing.T, agentID, issueID, step string) string {
++	t.Helper()
++	var runtimeID string
++	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID)
++	return dbfx.Task(t, agentID, testutil.Cols{
++		"issue_id": issueID, "runtime_id": runtimeID, "status": "running", "started_at": time.Now(), "workflow_step": step,
++	})
++}
++
++func TestAgentCannotLeaveOwnerGate(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID := ownerGateProject(t, agentID)
++	issueID := dbfx.Issue(t, "gated", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	// A run of the agent on this issue, even one started for this very step.
++	taskID := runningTask(t, agentID, issueID, "in_review")
++
++	body := agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "done"}).Want(http.StatusForbidden).Map()
++	if body["code"] != "owner_gate" || body["status"] != "in_review" {
++		t.Fatalf("refusal = %v", body)
++	}
++	if status, _, _ := issueStatusAndAssignee(t, issueID); status != "in_review" {
++		t.Fatalf("status = %q, the refused change must not apply", status)
++	}
++
++	// Moving it to another project is leaving the gate too.
++	other := createWorkflowTestProject(t, "Owner gate other "+workflowTestSuffix())
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"project_id": other}).Want(http.StatusForbidden)
++
++	// Other fields still change.
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"title": "gated, noted"}).Want(http.StatusOK)
++
++	// A member moves it on.
++	updateIssueForTest(t, issueID, map[string]any{"status": "done"}).Want(http.StatusOK)
++	if status, _, _ := issueStatusAndAssignee(t, issueID); status != "done" {
++		t.Fatalf("status after the member's move = %q, want done", status)
++	}
++}
++
++// An agent with no run on the issue (a board sync on another issue, say) is
++// refused the same way.
++func TestAgentFromAnotherIssueCannotLeaveOwnerGate(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID := ownerGateProject(t, agentID)
++	gated := dbfx.Issue(t, "gated elsewhere", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	elsewhere := dbfx.Issue(t, "sync run", testutil.Cols{"project_id": projectID, "status": "todo"})
++	taskID := runningTask(t, agentID, elsewhere, "todo")
++
++	agentUpdateIssue(t, gated, agentID, taskID, map[string]any{"status": "todo"}).Want(http.StatusForbidden)
++}
++
++// Steps an agent handles are not gates: agents keep moving their own work.
++func TestAgentStepIsNotAGate(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID := ownerGateProject(t, agentID)
++	issueID := dbfx.Issue(t, "agent step", testutil.Cols{"project_id": projectID, "status": "todo"})
++	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++	var taskID string
++	dbfx.QueryRow(t, `SELECT id::text FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, agentID).Scan(&taskID)
++	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, taskID)
++
++	// Into the gate is fine: that is how work reaches the owner.
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
++}
++
++// The batch endpoint skips a gated issue for an agent and applies the rest.
++func TestBatchSkipsOwnerGateForAgent(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID := ownerGateProject(t, agentID)
++	gated := dbfx.Issue(t, "batch gated", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	free := dbfx.Issue(t, "batch free", testutil.Cols{"project_id": projectID, "status": "backlog"})
++	taskID := runningTask(t, agentID, free, "backlog")
++
++	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
++		"issue_ids": []string{gated, free}, "updates": map[string]any{"status": "todo"},
++	})
++	req.Header.Set("X-Actor-Source", "task_token")
++	req.Header.Set("X-Agent-ID", agentID)
++	req.Header.Set("X-Task-ID", taskID)
++	testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
++
++	if status, _, _ := issueStatusAndAssignee(t, gated); status != "in_review" {
++		t.Fatalf("gated status = %q, the batch must skip it", status)
++	}
++	if status, _, _ := issueStatusAndAssignee(t, free); status != "todo" {
++		t.Fatalf("free status = %q, want todo", status)
++	}
++}
+diff --git a/server/internal/handler/vantt_send_back_limit.go b/server/internal/handler/vantt_send_back_limit.go
+new file mode 100644
+index 000000000..db02ad2f2
+--- /dev/null
++++ b/server/internal/handler/vantt_send_back_limit.go
+@@ -0,0 +1,192 @@
++package handler
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"net/http"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/jackc/pgx/v5"
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/issueworkflow"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++// vantt send-back-limit: a workflow may cap how many times agents send an
++// issue back along a step's back edge (review → build, QA → build) with no
++// person moving the issue in between. Past the cap the server refuses the
++// agent's move with 409 {code: send_back_limit}; a person's move is never
++// refused and starts a fresh count. No row in vantt_workflow_limit = no cap.
++
++// SendBackLimitError refuses one more agent send-back.
++type SendBackLimitError struct {
++	Status, Back string
++	Count, Limit int
++}
++
++func (e *SendBackLimitError) Error() string {
++	return fmt.Sprintf("this issue was already sent back %d times by agents with no person in between (limit %d); "+
++		"do not send it back to %q again: leave it in %q, comment what is still in dispute and @mention a person",
++		e.Count, e.Limit, e.Back, e.Status)
++}
++
++func writeSendBackLimitError(w http.ResponseWriter, err error) bool {
++	var limit *SendBackLimitError
++	if !errors.As(err, &limit) {
++		return false
++	}
++	writeJSON(w, http.StatusConflict, map[string]any{
++		"error":  limit.Error(),
++		"code":   "send_back_limit",
++		"status": limit.Status,
++		"back":   limit.Back,
++		"count":  limit.Count,
++		"limit":  limit.Limit,
++	})
++	return true
++}
++
++// workflowSendBackLimit returns the workflow's cap, 0 when it has none.
++func (h *Handler) workflowSendBackLimit(ctx context.Context, workflowID pgtype.UUID) (int, error) {
++	var limit int
++	err := h.DB.QueryRow(ctx, `SELECT max_send_backs FROM vantt_workflow_limit WHERE workflow_id = $1`, workflowID).Scan(&limit)
++	if errors.Is(err, pgx.ErrNoRows) {
++		return 0, nil
++	}
++	return limit, err
++}
++
++// refuseSendBackOverLimit runs for an agent's status change from prev.Status
++// to `to` inside workflow def.
++func (h *Handler) refuseSendBackOverLimit(ctx context.Context, def *issueworkflow.Definition, prev db.Issue, to string) error {
++	if def == nil || !def.ID.Valid {
++		return nil
++	}
++	step, ok := def.Step(prev.Status)
++	if !ok || step.BackStatusKey == "" || step.BackStatusKey != to {
++		return nil
++	}
++	limit, err := h.workflowSendBackLimit(ctx, def.ID)
++	if err != nil || limit == 0 {
++		return err
++	}
++	// Status moves since the last one a person made, oldest first. Each agent
++	// move along a back edge of the current workflow counts.
++	rows, err := h.DB.Query(ctx, `
++		SELECT COALESCE(details->>'from', ''), COALESCE(details->>'to', '')
++		FROM activity_log
++		WHERE issue_id = $1 AND action = 'status_changed' AND actor_type = 'agent'
++		  AND created_at > COALESCE((
++		      SELECT MAX(created_at) FROM activity_log
++		      WHERE issue_id = $1 AND action = 'status_changed' AND actor_type = 'member'
++		  ), '-infinity'::timestamptz)`, prev.ID)
++	if err != nil {
++		return err
++	}
++	defer rows.Close()
++	count := 0
++	for rows.Next() {
++		var from, toKey string
++		if err := rows.Scan(&from, &toKey); err != nil {
++			return err
++		}
++		if s, ok := def.Step(from); ok && s.BackStatusKey != "" && s.BackStatusKey == toKey {
++			count++
++		}
++	}
++	if err := rows.Err(); err != nil {
++		return err
++	}
++	if count >= limit {
++		return &SendBackLimitError{Status: prev.Status, Back: to, Count: count, Limit: limit}
++	}
++	return nil
++}
++
++type workflowLimitsBody struct {
++	MaxSendBacks *int `json:"max_send_backs"`
++}
++
++// GetIssueWorkflowLimits answers {max_send_backs: n | null}. Any member reads.
++func (h *Handler) GetIssueWorkflowLimits(w http.ResponseWriter, r *http.Request) {
++	workspaceID := h.resolveWorkspaceID(r)
++	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
++	if !ok {
++		return
++	}
++	if _, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found"); !ok {
++		return
++	}
++	idUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workflow id")
++	if !ok {
++		return
++	}
++	if _, err := h.Queries.GetIssueWorkflow(r.Context(), db.GetIssueWorkflowParams{ID: idUUID, WorkspaceID: wsUUID}); err != nil {
++		writeError(w, http.StatusNotFound, "workflow not found")
++		return
++	}
++	limit, err := h.workflowSendBackLimit(r.Context(), idUUID)
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to read workflow limits")
++		return
++	}
++	body := workflowLimitsBody{}
++	if limit > 0 {
++		body.MaxSendBacks = &limit
++	}
++	writeJSON(w, http.StatusOK, body)
++}
++
++// SetIssueWorkflowLimits sets or clears (null or 0) the cap. Same people who
++// may edit the workflow.
++func (h *Handler) SetIssueWorkflowLimits(w http.ResponseWriter, r *http.Request) {
++	workspaceID := h.resolveWorkspaceID(r)
++	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
++	if !ok {
++		return
++	}
++	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
++	if !ok {
++		return
++	}
++	idUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workflow id")
++	if !ok {
++		return
++	}
++	var body workflowLimitsBody
++	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	if body.MaxSendBacks != nil && *body.MaxSendBacks < 0 {
++		writeError(w, http.StatusBadRequest, "max_send_backs must be 0 (no limit) or more")
++		return
++	}
++	current, err := h.Queries.GetIssueWorkflow(r.Context(), db.GetIssueWorkflowParams{ID: idUUID, WorkspaceID: wsUUID})
++	if err != nil {
++		writeError(w, http.StatusNotFound, "workflow not found")
++		return
++	}
++	if !canEditIssueWorkflow(member, current) {
++		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
++		return
++	}
++	if body.MaxSendBacks == nil || *body.MaxSendBacks == 0 {
++		_, err = h.DB.Exec(r.Context(), `DELETE FROM vantt_workflow_limit WHERE workflow_id = $1`, idUUID)
++	} else {
++		_, err = h.DB.Exec(r.Context(), `
++			INSERT INTO vantt_workflow_limit (workflow_id, max_send_backs) VALUES ($1, $2)
++			ON CONFLICT (workflow_id) DO UPDATE SET max_send_backs = EXCLUDED.max_send_backs, updated_at = now()`,
++			idUUID, *body.MaxSendBacks)
++	}
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to save workflow limits")
++		return
++	}
++	if body.MaxSendBacks != nil && *body.MaxSendBacks == 0 {
++		body.MaxSendBacks = nil
++	}
++	writeJSON(w, http.StatusOK, body)
++}
+diff --git a/server/internal/handler/vantt_send_back_limit_test.go b/server/internal/handler/vantt_send_back_limit_test.go
+new file mode 100644
+index 000000000..efee1953e
+--- /dev/null
++++ b/server/internal/handler/vantt_send_back_limit_test.go
+@@ -0,0 +1,109 @@
++package handler
++
++import (
++	"context"
++	"net/http"
++	"testing"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++// vantt send-back-limit: agents may send an issue back along a back edge at
++// most max_send_backs times with no person moving it in between.
++
++func sendBackProject(t *testing.T, agentID string) (projectID, workflowID string) {
++	t.Helper()
++	projectID = deliveryProject(t, "Send-back project "+workflowTestSuffix(), agentID)
++	setColumnHandoff(t, projectID, "in_review", map[string]any{
++		"handler": map[string]any{"type": "agent", "id": agentID}, "instructions": "Review the PR.",
++		"back_status_key": "in_progress",
++	}).Want(http.StatusOK)
++	workflowID = projectWorkflowID(t, projectID)
++	t.Cleanup(func() {
++		testPool.Exec(context.Background(), `DELETE FROM vantt_workflow_limit WHERE workflow_id = $1`, workflowID)
++	})
++	return projectID, workflowID
++}
++
++func setSendBackLimit(t *testing.T, workflowID string, body map[string]any) *testutil.Response {
++	t.Helper()
++	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+workflowID+"/limits", body), "id", workflowID)
++	return testutil.Call(t, testHandler.SetIssueWorkflowLimits, req)
++}
++
++// recordStatusMove writes the timeline row the activity listener writes.
++func recordStatusMove(t *testing.T, issueID, actorType, actorID, from, to string) {
++	t.Helper()
++	if _, err := testPool.Exec(context.Background(), `
++		INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
++		VALUES ($1, $2, $3, $4, 'status_changed', jsonb_build_object('from', $5::text, 'to', $6::text))`,
++		testWorkspaceID, issueID, actorType, actorID, from, to); err != nil {
++		t.Fatalf("record status move: %v", err)
++	}
++}
++
++func TestAgentSendBackLimit(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID, workflowID := sendBackProject(t, agentID)
++	setSendBackLimit(t, workflowID, map[string]any{"max_send_backs": 2}).Want(http.StatusOK)
++
++	issueID := dbfx.Issue(t, "disputed", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	taskID := runningTask(t, agentID, issueID, "in_review")
++	// Two send-backs already, plus forward moves that do not count.
++	for i := 0; i < 2; i++ {
++		recordStatusMove(t, issueID, "agent", agentID, "in_review", "in_progress")
++		recordStatusMove(t, issueID, "agent", agentID, "in_progress", "in_review")
++	}
++
++	body := agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_progress"}).Want(http.StatusConflict).Map()
++	if body["code"] != "send_back_limit" || body["status"] != "in_review" || body["back"] != "in_progress" {
++		t.Fatalf("refusal = %v", body)
++	}
++	if status, _, _ := issueStatusAndAssignee(t, issueID); status != "in_review" {
++		t.Fatalf("status = %q, the refused move must not apply", status)
++	}
++	// Other moves out of the step are not send-backs.
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"title": "disputed, noted"}).Want(http.StatusOK)
++
++	// A person's move starts a fresh count.
++	recordStatusMove(t, issueID, "member", testUserID, "in_progress", "in_review")
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++}
++
++func TestMemberSendBackHasNoLimit(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID, workflowID := sendBackProject(t, agentID)
++	setSendBackLimit(t, workflowID, map[string]any{"max_send_backs": 1}).Want(http.StatusOK)
++
++	issueID := dbfx.Issue(t, "member sends back", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	recordStatusMove(t, issueID, "agent", agentID, "in_review", "in_progress")
++	recordStatusMove(t, issueID, "agent", agentID, "in_progress", "in_review")
++	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++}
++
++func TestSendBackWithoutLimitIsUpstream(t *testing.T) {
++	seedTestCatalog(t)
++	agentID := seededReadyAgentID(t)
++	projectID, workflowID := sendBackProject(t, agentID)
++
++	issueID := dbfx.Issue(t, "no limit", testutil.Cols{"project_id": projectID, "status": "in_review"})
++	taskID := runningTask(t, agentID, issueID, "in_review")
++	for i := 0; i < 5; i++ {
++		recordStatusMove(t, issueID, "agent", agentID, "in_review", "in_progress")
++	}
++	agentUpdateIssue(t, issueID, agentID, taskID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++
++	// Clearing a limit (0) answers null.
++	setSendBackLimit(t, workflowID, map[string]any{"max_send_backs": 3}).Want(http.StatusOK)
++	got := setSendBackLimit(t, workflowID, map[string]any{"max_send_backs": 0}).Want(http.StatusOK).Map()
++	if got["max_send_backs"] != nil {
++		t.Fatalf("cleared limit = %v, want null", got["max_send_backs"])
++	}
++	read := testutil.Call(t, testHandler.GetIssueWorkflowLimits,
++		withURLParam(workflowRequest("GET", "/api/issue-workflows/"+workflowID+"/limits", nil), "id", workflowID)).Want(http.StatusOK).Map()
++	if read["max_send_backs"] != nil {
++		t.Fatalf("read limit = %v, want null", read["max_send_backs"])
++	}
++}
+diff --git a/server/internal/handler/vantt_workflow_rules.go b/server/internal/handler/vantt_workflow_rules.go
+new file mode 100644
+index 000000000..82c78aa3a
+--- /dev/null
++++ b/server/internal/handler/vantt_workflow_rules.go
+@@ -0,0 +1,219 @@
++package handler
++
++// vantt workflow-by-type (patch workflow-by-type, F3): in a project, issues whose
++// select property (e.g. Type) has a given option follow another workflow.
++// Reference: Jira workflow schemes (issue type → workflow).
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"log/slog"
++	"net/http"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/jackc/pgx/v5/pgtype"
++	"github.com/multica-ai/multica/server/internal/issuestatus"
++	"github.com/multica-ai/multica/server/internal/issueworkflow"
++	"github.com/multica-ai/multica/server/internal/util"
++	"github.com/multica-ai/multica/server/pkg/protocol"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++type WorkflowRuleJSON struct {
++	PropertyID string `json:"property_id"`
++	OptionID   string `json:"option_id"`
++	WorkflowID string `json:"workflow_id"`
++}
++
++func (h *Handler) loadProjectForRules(w http.ResponseWriter, r *http.Request) (db.Project, bool) {
++	wsID := h.resolveWorkspaceID(r)
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
++		return db.Project{}, false
++	}
++	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
++	if !ok {
++		return db.Project{}, false
++	}
++	id, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
++	if !ok {
++		return db.Project{}, false
++	}
++	project, err := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{ID: id, WorkspaceID: wsUUID})
++	if err != nil {
++		writeError(w, http.StatusNotFound, "project not found")
++		return db.Project{}, false
++	}
++	return project, true
++}
++
++func rulesToJSON(rules []db.ProjectWorkflowRule) []WorkflowRuleJSON {
++	out := make([]WorkflowRuleJSON, 0, len(rules))
++	for _, rule := range rules {
++		out = append(out, WorkflowRuleJSON{PropertyID: uuidToString(rule.PropertyID), OptionID: rule.OptionID, WorkflowID: uuidToString(rule.WorkflowID)})
++	}
++	return out
++}
++
++func (h *Handler) ListProjectWorkflowRules(w http.ResponseWriter, r *http.Request) {
++	project, ok := h.loadProjectForRules(w, r)
++	if !ok {
++		return
++	}
++	rules, err := h.Queries.ListProjectWorkflowRules(r.Context(), db.ListProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID})
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list rules")
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"rules": rulesToJSON(rules)})
++}
++
++// SetProjectWorkflowRules replaces a project's rules. Owner/admin only. Every
++// rule names a select property of the workspace, one of its options and a
++// workflow of the workspace. Existing issues keep their status; they follow
++// the new workflow from their next move.
++func (h *Handler) SetProjectWorkflowRules(w http.ResponseWriter, r *http.Request) {
++	project, ok := h.loadProjectForRules(w, r)
++	if !ok {
++		return
++	}
++	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(project.WorkspaceID), "workspace not found", "owner", "admin"); !ok {
++		return
++	}
++	var req struct {
++		Rules []WorkflowRuleJSON `json:"rules"`
++	}
++	body, err := io.ReadAll(r.Body)
++	if err != nil || json.Unmarshal(body, &req) != nil {
++		writeError(w, http.StatusBadRequest, "invalid request body")
++		return
++	}
++	ctx := r.Context()
++	type parsed struct {
++		property, workflow pgtype.UUID
++		option             string
++	}
++	var rules []parsed
++	seen := map[string]bool{}
++	for _, rule := range req.Rules {
++		propID, err1 := util.ParseUUID(rule.PropertyID)
++		wfID, err2 := util.ParseUUID(rule.WorkflowID)
++		if err1 != nil || err2 != nil || rule.OptionID == "" {
++			writeError(w, http.StatusBadRequest, "each rule needs property_id, option_id and workflow_id")
++			return
++		}
++		prop, err := h.Queries.GetIssueProperty(ctx, db.GetIssuePropertyParams{ID: propID, WorkspaceID: project.WorkspaceID})
++		if err != nil || prop.Type != "select" {
++			writeError(w, http.StatusBadRequest, "property must be a select property of this workspace")
++			return
++		}
++		cfg := parsePropertyConfig(prop.Config)
++		known := false
++		for _, o := range cfg.Options {
++			known = known || o.ID == rule.OptionID
++		}
++		if !known {
++			writeError(w, http.StatusBadRequest, "option is not one of the property's options")
++			return
++		}
++		if _, err := h.Queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: wfID, WorkspaceID: project.WorkspaceID}); err != nil {
++			writeError(w, http.StatusBadRequest, "workflow not found")
++			return
++		}
++		key := rule.PropertyID + "/" + rule.OptionID
++		if seen[key] {
++			writeError(w, http.StatusBadRequest, "duplicate rule for the same option")
++			return
++		}
++		seen[key] = true
++		rules = append(rules, parsed{propID, wfID, rule.OptionID})
++	}
++	if err := h.Queries.DeleteProjectWorkflowRules(ctx, db.DeleteProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID}); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to set rules")
++		return
++	}
++	for i, rule := range rules {
++		if err := h.Queries.CreateProjectWorkflowRule(ctx, db.CreateProjectWorkflowRuleParams{
++			ProjectID: project.ID, WorkspaceID: project.WorkspaceID, PropertyID: rule.property,
++			OptionID: rule.option, WorkflowID: rule.workflow, Position: int32(i),
++		}); err != nil {
++			writeError(w, http.StatusInternalServerError, "failed to set rules")
++			return
++		}
++	}
++	saved, _ := h.Queries.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID})
++	writeJSON(w, http.StatusOK, map[string]any{"rules": rulesToJSON(saved)})
++}
++
++// ruleUsesProperty reports whether the issue's project picks workflows by this property.
++func (h *Handler) ruleUsesProperty(ctx context.Context, issue db.Issue, propertyID pgtype.UUID) bool {
++	if !issue.ProjectID.Valid {
++		return false
++	}
++	rules, err := h.Queries.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
++	if err != nil {
++		return false
++	}
++	for _, rule := range rules {
++		if rule.PropertyID == propertyID {
++			return true
++		}
++	}
++	return false
++}
++
++// refuseAgentRuleChange stops an agent from switching an issue's workflow
++// (by changing the property a rule reads) while the issue waits on a person.
++func (h *Handler) refuseAgentRuleChange(ctx context.Context, issue db.Issue, propertyID pgtype.UUID, callerType string) error {
++	if callerType != "agent" || !h.ruleUsesProperty(ctx, issue, propertyID) {
++		return nil
++	}
++	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID, issue.Properties)
++	if err != nil {
++		return err
++	}
++	if issueworkflow.PersonGate(def, issue.Status, project, issue.CreatorType, issue.CreatorID) {
++		return &issueworkflow.GateError{Status: issue.Status}
++	}
++	return nil
++}
++
++// followRuleWorkflow keeps an issue inside the workflow its new property value
++// picks: a status the new workflow does not list moves to the equivalent one,
++// as a project move does. No handoff runs; the next status change hands off.
++func (h *Handler) followRuleWorkflow(r *http.Request, prev, updated db.Issue, actorType, actorID string) {
++	ctx := r.Context()
++	if !h.ruleUsesAny(ctx, updated) {
++		return
++	}
++	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, updated.WorkspaceID, updated.ProjectID, updated.Properties)
++	if err != nil || def == nil || def.IsDefault || def.Has(updated.Status) {
++		return
++	}
++	target := issueworkflow.MoveTarget(*def, updated.Status, func(key string) string {
++		return issuestatus.Category(ctx, h.Queries, updated.WorkspaceID, key)
++	})
++	moved, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: updated.ID, Status: target, WorkspaceID: updated.WorkspaceID})
++	if err != nil {
++		slog.Warn("workflow rule: remap status failed", "issue_id", uuidToString(updated.ID), "error", err)
++		return
++	}
++	prefix := h.getIssuePrefix(ctx, moved.WorkspaceID)
++	resp := issueToResponse(moved, prefix)
++	h.fillStatusCategory(ctx, moved.WorkspaceID, &resp)
++	h.publish(protocol.EventIssueUpdated, uuidToString(moved.WorkspaceID), actorType, actorID, map[string]any{
++		"issue":          resp,
++		"status_changed": true,
++		"prev_status":    prev.Status,
++		"creator_type":   prev.CreatorType,
++		"creator_id":     uuidToString(prev.CreatorID),
++	})
++}
++
++func (h *Handler) ruleUsesAny(ctx context.Context, issue db.Issue) bool {
++	if !issue.ProjectID.Valid {
++		return false
++	}
++	rules, err := h.Queries.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
++	return err == nil && len(rules) > 0
++}
+diff --git a/server/internal/handler/vantt_workflow_rules_test.go b/server/internal/handler/vantt_workflow_rules_test.go
+new file mode 100644
+index 000000000..df6000771
+--- /dev/null
++++ b/server/internal/handler/vantt_workflow_rules_test.go
+@@ -0,0 +1,94 @@
++package handler
++
++import (
++	"encoding/json"
++	"net/http"
++	"testing"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++// vantt workflow-by-type: a project's rule sends issues with a given select
++// option to another workflow.
++
++type ruleFixture struct {
++	projectID, propertyID, copyOption, codeOption, contentWF string
++}
++
++func setupWorkflowRule(t *testing.T) ruleFixture {
++	t.Helper()
++	sfx := workflowTestSuffix()
++	projectID := createWorkflowTestProject(t, "Rule project "+sfx)
++
++	var prop PropertyResponse
++	testutil.Call(t, testHandler.CreateProperty, goalRequest("POST", "/api/properties", map[string]any{
++		"name": "Type " + sfx[len(sfx)-6:], "type": "select",
++		"config": map[string]any{"options": []map[string]any{{"name": "Copy", "color": "#ec4899"}, {"name": "Code", "color": "#3b82f6"}}},
++	})).Want(http.StatusCreated).JSON(&prop)
++	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM issue_property WHERE id = $1`, prop.ID) })
++
++	content := createTestWorkflow(t, "content "+sfx, "in_review")
++	f := ruleFixture{projectID: projectID, propertyID: prop.ID, contentWF: content.ID}
++	for _, o := range prop.Config.Options {
++		if o.Name == "Copy" {
++			f.copyOption = o.ID
++		} else {
++			f.codeOption = o.ID
++		}
++	}
++	req := withURLParam(goalRequest("PUT", "/api/projects/"+projectID+"/workflow-rules", map[string]any{
++		"rules": []map[string]any{{"property_id": prop.ID, "option_id": f.copyOption, "workflow_id": content.ID}},
++	}), "id", projectID)
++	testutil.Call(t, testHandler.SetProjectWorkflowRules, req).Want(http.StatusOK)
++	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM project_workflow_rule WHERE project_id = $1`, projectID) })
++	return f
++}
++
++func TestWorkflowRuleListAndValidation(t *testing.T) {
++	seedTestCatalog(t)
++	f := setupWorkflowRule(t)
++	var list struct {
++		Rules []WorkflowRuleJSON `json:"rules"`
++	}
++	testutil.Call(t, testHandler.ListProjectWorkflowRules, withURLParam(goalRequest("GET", "/api/projects/"+f.projectID+"/workflow-rules", nil), "id", f.projectID)).
++		Want(http.StatusOK).JSON(&list)
++	if len(list.Rules) != 1 || list.Rules[0].WorkflowID != f.contentWF {
++		t.Fatalf("rules = %+v", list.Rules)
++	}
++	bad := withURLParam(goalRequest("PUT", "/api/projects/"+f.projectID+"/workflow-rules", map[string]any{
++		"rules": []map[string]any{{"property_id": f.propertyID, "option_id": "not-an-option", "workflow_id": f.contentWF}},
++	}), "id", f.projectID)
++	testutil.Call(t, testHandler.SetProjectWorkflowRules, bad).Want(http.StatusBadRequest)
++}
++
++// An issue whose Type is Copy follows the content workflow: a status only that
++// workflow lacks is refused, and one it lists is accepted.
++func TestIssueFollowsRuleWorkflow(t *testing.T) {
++	seedTestCatalog(t)
++	f := setupWorkflowRule(t)
++	props, _ := json.Marshal(map[string]string{f.propertyID: f.copyOption})
++	issueID := dbfx.Issue(t, "copy issue", testutil.Cols{"project_id": f.projectID, "status": "todo", "properties": string(props)})
++
++	// content lists backlog, in_review, blocked (+ todo, done, cancelled), not in_progress.
++	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusBadRequest)
++	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
++
++	// A Code issue in the same project stays on the project's workflow (Default).
++	codeProps, _ := json.Marshal(map[string]string{f.propertyID: f.codeOption})
++	code := dbfx.Issue(t, "code issue", testutil.Cols{"project_id": f.projectID, "status": "todo", "properties": string(codeProps)})
++	updateIssueForTest(t, code, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
++}
++
++// Switching Type moves a status the new workflow lacks to its equivalent.
++func TestChangingTypeFollowsNewWorkflow(t *testing.T) {
++	seedTestCatalog(t)
++	f := setupWorkflowRule(t)
++	issueID := dbfx.Issue(t, "becomes copy", testutil.Cols{"project_id": f.projectID, "status": "in_progress"})
++
++	req := withURLParams(goalRequest("PUT", "/api/issues/"+issueID+"/properties/"+f.propertyID, map[string]any{"value": f.copyOption}),
++		"id", issueID, "propertyId", f.propertyID)
++	testutil.Call(t, testHandler.SetIssueProperty, req).Want(http.StatusOK)
++	if status, _, _ := issueStatusAndAssignee(t, issueID); status == "in_progress" {
++		t.Fatalf("status stayed in_progress, which the content workflow does not list")
++	}
++}
+diff --git a/server/internal/handler/workspace_delete_manifest_test.go b/server/internal/handler/workspace_delete_manifest_test.go
+index d08fe18ba..6352b0ebe 100644
+--- a/server/internal/handler/workspace_delete_manifest_test.go
++++ b/server/internal/handler/workspace_delete_manifest_test.go
+@@ -117,6 +117,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
+ 	"plugin_package_file":                workspaceDelete,
+ 	"project":                            workspaceDelete,
+ 	"project_resource":                   workspaceDelete,
++	"project_workflow_rule":              workspaceDelete,
++	"vantt_workflow_limit":               workspaceDelete, // by its workflow's workspace
+ 	"quick_action":                       workspaceDelete,
+ 	"runtime_profile":                    workspaceDelete,
+ 	"schema_migrations":                  workspaceDeleteKeep,
+diff --git a/server/internal/issueworkflow/issueworkflow.go b/server/internal/issueworkflow/issueworkflow.go
+index 414387fff..bbd2484d3 100644
+--- a/server/internal/issueworkflow/issueworkflow.go
++++ b/server/internal/issueworkflow/issueworkflow.go
+@@ -529,6 +529,7 @@ type Querier interface {
+ 	GetIssueWorkflow(ctx context.Context, arg db.GetIssueWorkflowParams) (db.IssueWorkflow, error)
+ 	GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtype.UUID) (db.IssueWorkflow, error)
+ 	GetProjectInWorkspace(ctx context.Context, arg db.GetProjectInWorkspaceParams) (db.Project, error)
++	ListProjectWorkflowRules(ctx context.Context, arg db.ListProjectWorkflowRulesParams) ([]db.ProjectWorkflowRule, error)
+ }
+ 
+ // DefaultFor loads the workspace Default workflow, or the built-in one when
+@@ -561,6 +562,73 @@ func ForProject(ctx context.Context, q Querier, workspaceID, projectID pgtype.UU
+ 	return def, project, err
+ }
+ 
++// ForIssue loads the workflow an issue follows: the project's rule matching one
++// of the issue's select property values (vantt workflow-by-type), otherwise the
++// project's workflow. properties is the issue's property bag as stored or sent:
++// a JSON object keyed by property id. A rule naming a missing workflow is skipped.
++func ForIssue(ctx context.Context, q Querier, workspaceID, projectID pgtype.UUID, properties []byte) (*Definition, db.Project, error) {
++	if !projectID.Valid {
++		return nil, db.Project{}, nil
++	}
++	project, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
++	if err != nil {
++		if errors.Is(err, pgx.ErrNoRows) {
++			return nil, db.Project{}, nil
++		}
++		return nil, db.Project{}, err
++	}
++	if wf, ok, err := RuleWorkflow(ctx, q, project, properties); err != nil {
++		return nil, db.Project{}, err
++	} else if ok {
++		return &wf, project, nil
++	}
++	def, err := ForProjectRow(ctx, q, project)
++	return def, project, err
++}
++
++// RuleWorkflow returns the workflow a project's rules pick for a property bag.
++func RuleWorkflow(ctx context.Context, q Querier, project db.Project, properties []byte) (Definition, bool, error) {
++	if len(properties) == 0 {
++		return Definition{}, false, nil
++	}
++	var bag map[string]json.RawMessage
++	if json.Unmarshal(properties, &bag) != nil || len(bag) == 0 {
++		return Definition{}, false, nil
++	}
++	rules, err := q.ListProjectWorkflowRules(ctx, db.ListProjectWorkflowRulesParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID})
++	if err != nil || len(rules) == 0 {
++		return Definition{}, false, err
++	}
++	for _, rule := range rules {
++		raw, ok := bag[uuidString(rule.PropertyID)]
++		if !ok {
++			continue
++		}
++		var value string
++		if json.Unmarshal(raw, &value) != nil || value != rule.OptionID {
++			continue
++		}
++		row, err := q.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: rule.WorkflowID, WorkspaceID: project.WorkspaceID})
++		if err != nil {
++			if errors.Is(err, pgx.ErrNoRows) {
++				continue
++			}
++			return Definition{}, false, err
++		}
++		def, err := Decode(row)
++		return def, err == nil, err
++	}
++	return Definition{}, false, nil
++}
++
++func uuidString(u pgtype.UUID) string {
++	if !u.Valid {
++		return ""
++	}
++	b := u.Bytes
++	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
++}
++
+ // ForProjectRow loads the workflow of an already-loaded project. A dangling
+ // workflow reference falls back to Default.
+ func ForProjectRow(ctx context.Context, q Querier, project db.Project) (*Definition, error) {
+@@ -609,6 +677,31 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
+ 	return "", pgtype.UUID{}, false
+ }
+ 
++// GateError refuses an agent's move of an issue out of a step a person
++// handles: approvals and decisions waiting on someone stay with that person
++// (vantt owner-gates).
++type GateError struct {
++	Status string
++}
++
++func (e *GateError) Error() string {
++	return fmt.Sprintf("status %q is waiting for a person: only a member can move the issue out of it", e.Status)
++}
++
++// PersonGate reports whether status is a step of def whose handler resolves to
++// a member, the way ResolveHandler would hand the issue off on entering it.
++func PersonGate(def *Definition, status string, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID) bool {
++	if def == nil {
++		return false
++	}
++	step, ok := def.Step(status)
++	if !ok {
++		return false
++	}
++	assigneeType, _, ok := ResolveHandler(step, project, issueCreatorType, issueCreatorID)
++	return ok && assigneeType == HandlerMember
++}
++
+ // MoveTarget picks the status an issue keeps when it moves into a project
+ // using def: its current status when the workflow lists it, otherwise the
+ // first step of the same lifecycle category, otherwise the start status.
+diff --git a/server/internal/service/issue.go b/server/internal/service/issue.go
+index 2328422bf..73a52d852 100644
+--- a/server/internal/service/issue.go
++++ b/server/internal/service/issue.go
+@@ -245,6 +245,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
+ 	if err != nil {
+ 		return IssueCreateResult{}, err
+ 	}
++	// vantt derived-property: e.g. Domain from Type.
++	if properties, err = ApplyDerivedProperties(ctx, qtx, p.WorkspaceID, properties); err != nil {
++		return IssueCreateResult{}, err
++	}
+ 
+ 	if p.SourceContext != nil {
+ 		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+@@ -858,7 +862,12 @@ func (s *IssueService) createWorkflow(ctx context.Context, qtx *db.Queries, p Is
+ 		}
+ 		projectID = parent.ProjectID
+ 	}
+-	def, _, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID)
++	props := make(map[string]json.RawMessage, len(p.Properties))
++	for id, v := range p.Properties {
++		props[util.UUIDToString(id)] = v
++	}
++	bag, _ := json.Marshal(props)
++	def, _, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, projectID, bag)
+ 	return def, err
+ }
+ 
+diff --git a/server/internal/service/vantt_derive.go b/server/internal/service/vantt_derive.go
+new file mode 100644
+index 000000000..e770fbe77
+--- /dev/null
++++ b/server/internal/service/vantt_derive.go
+@@ -0,0 +1,100 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"regexp"
++	"strings"
++
++	"github.com/jackc/pgx/v5/pgtype"
++	db "github.com/multica-ai/multica/server/pkg/db/generated"
++)
++
++// vantt derived-property: a select property whose description says
++// "Derived from <Source>" takes its value from the source select property's
++// option name, the part before " · " ("Tech · Feature" → "Tech"). The owner
++// picks Type; Domain fills itself (owner, 2026-11-10). Set only when the
++// derived property has an option with that name; otherwise left alone.
++
++var derivedFrom = regexp.MustCompile(`(?i)derived from\s+([^.(\n]+)`)
++
++type selectOption struct {
++	ID   string `json:"id"`
++	Name string `json:"name"`
++}
++
++func optionsOf(config []byte) []selectOption {
++	var c struct {
++		Options []selectOption `json:"options"`
++	}
++	_ = json.Unmarshal(config, &c)
++	return c.Options
++}
++
++// DerivedPropertyValues returns the derived values implied by props (an issue's
++// properties bag): derived property id → option id (JSON string). Only changes
++// are returned.
++func DerivedPropertyValues(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, props []byte) (map[string]json.RawMessage, error) {
++	bag := map[string]json.RawMessage{}
++	if len(props) > 0 {
++		_ = json.Unmarshal(props, &bag)
++	}
++	if len(bag) == 0 {
++		return nil, nil
++	}
++	defs, err := q.ListIssueProperties(ctx, db.ListIssuePropertiesParams{WorkspaceID: workspaceID})
++	if err != nil {
++		return nil, err
++	}
++	byName := map[string]db.ListIssuePropertiesRow{}
++	for _, d := range defs {
++		byName[strings.ToLower(strings.TrimSpace(d.Name))] = d
++	}
++	out := map[string]json.RawMessage{}
++	for _, d := range defs {
++		m := derivedFrom.FindStringSubmatch(d.Description)
++		if d.Type != "select" || m == nil {
++			continue
++		}
++		src, ok := byName[strings.ToLower(strings.TrimSpace(m[1]))]
++		if !ok || src.Type != "select" {
++			continue
++		}
++		var picked string
++		if raw, ok := bag[uuidString(src.ID)]; !ok || json.Unmarshal(raw, &picked) != nil || picked == "" {
++			continue
++		}
++		var name string
++		for _, o := range optionsOf(src.Config) {
++			if o.ID == picked {
++				name = o.Name
++			}
++		}
++		head := strings.TrimSpace(strings.SplitN(name, "·", 2)[0])
++		for _, o := range optionsOf(d.Config) {
++			if head != "" && strings.EqualFold(o.Name, head) {
++				var cur string
++				_ = json.Unmarshal(bag[uuidString(d.ID)], &cur)
++				if cur != o.ID {
++					v, _ := json.Marshal(o.ID)
++					out[uuidString(d.ID)] = v
++				}
++			}
++		}
++	}
++	return out, nil
++}
++
++// ApplyDerivedProperties merges the derived values into a properties bag.
++func ApplyDerivedProperties(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, props []byte) ([]byte, error) {
++	derived, err := DerivedPropertyValues(ctx, q, workspaceID, props)
++	if err != nil || len(derived) == 0 {
++		return props, err
++	}
++	bag := map[string]json.RawMessage{}
++	_ = json.Unmarshal(props, &bag)
++	for k, v := range derived {
++		bag[k] = v
++	}
++	return json.Marshal(bag)
++}
+diff --git a/server/migrations/9005_vantt_project_workflow_rule.down.sql b/server/migrations/9005_vantt_project_workflow_rule.down.sql
+new file mode 100644
+index 000000000..cd8c6e477
+--- /dev/null
++++ b/server/migrations/9005_vantt_project_workflow_rule.down.sql
+@@ -0,0 +1 @@
++DROP TABLE IF EXISTS project_workflow_rule;
+diff --git a/server/migrations/9005_vantt_project_workflow_rule.up.sql b/server/migrations/9005_vantt_project_workflow_rule.up.sql
+new file mode 100644
+index 000000000..a23fcf5e8
+--- /dev/null
++++ b/server/migrations/9005_vantt_project_workflow_rule.up.sql
+@@ -0,0 +1,13 @@
++-- vantt workflow-by-type (patch workflow-by-type, F3): in a project, an issue
++-- whose select property (e.g. Type) has a given option follows another workflow.
++-- No foreign keys: the handler validates project, property, option and workflow.
++CREATE TABLE IF NOT EXISTS project_workflow_rule (
++    project_id   UUID NOT NULL,
++    workspace_id UUID NOT NULL,
++    property_id  UUID NOT NULL,
++    option_id    TEXT NOT NULL,
++    workflow_id  UUID NOT NULL,
++    position     INT  NOT NULL DEFAULT 0,
++    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
++    PRIMARY KEY (project_id, property_id, option_id)
++);
+diff --git a/server/migrations/9006_vantt_project_workflow_rule_workflow_index.down.sql b/server/migrations/9006_vantt_project_workflow_rule_workflow_index.down.sql
+new file mode 100644
+index 000000000..9d25c79ef
+--- /dev/null
++++ b/server/migrations/9006_vantt_project_workflow_rule_workflow_index.down.sql
+@@ -0,0 +1 @@
++DROP INDEX CONCURRENTLY IF EXISTS idx_project_workflow_rule_workflow;
+diff --git a/server/migrations/9006_vantt_project_workflow_rule_workflow_index.up.sql b/server/migrations/9006_vantt_project_workflow_rule_workflow_index.up.sql
+new file mode 100644
+index 000000000..fb9dedbdb
+--- /dev/null
++++ b/server/migrations/9006_vantt_project_workflow_rule_workflow_index.up.sql
+@@ -0,0 +1 @@
++CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_project_workflow_rule_workflow ON project_workflow_rule (workspace_id, workflow_id);
+diff --git a/server/migrations/9009_vantt_workflow_limit.down.sql b/server/migrations/9009_vantt_workflow_limit.down.sql
+new file mode 100644
+index 000000000..52ca9c2ce
+--- /dev/null
++++ b/server/migrations/9009_vantt_workflow_limit.down.sql
+@@ -0,0 +1 @@
++DROP TABLE IF EXISTS vantt_workflow_limit;
+diff --git a/server/migrations/9009_vantt_workflow_limit.up.sql b/server/migrations/9009_vantt_workflow_limit.up.sql
+new file mode 100644
+index 000000000..0d35bef90
+--- /dev/null
++++ b/server/migrations/9009_vantt_workflow_limit.up.sql
+@@ -0,0 +1,10 @@
++-- vantt send-back-limit: how many times agents may send an issue back along a
++-- step's back edge, with no person moving it in between, before the server
++-- refuses. One row per workflow; no row = no limit (upstream behaviour). Kept
++-- out of issue_workflow.steps so the workflow editor, which rebuilds steps,
++-- never drops it. No foreign keys.
++CREATE TABLE IF NOT EXISTS vantt_workflow_limit (
++    workflow_id    UUID PRIMARY KEY,
++    max_send_backs INT NOT NULL CHECK (max_send_backs >= 1),
++    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
++);
+diff --git a/server/pkg/db/generated/models.go b/server/pkg/db/generated/models.go
+index d544c0c01..a1a891df3 100644
+--- a/server/pkg/db/generated/models.go
++++ b/server/pkg/db/generated/models.go
+@@ -1384,6 +1384,16 @@ type ProjectResource struct {
+ 	CreatedBy    pgtype.UUID        `json:"created_by"`
+ }
+ 
++type ProjectWorkflowRule struct {
++	ProjectID   pgtype.UUID        `json:"project_id"`
++	WorkspaceID pgtype.UUID        `json:"workspace_id"`
++	PropertyID  pgtype.UUID        `json:"property_id"`
++	OptionID    string             `json:"option_id"`
++	WorkflowID  pgtype.UUID        `json:"workflow_id"`
++	Position    int32              `json:"position"`
++	CreatedAt   pgtype.Timestamptz `json:"created_at"`
++}
++
+ type QuickAction struct {
+ 	ID            pgtype.UUID        `json:"id"`
+ 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+diff --git a/server/pkg/db/generated/project_workflow_rule.sql.go b/server/pkg/db/generated/project_workflow_rule.sql.go
+new file mode 100644
+index 000000000..7e268c2bb
+--- /dev/null
++++ b/server/pkg/db/generated/project_workflow_rule.sql.go
+@@ -0,0 +1,93 @@
++// Code generated by sqlc. DO NOT EDIT.
++// versions:
++//   sqlc v1.31.1
++// source: project_workflow_rule.sql
++
++package db
++
++import (
++	"context"
++
++	"github.com/jackc/pgx/v5/pgtype"
++)
++
++const createProjectWorkflowRule = `-- name: CreateProjectWorkflowRule :exec
++INSERT INTO project_workflow_rule (project_id, workspace_id, property_id, option_id, workflow_id, position)
++VALUES ($1, $2, $3, $4, $5, $6)
++`
++
++type CreateProjectWorkflowRuleParams struct {
++	ProjectID   pgtype.UUID `json:"project_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++	PropertyID  pgtype.UUID `json:"property_id"`
++	OptionID    string      `json:"option_id"`
++	WorkflowID  pgtype.UUID `json:"workflow_id"`
++	Position    int32       `json:"position"`
++}
++
++func (q *Queries) CreateProjectWorkflowRule(ctx context.Context, arg CreateProjectWorkflowRuleParams) error {
++	_, err := q.db.Exec(ctx, createProjectWorkflowRule,
++		arg.ProjectID,
++		arg.WorkspaceID,
++		arg.PropertyID,
++		arg.OptionID,
++		arg.WorkflowID,
++		arg.Position,
++	)
++	return err
++}
++
++const deleteProjectWorkflowRules = `-- name: DeleteProjectWorkflowRules :exec
++DELETE FROM project_workflow_rule WHERE project_id = $1 AND workspace_id = $2
++`
++
++type DeleteProjectWorkflowRulesParams struct {
++	ProjectID   pgtype.UUID `json:"project_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++func (q *Queries) DeleteProjectWorkflowRules(ctx context.Context, arg DeleteProjectWorkflowRulesParams) error {
++	_, err := q.db.Exec(ctx, deleteProjectWorkflowRules, arg.ProjectID, arg.WorkspaceID)
++	return err
++}
++
++const listProjectWorkflowRules = `-- name: ListProjectWorkflowRules :many
++
++SELECT project_id, workspace_id, property_id, option_id, workflow_id, position, created_at FROM project_workflow_rule
++WHERE project_id = $1 AND workspace_id = $2
++ORDER BY position ASC, created_at ASC
++`
++
++type ListProjectWorkflowRulesParams struct {
++	ProjectID   pgtype.UUID `json:"project_id"`
++	WorkspaceID pgtype.UUID `json:"workspace_id"`
++}
++
++// vantt workflow-by-type (patch workflow-by-type, F3).
++func (q *Queries) ListProjectWorkflowRules(ctx context.Context, arg ListProjectWorkflowRulesParams) ([]ProjectWorkflowRule, error) {
++	rows, err := q.db.Query(ctx, listProjectWorkflowRules, arg.ProjectID, arg.WorkspaceID)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	items := []ProjectWorkflowRule{}
++	for rows.Next() {
++		var i ProjectWorkflowRule
++		if err := rows.Scan(
++			&i.ProjectID,
++			&i.WorkspaceID,
++			&i.PropertyID,
++			&i.OptionID,
++			&i.WorkflowID,
++			&i.Position,
++			&i.CreatedAt,
++		); err != nil {
++			return nil, err
++		}
++		items = append(items, i)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	return items, nil
++}
+diff --git a/server/pkg/db/generated/workspace_delete.sql.go b/server/pkg/db/generated/workspace_delete.sql.go
+index 2d067d0f4..af6cae134 100644
+--- a/server/pkg/db/generated/workspace_delete.sql.go
++++ b/server/pkg/db/generated/workspace_delete.sql.go
+@@ -413,6 +413,13 @@ deleted_squad_members AS (
+ deleted_project_resources AS (
+     DELETE FROM project_resource WHERE workspace_id = $1
+ ),
++deleted_project_workflow_rules AS (
++    DELETE FROM project_workflow_rule WHERE project_workflow_rule.workspace_id = $1
++),
++deleted_vantt_workflow_limits AS (
++    DELETE FROM vantt_workflow_limit
++    WHERE vantt_workflow_limit.workflow_id IN (SELECT id FROM issue_workflow WHERE issue_workflow.workspace_id = $1)
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+diff --git a/server/pkg/db/queries/project_workflow_rule.sql b/server/pkg/db/queries/project_workflow_rule.sql
+new file mode 100644
+index 000000000..2efc02731
+--- /dev/null
++++ b/server/pkg/db/queries/project_workflow_rule.sql
+@@ -0,0 +1,13 @@
++-- vantt workflow-by-type (patch workflow-by-type, F3).
++
++-- name: ListProjectWorkflowRules :many
++SELECT * FROM project_workflow_rule
++WHERE project_id = $1 AND workspace_id = $2
++ORDER BY position ASC, created_at ASC;
++
++-- name: DeleteProjectWorkflowRules :exec
++DELETE FROM project_workflow_rule WHERE project_id = $1 AND workspace_id = $2;
++
++-- name: CreateProjectWorkflowRule :exec
++INSERT INTO project_workflow_rule (project_id, workspace_id, property_id, option_id, workflow_id, position)
++VALUES ($1, $2, $3, $4, $5, $6);
+diff --git a/server/pkg/db/queries/workspace_delete.sql b/server/pkg/db/queries/workspace_delete.sql
+index 9f6972cfb..c7b697b88 100644
+--- a/server/pkg/db/queries/workspace_delete.sql
++++ b/server/pkg/db/queries/workspace_delete.sql
+@@ -426,6 +426,13 @@ deleted_squad_members AS (
+ deleted_project_resources AS (
+     DELETE FROM project_resource WHERE workspace_id = $1
+ ),
++deleted_project_workflow_rules AS (
++    DELETE FROM project_workflow_rule WHERE project_workflow_rule.workspace_id = $1
++),
++deleted_vantt_workflow_limits AS (
++    DELETE FROM vantt_workflow_limit
++    WHERE vantt_workflow_limit.workflow_id IN (SELECT id FROM issue_workflow WHERE issue_workflow.workspace_id = $1)
++),
+ deleted_autopilot_collaborators AS (
+     DELETE FROM autopilot_collaborator
+     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
+-- 
+2.53.0
+

@@ -1,0 +1,165 @@
+From 3661c6954f1cce4f5ce7dd856a1829bbff3c8e68 Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Wed, 11 Nov 2026 21:05:26 +0700
+Subject: [PATCH] feat(email): log-only recipient domains for internal bot
+ accounts
+
+---
+ server/internal/service/email.go            | 16 ++++++--
+ server/internal/service/vantt_email.go      | 37 +++++++++++++++++
+ server/internal/service/vantt_email_test.go | 45 +++++++++++++++++++++
+ 3 files changed, 94 insertions(+), 4 deletions(-)
+ create mode 100644 server/internal/service/vantt_email.go
+ create mode 100644 server/internal/service/vantt_email_test.go
+
+diff --git a/server/internal/service/email.go b/server/internal/service/email.go
+index e03750daf..a3abe65e5 100644
+--- a/server/internal/service/email.go
++++ b/server/internal/service/email.go
+@@ -33,6 +33,8 @@ type EmailService struct {
+ 	smtpTLSInsecure bool
+ 	smtpTLSImplicit bool
+ 	smtpEHLOName    string
++	// vantt 0008: recipients on these domains get the [DEV] log line, never a send.
++	logDomains []string
+ }
+ 
+ type smtpAuthClient interface {
+@@ -237,7 +239,13 @@ func NewEmailService() *EmailService {
+ 		fmt.Println("EmailService: DEV mode — codes printed to stdout (set MULTICA_DEV_VERIFICATION_CODE in .env for a fixed local code)")
+ 	}
+ 
++	logDomains := parseLogDomains(os.Getenv("MULTICA_EMAIL_LOG_DOMAINS"))
++	if len(logDomains) > 0 {
++		fmt.Printf("EmailService: log-only domains %s\n", strings.Join(logDomains, ","))
++	}
++
+ 	return &EmailService{
++		logDomains:      logDomains,
+ 		client:          client,
+ 		fromEmail:       from,
+ 		smtpHost:        smtpHost,
+@@ -346,10 +354,10 @@ func (s *EmailService) SendVerificationCode(to, code string) error {
+ 			<p style="color: #666; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
+ 		</div>`, code)
+ 
+-	if s.smtpHost != "" {
++	if s.smtpHost != "" && !s.logOnly(to) {
+ 		return s.sendSMTP(to, "Your Multica verification code", body)
+ 	}
+-	if s.client == nil {
++	if s.client == nil || s.logOnly(to) {
+ 		fmt.Printf("[DEV] Verification code for %s: %s\n", to, code)
+ 		return nil
+ 	}
+@@ -372,11 +380,11 @@ func (s *EmailService) SendInvitationEmail(to, inviterName, workspaceName, invit
+ 	}
+ 	inviteURL := fmt.Sprintf("%s/invite/%s", appURL, invitationID)
+ 
+-	if s.smtpHost != "" {
++	if s.smtpHost != "" && !s.logOnly(to) {
+ 		params := buildInvitationParams(s.fromEmail, to, inviterName, workspaceName, inviteURL)
+ 		return s.sendSMTP(to, params.Subject, params.Html)
+ 	}
+-	if s.client == nil {
++	if s.client == nil || s.logOnly(to) {
+ 		fmt.Printf("[DEV] Invitation email to %s: %s invited you to %s — %s\n", to, inviterName, workspaceName, inviteURL)
+ 		return nil
+ 	}
+diff --git a/server/internal/service/vantt_email.go b/server/internal/service/vantt_email.go
+new file mode 100644
+index 000000000..a56acd9ea
+--- /dev/null
++++ b/server/internal/service/vantt_email.go
+@@ -0,0 +1,37 @@
++package service
++
++import "strings"
++
++// vantt 0008: MULTICA_EMAIL_LOG_DOMAINS (comma list, e.g. "opc.local") keeps mail to
++// internal bot accounts out of the real mail backend. Recipients on a listed domain
++// (or a subdomain of it) get the same "[DEV] ..." stdout line as DEV mode, so their
++// login codes can still be read from the backend log; everyone else is sent normally.
++// Unset = upstream behaviour.
++
++func parseLogDomains(raw string) []string {
++	var out []string
++	for _, d := range strings.Split(raw, ",") {
++		d = strings.Trim(strings.ToLower(strings.TrimSpace(d)), ".@")
++		if d != "" {
++			out = append(out, d)
++		}
++	}
++	return out
++}
++
++func (s *EmailService) logOnly(to string) bool {
++	if len(s.logDomains) == 0 {
++		return false
++	}
++	at := strings.LastIndex(to, "@")
++	if at < 0 {
++		return false
++	}
++	domain := strings.ToLower(strings.TrimSpace(to[at+1:]))
++	for _, d := range s.logDomains {
++		if domain == d || strings.HasSuffix(domain, "."+d) {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/server/internal/service/vantt_email_test.go b/server/internal/service/vantt_email_test.go
+new file mode 100644
+index 000000000..bff962d13
+--- /dev/null
++++ b/server/internal/service/vantt_email_test.go
+@@ -0,0 +1,45 @@
++package service
++
++import (
++	"testing"
++
++	"github.com/resend/resend-go/v2"
++)
++
++func TestVanttLogOnlyDomains(t *testing.T) {
++	s := &EmailService{logDomains: parseLogDomains(" OPC.local, @corp.internal ,, ")}
++	cases := map[string]bool{
++		"agents-acme@opc.local":   true,
++		"Ops-Bot@OPC.LOCAL":       true,
++		"x@sub.opc.local":         true,
++		"x@corp.internal":         true,
++		"owner@example.com":       false,
++		"x@notopc.local":          false,
++		"x@opc.local.example.com": false,
++		"no-at-sign":              false,
++	}
++	for to, want := range cases {
++		if got := s.logOnly(to); got != want {
++			t.Errorf("logOnly(%q) = %v, want %v", to, got, want)
++		}
++	}
++	if (&EmailService{}).logOnly("x@opc.local") {
++		t.Error("no domains configured must never be log-only")
++	}
++}
++
++// A log-only recipient never reaches the mail backend: with a Resend client that
++// points nowhere and an SMTP host that does not exist, both sends still succeed.
++func TestVanttLogOnlySkipsBackends(t *testing.T) {
++	for _, s := range []*EmailService{
++		{client: resend.NewClient("re_test_invalid"), logDomains: []string{"opc.local"}},
++		{smtpHost: "smtp.invalid", smtpPort: "25", logDomains: []string{"opc.local"}},
++	} {
++		if err := s.SendVerificationCode("agents-acme@opc.local", "123456"); err != nil {
++			t.Fatalf("SendVerificationCode: %v", err)
++		}
++		if err := s.SendInvitationEmail("agents-acme@opc.local", "Owner", "WS", "inv-1"); err != nil {
++			t.Fatalf("SendInvitationEmail: %v", err)
++		}
++	}
++}
+-- 
+2.53.0
+

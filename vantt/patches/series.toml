@@ -1,0 +1,127 @@
+# Patch series applied by vantt/scripts/catchup.mjs on top of the upstream tag in
+# vantt/upstream.pin. Patches are applied in file order with `git am --3way`.
+#
+# [[patches]]
+# id = "owner-gates"                         # required, unique, kebab-case
+# name = "feat(workflow): owner gates enforced by the server"   # required, commit subject
+# patch_file = "0001-owner-gates.patch"     # required, `git format-patch` output
+# metadata_file = "0001-owner-gates.spec.md" # required: requirement, invariants, touch points, how to rewrite on conflict
+# upstream_status = "unsubmitted"            # unsubmitted | issue_opened | pr_opened | merged | rejected ("merged" = skipped)
+# upstream_ref = ""                          # issue or PR link
+# touches = ["server/internal/issueworkflow/issueworkflow.go"]
+# test_command = "cd server && go test ./internal/issueworkflow/..."
+# probe = "vantt/probes/owner-gates.sh"      # behaviour check against a running instance
+# replaces = ["owner-gates"]                # old patch ids merged into this one
+#
+# One patch per feature (owner decision 2026-11-11): a change to a feature goes into
+# that feature's patch, and its spec gets a part. `replaces` lists the old patch ids.
+# Code comments still name the old numbers; old -> new:
+#   0001 owner-gates          -> 0001 workflow
+#   0002 approval-panel       -> 0001 workflow
+#   0003 goals                -> 0002 goals
+#   0004 goals-ui             -> 0002 goals
+#   0005 workflow-by-type     -> 0001 workflow
+#   0006 workflow-by-type-ui  -> 0001 workflow
+#   0007 board-columns        -> 0001 workflow
+#   0008 decisions            -> 0004 decisions
+#   0009 decisions-ui         -> 0004 decisions
+#   0010 parent-child         -> 0003 boards
+#   0011 artifact-reader      -> 0005 artifact-reader
+#   0012 status-age           -> 0003 boards
+#   0013 child-panel          -> 0003 boards
+#   0014 board-lanes          -> 0003 boards
+#   0015 approval-pr          -> 0001 workflow
+#   0016 type-first           -> 0001 workflow
+#   0017 derived-property     -> 0001 workflow
+#   0018 send-back-limit      -> 0001 workflow
+#   0019 telegram-push        -> 0006 inbox
+#   0020 inbox-split          -> 0006 inbox
+#   0021 triage-suggest       -> 0007 triage-suggest
+
+
+[[patches]]
+id = "workflow"
+name = "feat(workflow): owner gates, workflows by Type and their board columns, approval panel, send-back limit"
+patch_file = "0001-workflow.patch"
+metadata_file = "0001-workflow.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+replaces = ["owner-gates", "approval-panel", "workflow-by-type", "workflow-by-type-ui", "board-columns", "approval-pr", "type-first", "derived-property", "send-back-limit"]
+touches = ["server/internal/issueworkflow/issueworkflow.go", "server/internal/handler/issue_workflow_entry.go", "server/internal/handler/issue.go", "server/internal/handler/vantt_owner_gates_test.go", "packages/views/workflows/approval-panel.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/views/locales/*/issues.json", "server/internal/service/issue.go", "server/internal/handler/property.go", "server/internal/handler/pr_auto_complete.go", "server/pkg/db/queries/workspace_delete.sql", "packages/views/workflows/workflow-rules-row.tsx", "packages/views/projects/components/project-detail.tsx", "packages/views/projects/components/project-detail.test.tsx", "packages/core/api/client.ts", "packages/core/workflow-rules/index.ts", "packages/views/issues/utils/workflow-columns.ts", "packages/views/issues/utils/workflow-columns.test.ts", "packages/views/workflows/approval-prs.tsx", "packages/views/modals/create-issue.tsx", "server/internal/service/vantt_derive.go", "server/internal/handler/vantt_send_back_limit.go", "server/cmd/server/router.go", "server/pkg/db/generated/workspace_delete.sql.go", "server/migrations/9009_vantt_workflow_limit.up.sql"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'OwnerGate|AgentStepIsNotAGate|WorkflowRule|FollowsRuleWorkflow|ChangingType|Derived|PropertyDefinition|SendBack|WorkspaceDeletion' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run workflow-rules) && (cd packages/views && npx vitest run workflows projects modals issues/utils issues/components/issue-detail locales)"
+
+[[patches]]
+id = "goals"
+name = "feat(goals): goals with a number, a deadline, history and linked work; Goals page"
+patch_file = "0002-goals.patch"
+metadata_file = "0002-goals.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+replaces = ["goals", "goals-ui"]
+touches = ["server/migrations/9001_vantt_goal*", "server/pkg/db/queries/goal.sql", "server/pkg/db/generated/goal.sql.go", "server/pkg/db/generated/models.go", "server/internal/handler/vantt_goal.go", "server/cmd/server/router.go", "packages/core/goals/", "packages/views/goals/", "packages/core/api/client.ts", "packages/core/paths/", "packages/views/layout/app-sidebar.tsx", "apps/desktop/src/renderer/src/routes.tsx"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Goal|WorkspaceDeletion' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run goals paths) && (cd packages/views && npx vitest run locales layout search)"
+
+[[patches]]
+id = "boards"
+name = "feat(boards): lanes, parent chips, status age, child panel"
+patch_file = "0003-boards.patch"
+metadata_file = "0003-boards.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+replaces = ["parent-child", "status-age", "child-panel", "board-lanes"]
+touches = ["packages/views/issues/components/parent-issue-chip.tsx", "packages/views/issues/components/board-card.tsx", "packages/views/issues/components/list-row.tsx", "server/internal/handler/vantt_status_since.go", "server/cmd/server/router.go", "packages/core/board-gates/index.ts", "packages/core/api/client.ts", "packages/views/issues/components/child-panel-extras.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/views/issues/components/board-lanes.tsx", "packages/views/issues/components/board-view.tsx", "packages/views/issues/components/board-column.tsx", "packages/views/issues/utils/drag-utils.ts"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'StatusSince' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run board-gates) && (cd packages/views && npx vitest run issues locales)"
+
+[[patches]]
+id = "decisions"
+name = "feat(decisions): structured decisions on issues: API, issue panel, CLI"
+patch_file = "0004-decisions.patch"
+metadata_file = "0004-decisions.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+replaces = ["decisions", "decisions-ui"]
+touches = ["server/internal/handler/vantt_decision.go", "server/cmd/server/router.go", "server/pkg/db/queries/workspace_delete.sql", "packages/views/workflows/decision-panel.tsx", "packages/views/issues/components/issue-detail.tsx", "packages/core/decisions/index.ts", "packages/core/decisions/index.test.ts", "packages/core/api/client.ts", "server/cmd/multica/vantt_cmd_issue_decision.go"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Decision|WorkspaceDeletion' -count=1 && go test ./cmd/multica/ -run 'Decision|IssueAsk' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run decisions) && (cd packages/views && npx vitest run workflows locales)"
+
+[[patches]]
+id = "artifact-reader"
+name = "feat(attachments): reading view for markdown documents"
+patch_file = "0005-artifact-reader.patch"
+metadata_file = "0005-artifact-reader.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+replaces = ["artifact-reader"]
+touches = ["packages/views/editor/markdown-reader.tsx", "packages/views/editor/attachment-preview-modal.tsx"]
+test_command = "pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run editor locales"
+
+[[patches]]
+id = "inbox"
+name = "feat(inbox): Telegram push with decision buttons; Needs you / For your info tabs"
+patch_file = "0006-inbox.patch"
+metadata_file = "0006-inbox.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+replaces = ["telegram-push", "inbox-split"]
+touches = ["server/internal/integrations/telegram/vantt_push.go", "server/internal/integrations/telegram/api.go", "server/internal/integrations/telegram/telegram_channel.go", "server/internal/handler/vantt_decision_notify.go", "server/internal/handler/vantt_decision.go", "server/cmd/server/router.go", "packages/core/types/inbox.ts", "packages/views/inbox/components/inbox-detail-label.tsx", "packages/views/locales/*/inbox.json", "packages/views/inbox/components/inbox-tabs.tsx", "packages/views/inbox/components/inbox-page.tsx", "packages/views/inbox/components/inbox-list-item.tsx"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Decision' -count=1 && go test ./internal/integrations/telegram/ -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run inbox locales"
+
+[[patches]]
+id = "triage-suggest"
+name = "feat(triage): suggest a new issue's project and Type with a fast decision model"
+patch_file = "0007-triage-suggest.patch"
+metadata_file = "0007-triage-suggest.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+replaces = ["triage-suggest"]
+touches = ["server/internal/triage/", "server/internal/handler/vantt_triage.go", "server/cmd/server/router.go"]
+test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/triage/ -count=1 && go test ./internal/handler/ -run 'TriageSuggest' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts && cd packages/views && npx vitest run modals locales"
+
+[[patches]]
+id = "email-log-domains"
+name = "feat(email): log-only recipient domains for internal bot accounts"
+patch_file = "0008-email-log-domains.patch"
+metadata_file = "0008-email-log-domains.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/service/email.go", "server/internal/service/vantt_email.go"]
+test_command = "cd server && go test ./internal/service/ -count=1"
