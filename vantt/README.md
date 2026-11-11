@@ -14,6 +14,8 @@ Layout copied from [vantt/herdr](https://github.com/vantt/herdr) and
 
 - `vantt/upstream.pin`: upstream tag the fork builds on.
 - `vantt/patches/series.toml`: the patch series, in order; each patch has a spec.
+  One patch per feature (workflow, goals, boards, decisions, artifact-reader, inbox,
+  triage-suggest): a change to a feature goes into its patch and its spec gets a part.
 - `node vantt/scripts/catchup.mjs`: branch `vantt/<tag>` = upstream tag + fork files +
   patches; tag `v<tag>-vantt.N`. CI `vantt-catchup` pushes it and `vantt-images` builds
   `ghcr.io/vantt/multica-backend` and `ghcr.io/vantt/multica-web` (linux/amd64).
@@ -28,7 +30,8 @@ Layout copied from [vantt/herdr](https://github.com/vantt/herdr) and
   keeps data usable.
 - The Multica logo, name and copyright notices are never removed or changed
   (Multica License, Part I(b)).
-- Each patch aims upstream (`upstream_status` in `series.toml`).
+- Each patch aims upstream (`upstream_status` in `series.toml`); an upstream proposal is cut
+  from the matching part of a feature patch.
 
 ## Plan
 

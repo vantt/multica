@@ -14,6 +14,12 @@ Rules: no configuration = upstream behaviour; migrations only add; Multica logo,
 copyright untouched; follow established practice (Jira, Linear, Atlassian Goals) before
 inventing; every patch has a spec and aims upstream (proposals upstream need the owner's OK).
 
+**2026-11-11: patches merged per feature (owner decision).** 21 patches became 7:
+0001 workflow (old 0001, 0002, 0005, 0006, 0007, 0015–0018), 0002 goals (0003, 0004),
+0003 boards (0010, 0012–0014), 0004 decisions (0008, 0009, + CLI `multica issue ask`),
+0005 artifact-reader (0011), 0006 inbox (0019, 0020), 0007 triage-suggest (0021).
+The numbers below are the old ones; `series.toml` maps them.
+
 | Phase | Patch | What | Status |
 |---|---|---|---|
 | [01](phase-01-foundation.md) | — | Fork, upstream remote, catchup, CI, images | done |
@@ -22,7 +28,7 @@ inventing; every patch has a spec and aims upstream (proposals upstream need the
 | [04](phase-04-goals.md) | F2 | Goals with numbers | done: 0003 server, 0004 UI; the project repo is the source (plans/goals.md), two-way, repo wins |
 | [05](phase-05-workflow-by-type.md) | F3 | Workflow chosen by a select property (Type) | done: 0005 server, 0006 UI; opc.mjs `workflow_rules` |
 | [06](phase-06-boards.md) | F4 | Jira-style boards | done: 0007 columns for every rule workflow, 0014 lanes (To do · In progress · Awaiting approval · Done) for boards of several workflows + days in column; saved boards/swimlanes/filters = Multica built-ins (see 0007 spec) |
-| [07](phase-07-decisions.md) | F5 | Structured decisions, one-tap answers | done: 0008 server, 0009 UI |
+| [07](phase-07-decisions.md) | F5 | Structured decisions, one-tap answers | done: 0008 server, 0009 UI; CLI `multica issue ask` / `issue decision list`/`cancel` (2026-11-11, now in 0004 decisions) |
 | [08](phase-08-parent-child-reader.md) | F7, F8 | Parent/child clarity; artifact reading page | done: 0010, 0011; D9 round 2 (owner first, 2026-11-10): 0012 status-age, 0013 child-panel; reader round 2 later |
 | [09](phase-09-budgets.md) | F6 | Budgets with caps | **deferred** (owner, 2026-11-10) |
 | [10](phase-10-upstream-catchup.md) | — | Review upstream v0.7.2, catch up | done: reviews/v0.7.2.md, pin v0.7.2 |

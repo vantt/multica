@@ -1,6 +1,15 @@
-# Patch 0021 — triage-suggest (owner decision 2026-11-10: Cloudflare Workers AI, chat and form)
+# Patch 0007 — triage-suggest
 
-## Requirement
+feat(triage): suggest a new issue's project and Type with a fast decision model
+
+One patch per feature since 2026-11-11 (owner decision). Made from the old patches 0021 triage-suggest; each part below is that patch's spec, unchanged. Code comments still name the old numbers (`vantt 0019`, `patch 0020`): the table in `series.toml` maps them.
+
+## Tests (whole patch)
+`cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/triage/ -count=1 && go test ./internal/handler/ -run 'TriageSuggest' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts && cd packages/views && npx vitest run modals locales`
+
+## Part: old patch 0021 — triage-suggest (owner decision 2026-11-10: Cloudflare Workers AI, chat and form)
+
+### Requirement
 Suggest a new issue's **project** and **Type** (the property the workflow rules use)
 with a fast decision model, Cloudflare's Clef on Workers AI (Jev's "System One" API
 shape). Learned from OpenMausBot's decider and Linear's Triage Intelligence.
@@ -27,15 +36,15 @@ shape). Learned from OpenMausBot's decider and Linear's Triage Intelligence.
 - Env: `MULTICA_CLOUDFLARE_AI_ACCOUNT_ID`, `MULTICA_CLOUDFLARE_AI_TOKEN` (empty = off),
   `MULTICA_TRIAGE_FORM=off`, `MULTICA_TRIAGE_CHAT=off`, `MULTICA_TRIAGE_MODEL=clef`.
 
-## Eval (opt-in, real model)
+### Eval (opt-in, real model)
 `TRIAGE_LIVE_EVAL=1 TRIAGE_EVAL_DATABASE_URL=… TRIAGE_EVAL_WORKSPACE=… [TRIAGE_EVAL_CASES=internal/triage/testdata/opc-studio.json] go test ./internal/triage/ -run LiveEval -v`.
 2026-11-10 on opc-studio, 18 owner-style requests: project 13 right / 0 wrong / 5 silent;
 Type 7 / 1 / 10 (few Type examples in the workspace yet). Latency ~200 ms.
 
-## Touch points
+### Touch points
 New package `server/internal/triage`; `handler/vantt_triage.go` (+test); `cmd/server/router.go`
 (route, and wrapping the chat router's issue creator). Web: `core/triage`, `api.triageSuggest`,
 `views/modals/triage-suggest.tsx` (+test), one block in `create-issue.tsx`, `issues.triage.*` strings.
 
-## Tests
+### Tests
 See series.toml.

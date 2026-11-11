@@ -1,4 +1,4 @@
-From 7a393a8c37792c1093ff5b18c6a79659f44b63e4 Mon Sep 17 00:00:00 2001
+From 138de9d466ef578772b3c1db74869aec12f44518 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 23:52:57 +0700
 Subject: [PATCH] feat(triage): suggest a new issue's project and Type with a
@@ -7,33 +7,35 @@ MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Cloudflare Workers AI's Clef (Jev's "System One" shape: choice questions,
-calibrated probabilities) answers in about 200 ms. Learned from OpenMausBot's
-decider: fail open (no key, timeout 1.5 s, HTTP error or an answer that does
-not validate = no suggestion), the top option's probability must reach 0.6,
-and the log line holds the choice, probability, margin, latency and a state
-hash, never the issue text or the token. From Linear's Triage Intelligence:
-project and team-like fields, workspace history as context, the workspace's
-own guidance, auto-apply only where chosen.
+- feat(triage): suggest a new issue's project and Type with a fast decision model
 
-Everything offered is read from the workspace on every call: projects (name,
-description, recent issue titles) and the property the workflow rules use,
-else one named Type (its options, its description as guidance, recent issues
-per option). Nothing about options is built in.
+  Cloudflare Workers AI's Clef (Jev's "System One" shape: choice questions,
+  calibrated probabilities) answers in about 200 ms. Learned from OpenMausBot's
+  decider: fail open (no key, timeout 1.5 s, HTTP error or an answer that does
+  not validate = no suggestion), the top option's probability must reach 0.6,
+  and the log line holds the choice, probability, margin, latency and a state
+  hash, never the issue text or the token. From Linear's Triage Intelligence:
+  project and team-like fields, workspace history as context, the workspace's
+  own guidance, auto-apply only where chosen.
 
-- POST /api/issues/triage-suggest {title, description, project_id, has_type}
-  returns only the fields the model is sure of (often none).
-- A chat /issue (origin *_chat) with no project gets project and Type when
-  sure, plus a line "_Clef xếp: <project> 87% · <Type> 91%_"; any refusal
-  creates the issue as typed.
-- Web (design D12): a "Suggested" strip in the manual create form once the
-  title has a few words and project or Type is empty: a chip per field,
-  "Apply both", ✕ to hide; tooltip "Clef · 95% · …". Never changes a field
-  without a click.
-- MULTICA_CLOUDFLARE_AI_ACCOUNT_ID + MULTICA_CLOUDFLARE_AI_TOKEN turn it on;
-  MULTICA_TRIAGE_FORM=off / MULTICA_TRIAGE_CHAT=off switch a job off.
-- Opt-in live eval (TRIAGE_LIVE_EVAL=1) against a workspace's issues or a
-  fixture of requests.
+  Everything offered is read from the workspace on every call: projects (name,
+  description, recent issue titles) and the property the workflow rules use,
+  else one named Type (its options, its description as guidance, recent issues
+  per option). Nothing about options is built in.
+
+  - POST /api/issues/triage-suggest {title, description, project_id, has_type}
+    returns only the fields the model is sure of (often none).
+  - A chat /issue (origin *_chat) with no project gets project and Type when
+    sure, plus a line "_Clef xếp: <project> 87% · <Type> 91%_"; any refusal
+    creates the issue as typed.
+  - Web (design D12): a "Suggested" strip in the manual create form once the
+    title has a few words and project or Type is empty: a chip per field,
+    "Apply both", ✕ to hide; tooltip "Clef · 95% · …". Never changes a field
+    without a click.
+  - MULTICA_CLOUDFLARE_AI_ACCOUNT_ID + MULTICA_CLOUDFLARE_AI_TOKEN turn it on;
+    MULTICA_TRIAGE_FORM=off / MULTICA_TRIAGE_CHAT=off switch a job off.
+  - Opt-in live eval (TRIAGE_LIVE_EVAL=1) against a workspace's issues or a
+    fixture of requests.
 
 Patch-Id: triage-suggest
 ---
