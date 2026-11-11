@@ -2,14 +2,10 @@ name: vantt-images
 
 # Build and push ghcr.io/vantt/multica-backend and ghcr.io/vantt/multica-web for a
 # fork release tag (v<upstream>-vantt.N). linux/amd64 only: the fork runs on one
-# x86_64 host. Build steps follow upstream's release.yml.
+# x86_64 host. Build steps follow upstream's release.yml. By hand only: the usual path
+# is vantt/scripts/release.sh on the host.
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        type: string
-        required: true
   workflow_dispatch:
     inputs:
       version:

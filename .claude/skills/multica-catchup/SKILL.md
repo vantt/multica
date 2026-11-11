@@ -19,7 +19,8 @@ node vantt/scripts/catchup.mjs --ref v0.7.2       # another upstream tag
 
 Result: local branch `vantt/<tag>` and annotated tag `v<tag>-vantt.N` (N goes up when the
 series changes on the same upstream tag; unchanged inputs = "already exists"). Nothing is
-pushed. In CI, `vantt-catchup.yml` pushes the branch and tag and calls `vantt-images.yml`.
+pushed. A release (push branch and tag, build and push the images) is
+`bash vantt/scripts/release.sh` on the host; CI does it only when run by hand.
 
 ## Conflict (exit 3)
 
@@ -41,6 +42,6 @@ pushed. In CI, `vantt-catchup.yml` pushes the branch and tag and calls `vantt-im
 ## Moving to a new upstream release
 
 Run the upstream review first (`multica-upstream-review` skill when present), then change
-`vantt/upstream.pin`, push to `main`: CI rebuilds. Deploy by setting `MULTICA_IMAGE_TAG`
+`vantt/upstream.pin`, push to `main`, then `bash vantt/scripts/release.sh`. Deploy by setting `MULTICA_IMAGE_TAG`
 in fgOPC's stack (`MULTICA_BACKEND_IMAGE=ghcr.io/vantt/multica-backend`,
 `MULTICA_WEB_IMAGE=ghcr.io/vantt/multica-web`).

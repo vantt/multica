@@ -1,8 +1,9 @@
 name: vantt-catchup
 
 # Build the release branch vantt/<tag> (upstream tag + patch series), push it with
-# its v<tag>-vantt.N tag, then build the images. Runs by hand, or when the series or
-# the pin changes on main. No cron: the fork follows upstream when the owner decides.
+# its v<tag>-vantt.N tag. By hand only: releases are made on the host with
+# vantt/scripts/release.sh (images included), since GitHub disabled this fork's Actions
+# on 2026-11-11 (reason not shown; likely the many image builds). No cron.
 # On failure it opens one issue "[catchup] <ref>: <status>" (label catchup) and
 # comments on it after that.
 
@@ -17,9 +18,6 @@ on:
         description: Skip patch test_command
         type: boolean
         default: false
-  push:
-    branches: [main]
-    paths: ['vantt/patches/**', 'vantt/upstream.pin', 'vantt/scripts/catchup.mjs']
 
 permissions:
   contents: write
@@ -105,12 +103,3 @@ jobs:
           num=$(gh issue list --label catchup --state open --search "in:title [catchup] $ref" --json number -q '.[0].number')
           if [ -n "$num" ]; then gh issue comment "$num" --body "$body"; else gh issue create --label catchup --title "$title" --body "$body"; fi
 
-  images:
-    needs: catchup
-    if: needs.catchup.outputs.existing == 'false'
-    uses: ./.github/workflows/vantt-images.yml
-    with:
-      version: ${{ needs.catchup.outputs.version }}
-    permissions:
-      contents: read
-      packages: write

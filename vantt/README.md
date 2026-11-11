@@ -17,8 +17,13 @@ Layout copied from [vantt/herdr](https://github.com/vantt/herdr) and
   One patch per feature (workflow, goals, boards, decisions, artifact-reader, inbox,
   triage-suggest): a change to a feature goes into its patch and its spec gets a part.
 - `node vantt/scripts/catchup.mjs`: branch `vantt/<tag>` = upstream tag + fork files +
-  patches; tag `v<tag>-vantt.N`. CI `vantt-catchup` pushes it and `vantt-images` builds
-  `ghcr.io/vantt/multica-backend` and `ghcr.io/vantt/multica-web` (linux/amd64).
+  patches; tag `v<tag>-vantt.N`.
+- `bash vantt/scripts/release.sh`: a release on the host: catchup in a throwaway
+  worktree, push branch and tag, build and push `ghcr.io/vantt/multica-backend` and
+  `ghcr.io/vantt/multica-web` (linux/amd64). Needs a scratch `DATABASE_URL` for the patch
+  tests (or `--skip-tests`) and a GHCR token with `write:packages` (or `--no-push`).
+  CI `vantt-catchup` and `vantt-images` remain, by hand only: GitHub disabled this fork's
+  Actions on 2026-11-11.
 - Remote `upstream` is fetch-only (`git remote set-url --push upstream DISABLE`).
 
 ## Rules
