@@ -17,6 +17,7 @@
 #   gh auth token | docker login ghcr.io -u <user> --password-stdin
 # Deploy afterwards: fgOPC multica-ops references/install-upgrade.md.
 set -euo pipefail
+trap 'echo "release.sh: failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 push=1; catchup_args=()
 while [ $# -gt 0 ]; do
@@ -34,7 +35,9 @@ if [[ " ${catchup_args[*]-} " != *" --skip-tests "* && -z "${DATABASE_URL:-}" ]]
 fi
 
 repo="$(git rev-parse --show-toplevel)"
-git -C "$repo" fetch --quiet --tags origin
+# The remote tags are the releases; a local catchup that was never pushed leaves
+# stale ones, so local tags follow the remote.
+git -C "$repo" fetch --quiet --force --tags origin
 wt="$(mktemp -d "${TMPDIR:-/tmp}/vantt-release.XXXXXX")"
 cleanup() { git -C "$repo" worktree remove --force "$wt" 2>/dev/null || true; }
 trap cleanup EXIT
