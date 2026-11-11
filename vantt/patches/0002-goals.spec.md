@@ -1,0 +1,130 @@
+# Patch 0002 — goals
+
+feat(goals): goals with a number, a deadline, history and linked work; Goals page
+
+One patch per feature since 2026-11-11 (owner decision). Made from the old patches 0003 goals, 0004 goals-ui; each part below is that patch's spec, unchanged. Code comments still name the old numbers (`vantt 0019`, `patch 0020`): the table in `series.toml` maps them.
+
+## Tests (whole patch)
+`cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Goal|WorkspaceDeletion' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run goals paths) && (cd packages/views && npx vitest run locales layout search)`
+
+## Part: old patch 0003 — goals (F2, server) · design D1, D2
+
+UI is patch 0004 goals-ui.
+
+### Reference
+Atlassian Goals (status On track / At risk / Off track, regular updates, goal tree),
+Linear Initiatives (projects roll up to an initiative). Paperclip `goals` (level, parent,
+owner) — without numbers; we add target/current/unit/direction/due.
+
+### Requirement
+#### Data (add-only, no foreign keys, one CONCURRENTLY index per migration)
+- `goal`: id, workspace_id, parent_id?, title, description, unit, direction
+  (`increase` | `decrease`), start_value, target_value, current_value, due_date?,
+  status (`planned` | `active` | `achieved` | `missed` | `cancelled`), measured_by
+  (`manual` | `script`), owner_type?/owner_id?, current_updated_at, position,
+  created_at, updated_at.
+- `goal_value`: id, goal_id, value, note, actor_type, actor_id, created_at — the history.
+- `goal_link`: goal_id, target_type (`project` | `issue`), target_id, created_at — the
+  work that moves a goal (an epic issue, a whole project).
+
+#### Health (computed, never stored)
+- `progress` = (current − start) / (target − start), clamped 0..1 (direction-aware).
+- `expected` = elapsed share of [created_at, due_date].
+- ratio = progress / expected: `on_track` ≥ 0.9, `at_risk` ≥ 0.6, else `off_track`; before 5%
+  of the time is used everything is `on_track`. No due date → `no_target_date`.
+- `update_due` when measured_by = manual and current_updated_at older than 7 days.
+- Closed statuses (achieved, missed, cancelled) report their status instead.
+
+#### API (workspace-scoped, members read, owner/admin or goal owner write)
+- `GET/POST /api/goals`, `GET/PATCH/DELETE /api/goals/{id}` (delete refused while the goal has
+  child goals; its links and history are deleted with it).
+- `POST /api/goals/{id}/values` `{value, note}` → appends history, updates current.
+  Agents may call it (Phương's daily script) when `measured_by = script`.
+- `PUT /api/goals/{id}/links` `{links:[{target_type,target_id}]}`.
+- Links come with every goal in the list, so clients resolve chips without another call.
+
+#### UI (D1, D2)
+- Sidebar "Goals". List: summary tiles (off track, on track, update due, open work without
+  a goal), tree company → project goals, each row: id, title, scope, due, current/target
+  with bar, health pill + pace text ("needs 6.3/wk, doing 1.5/wk"), measured by + age of
+  the number, linked work count.
+- Detail: header with health; big number; chart actual vs needed line; measured by;
+  blocking work (linked issues waiting on a person); work list; history; Enter number.
+- Issue page and board card show the goal chip of a linked issue (or its parent's).
+
+### Invariants
+1. No goals = no visible change except the sidebar entry.
+2. Add-only schema; dropping the patch leaves unused tables.
+3. Strings in every locale.
+
+### The repo is the source of truth (owner, 2026-11-10)
+Each project keeps goals, portfolio, plans and progress in its own git repo
+(`plans/goals.md`); Multica draws them. Two-way, repo wins:
+- `goal.source_ref` (e.g. `vantt/app:plans/goals.md#G1`; older refs without the repo still read) and `goal.pending` (edited in the UI, not yet
+  written back); `goal_value.synced` (false when a person entered it in the UI).
+- A goal lives in a repo when it carries `source_ref`, or its linked projects all use one
+  GitHub repo (several projects may share a repo). Company goals, goals of projects without a
+  repo or of several repos live in Multica only (owner decision 2026-11-10).
+- An agent (the PM) may create/update goals that live in a repo (adopting a UI goal by
+  writing its `source_ref`), clear `pending`, add
+  values with `recorded_at` (the repo row's date) and `POST /values/synced`. A person's
+  edit or value on a repo goal sets `pending` / `synced=false`. A value sent with `recorded_at` is a
+  mirror of a repo row (keeps the date, `synced`); any writer may send `pending: false` (the owner
+  running the sync by hand mirrors like the PM). A goal created in the UI
+  starts `pending` until the PM writes it into the repo.
+
+### Workspace deletion
+The tables have no foreign keys, so `pkg/db/queries/workspace_delete.sql` deletes their rows
+(`deleted_goal_links`, `deleted_goal_values`, `deleted_goals`, after `deleted_project_resources`)
+and `workspace_delete_manifest_test.go` lists them as `workspaceDelete`.
+
+### Touch points (expected)
+- `server/migrations/NNN_goal*.sql`, `server/pkg/db/queries/goal.sql` + sqlc output,
+  `server/internal/handler/goal.go` (+ tests), router registration.
+- `packages/core/goals/*` (api, schemas + malformed tests, queries, mutations),
+  `packages/core/paths` (goals route), `packages/views/goals/*`, sidebar nav,
+  web route `apps/web/app/[workspaceSlug]/(dashboard)/goals`, desktop `routes.tsx`,
+  locales.
+
+### On conflict
+Migrations: renumber to after upstream's latest. Router/sidebar/routes: re-add the single
+registration lines. Keep the API and table names.
+
+## Part: old patch 0004 — goals-ui (F2, UI) · design D1, D2
+
+Needs patch 0003 goals (API).
+
+### Requirement
+- Sidebar "Goals" after Projects; command palette finds it.
+- List (D1): tiles Off track / At risk / On track / Update due; goal tree (parents
+  first) with title, due date, current/target with bar, health pill (Update due wins),
+  pace "needs X/wk, doing Y/wk", measured by, linked work count; New goal form (result,
+  start, target, unit, due date, better when higher/lower, parent).
+- Detail (D2): health, big number of target, pace; SVG chart of history against the
+  dashed needed line; Enter a value with a note; linked issues; history.
+Reference: Atlassian Goals, Linear initiatives.
+
+### Invariants
+1. Every route is a parameterless WorkspacePaths builder (`goals`) plus `goalDetail(id)`.
+2. Strings in every locale (parity test); goal page strings live in `projects.json`
+   under `goals`, the nav label in `layout.json` `nav.goals`.
+3. API responses go through zod with fallbacks (`core/goals/schemas.ts`).
+
+### Touch points
+- New: `packages/core/goals/*`, `packages/views/goals/*`,
+  `apps/web/app/[workspaceSlug]/(dashboard)/goals/**`,
+  `apps/desktop/src/renderer/src/pages/goal-detail-page.tsx`.
+- One-line registrations: `core/api/client.ts` (imports + goal methods block before
+  `listProjectResources`), `core/package.json` and `views/package.json` exports,
+  `core/paths/paths.ts`, `core/paths/route-icons.ts` (`Target`, `goals` keys and page),
+  `core/paths/tab-subject.ts`, `core/paths/consistency.test.ts`,
+  `views/layout/app-sidebar.tsx`, `views/layout/route-icon-components.tsx`,
+  `views/search/use-root-model.ts` (palette keywords; was `search-command.tsx` before v0.7.2), desktop `routes.tsx`, path mocks in
+  3 layout tests, locales.
+
+### On conflict
+Re-add each registration next to `projects`. If upstream adds a page registry or
+renames NavKey/WorkspacePageKey, register `goals` the same way as `projects`.
+
+### Tests
+`pnpm install --frozen-lockfile --ignore-scripts && (cd packages/core && npx vitest run goals paths) && (cd packages/views && npx vitest run locales layout search)`

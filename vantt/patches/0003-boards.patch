@@ -1,0 +1,1382 @@
+From ec4cc1aa7ea92125a88a123dba7189f8759645db Mon Sep 17 00:00:00 2001
+From: Van Tran <tetcu@fgorg.vn>
+Date: Tue, 10 Nov 2026 15:55:15 +0700
+Subject: [PATCH] feat(boards): lanes, parent chips, status age, child panel
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- feat(issues): show a sub-issue's parent on board cards and list rows
+
+  A chip with the parent's identifier and title (tooltip: Sub-issue of …) next
+  to the identifier, so children are told apart from top-level issues at a
+  glance. Parents keep their sub-issue progress ring.
+
+- feat(issues): when each open issue entered its status
+
+  GET /api/issues/status-since[?project_id=] lists, for every issue not done or
+  cancelled, its status and when it entered it (last status_changed activity,
+  else creation). Core @multica/core/board-gates: the query, daysInColumn, and
+  gateStatuses (steps a person approves). Reference: Jira's days in column.
+
+- feat(issues): child issues by status and days in status
+
+  The sub-issue panel shows a bar of the children by status next to the done
+  count, and each open child shows how many days it has sat in its status (from
+  one day, red from five). Reference: Jira's Child issues panel.
+
+- feat(boards): lanes for a board of several workflows
+
+  A board that shows issues of several workflows — a project whose Type rules use
+  another workflow, or the workspace board when the workspace has more than one
+  workflow — shows four columns that each hold several statuses: To do, In
+  progress, Awaiting approval (every step a person approves, locked heading,
+  longest wait first) and Done. Cards name their real status and goal, and every
+  card shows its days in column (from one day, red from five). Dropping on a lane
+  picks the lane's first status the card's own workflow (its Type rule's) allows.
+  The workspace board loads the steps of every workflow. A board of one workflow
+  keeps one column per step.
+  Reference: Jira board column mapping, days in column.
+
+Patch-Id: boards
+---
+ packages/core/api/client.ts                   |   9 +
+ packages/core/board-gates/index.test.ts       |  27 +++
+ packages/core/board-gates/index.ts            |  56 +++++
+ packages/core/package.json                    |   1 +
+ .../views/issues/components/board-card.tsx    |  17 +-
+ .../views/issues/components/board-column.tsx  |   8 +
+ .../issues/components/board-lanes.test.ts     |  84 +++++++
+ .../views/issues/components/board-lanes.tsx   | 211 ++++++++++++++++++
+ .../views/issues/components/board-view.tsx    |  90 ++++++--
+ .../components/child-panel-extras.test.tsx    |  45 ++++
+ .../issues/components/child-panel-extras.tsx  |  74 ++++++
+ .../views/issues/components/issue-detail.tsx  |   3 +
+ packages/views/issues/components/list-row.tsx |   2 +
+ .../components/parent-issue-chip.test.tsx     |  26 +++
+ .../issues/components/parent-issue-chip.tsx   |  34 +++
+ packages/views/issues/utils/drag-utils.ts     |  10 +-
+ .../views/issues/utils/workflow-columns.ts    |  10 +-
+ packages/views/locales/en/issues.json         |  17 ++
+ packages/views/locales/fr/issues.json         |  17 ++
+ packages/views/locales/ja/issues.json         |  17 ++
+ packages/views/locales/ko/issues.json         |  17 ++
+ packages/views/locales/zh-Hans/issues.json    |  17 ++
+ packages/views/locales/zh-Hant/issues.json    |  17 ++
+ server/cmd/server/router.go                   |   1 +
+ server/internal/handler/vantt_status_since.go |  67 ++++++
+ .../handler/vantt_status_since_test.go        |  39 ++++
+ 26 files changed, 889 insertions(+), 27 deletions(-)
+ create mode 100644 packages/core/board-gates/index.test.ts
+ create mode 100644 packages/core/board-gates/index.ts
+ create mode 100644 packages/views/issues/components/board-lanes.test.ts
+ create mode 100644 packages/views/issues/components/board-lanes.tsx
+ create mode 100644 packages/views/issues/components/child-panel-extras.test.tsx
+ create mode 100644 packages/views/issues/components/child-panel-extras.tsx
+ create mode 100644 packages/views/issues/components/parent-issue-chip.test.tsx
+ create mode 100644 packages/views/issues/components/parent-issue-chip.tsx
+ create mode 100644 server/internal/handler/vantt_status_since.go
+ create mode 100644 server/internal/handler/vantt_status_since_test.go
+
+diff --git a/packages/core/api/client.ts b/packages/core/api/client.ts
+index 4e9981f7d..732291cfc 100644
+--- a/packages/core/api/client.ts
++++ b/packages/core/api/client.ts
+@@ -4112,6 +4112,15 @@ export class ApiClient {
+   }
+ 
+   // Project resources
++
++  // vantt board-gates (design D3): when each open issue entered its status.
++  async listIssueStatusSince(projectId: string | null): Promise<{ issues: Record<string, import("../board-gates").StatusSince> }> {
++    const q = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
++    const raw = await this.fetch<{ issues?: unknown }>(`/api/issues/status-since${q}`);
++    const issues = raw?.issues && typeof raw.issues === "object" ? (raw.issues as Record<string, import("../board-gates").StatusSince>) : {};
++    return { issues };
++  }
++
+   // vantt workflow-by-type (patch workflow-by-type-ui, F3).
+   async listProjectWorkflowRules(projectId: string): Promise<{ rules: { property_id: string; option_id: string; workflow_id: string }[] }> {
+     const raw = await this.fetch<{ rules?: unknown }>(`/api/projects/${projectId}/workflow-rules`);
+diff --git a/packages/core/board-gates/index.test.ts b/packages/core/board-gates/index.test.ts
+new file mode 100644
+index 000000000..a34d1dbdc
+--- /dev/null
++++ b/packages/core/board-gates/index.test.ts
+@@ -0,0 +1,27 @@
++import { describe, expect, it } from "vitest";
++import { daysInColumn, gateStatuses } from "./index";
++
++describe("daysInColumn", () => {
++  const now = Date.parse("2026-11-10T12:00:00Z");
++  it("counts whole days in the current status", () => {
++    expect(daysInColumn({ status: "in_review", since: "2026-11-05T11:00:00Z" }, "in_review", now)).toBe(5);
++    expect(daysInColumn({ status: "in_review", since: "2026-11-10T08:00:00Z" }, "in_review", now)).toBe(0);
++  });
++  it("is unknown once the issue moved or without an entry", () => {
++    expect(daysInColumn({ status: "todo", since: "2026-11-01T00:00:00Z" }, "in_review", now)).toBeNull();
++    expect(daysInColumn(undefined, "todo", now)).toBeNull();
++  });
++});
++
++describe("gateStatuses", () => {
++  it("lists steps a person approves, once, skipping blocked-style steps", () => {
++    const delivery = { steps: [
++      { status_key: "todo", handler: { type: "agent" }, next_status_key: "build" },
++      { status_key: "spec_approval", handler: { type: "member" }, next_status_key: "build" },
++      { status_key: "in_review", handler: { type: "member" }, next_status_key: "release" },
++      { status_key: "blocked", handler: { type: "member" }, next_status_key: null },
++    ] };
++    const content = { steps: [{ status_key: "in_review", handler: { type: "project_lead" }, next_status_key: "done" }] };
++    expect(gateStatuses([delivery, content])).toEqual(["spec_approval", "in_review"]);
++  });
++});
+diff --git a/packages/core/board-gates/index.ts b/packages/core/board-gates/index.ts
+new file mode 100644
+index 000000000..21a75bb75
+--- /dev/null
++++ b/packages/core/board-gates/index.ts
+@@ -0,0 +1,56 @@
++import { api } from "../api";
++
++/**
++ * vantt board-gates (design D3): days in column on board cards, and the steps a
++ * person approves, which a board of several workflows folds into one
++ * "Awaiting approval" column. Reference: Jira board ("days in column", column
++ * mapping several statuses).
++ */
++export interface StatusSince {
++  status: string;
++  since: string;
++}
++
++export const statusSinceKeys = {
++  scope: (wsId: string, projectId: string | null) => ["status-since", wsId, projectId ?? "all"] as const,
++};
++
++// Plain options object so tests that mock react-query with only useQuery work.
++export function statusSinceOptions(wsId: string, projectId: string | null) {
++  return {
++    queryKey: statusSinceKeys.scope(wsId, projectId),
++    queryFn: () => api.listIssueStatusSince(projectId),
++    select: (data: { issues: Record<string, StatusSince> }) => data.issues,
++    staleTime: 60_000,
++  };
++}
++
++/** Whole days an issue has sat in `status`; null when unknown or the issue moved since. */
++export function daysInColumn(entry: StatusSince | undefined, status: string, now: number = Date.now()): number | null {
++  if (!entry || entry.status !== status) return null;
++  const at = Date.parse(entry.since);
++  if (Number.isNaN(at)) return null;
++  return Math.max(0, Math.floor((now - at) / 86_400_000));
++}
++
++interface GateStep {
++  status_key: string;
++  handler: { type: string };
++  next_status_key?: string | null;
++}
++
++/**
++ * Approval steps: a person handles them (member, project lead or creator) and
++ * they lead somewhere (`next_status_key`). Blocked-style steps without a next
++ * status are not approvals.
++ */
++export function gateStatuses(workflows: readonly { steps: readonly GateStep[] }[]): string[] {
++  const out: string[] = [];
++  for (const wf of workflows) {
++    for (const step of wf.steps) {
++      const person = ["member", "project_lead", "creator"].includes(step.handler?.type);
++      if (person && step.next_status_key && !out.includes(step.status_key)) out.push(step.status_key);
++    }
++  }
++  return out;
++}
+diff --git a/packages/core/package.json b/packages/core/package.json
+index e2ab6fb21..7abb098e3 100644
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -40,6 +40,7 @@
+     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
+     "./goals": "./goals/index.ts",
+     "./workflow-rules": "./workflow-rules/index.ts",
++    "./board-gates": "./board-gates/index.ts",
+     "./issues": "./issues/index.ts",
+     "./issues/batch": "./issues/batch.ts",
+     "./issues/canonical-id": "./issues/canonical-id.ts",
+diff --git a/packages/views/issues/components/board-card.tsx b/packages/views/issues/components/board-card.tsx
+index af6e2a2d8..502a01aed 100644
+--- a/packages/views/issues/components/board-card.tsx
++++ b/packages/views/issues/components/board-card.tsx
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { useCallback, memo } from "react";
++import { useCallback, useContext, memo } from "react";
+ import { AppLink } from "../../navigation";
+ import { useSortable, defaultAnimateLayoutChanges } from "@dnd-kit/sortable";
+ import type { AnimateLayoutChanges } from "@dnd-kit/sortable";
+@@ -24,6 +24,9 @@ import { PriorityPicker, AssigneePicker, StartDatePicker, DueDatePicker } from "
+ import { useViewStore } from "@multica/core/issues/stores/view-store-context";
+ import { propertyIdFromViewKey } from "@multica/core/issues/stores/view-store";
+ import { ProgressRing } from "./progress-ring";
++import { ParentIssueChip } from "./parent-issue-chip";
++import { BoardLaneContext, GoalChip, LaneStatusChip, useIssueGoal } from "./board-lanes"; // vantt board-lanes
++import { DaysInStatus } from "./child-panel-extras"; // vantt board-lanes: days in column
+ import type { ChildProgress } from "./list-row";
+ import { IssueActionsContextMenu } from "../actions";
+ import { LabelChip } from "../../labels/label-chip";
+@@ -117,6 +120,8 @@ export const BoardCardContent = memo(function BoardCardContent({
+   // Keeps the chip row from rendering an empty flex container when the status
+   // chip is the only thing in it and it decides to render nothing.
+   const showCustomStatus = useIsCustomStatus(issue.status);
++  const laneBoard = useContext(BoardLaneContext);
++  const goal = useIssueGoal(issue);
+ 
+   const showAssigneeName = showAssigneeSection && hasAssignee && !showStartDate && !showDueDate;
+   const showUpdatedHint = showAssigneeName && !showChildProgress;
+@@ -204,9 +209,13 @@ export const BoardCardContent = memo(function BoardCardContent({
+         <div className="flex items-center gap-1.5 min-w-0">
+           {priorityIconNode}
+           <p className="text-caption text-muted-foreground truncate">{issue.identifier}</p>
++          <ParentIssueChip parentId={issue.parent_issue_id} />
+           <IssueDuplicateOfMarker issue={issue} insideLink />
+         </div>
+-        <IssueAgentActivityIndicator issueId={issue.id} />
++        <span className="flex shrink-0 items-center gap-1.5">
++          <DaysInStatus issue={issue} />
++          <IssueAgentActivityIndicator issueId={issue.id} />
++        </span>
+       </div>
+ 
+       {/* Row 2: Title */}
+@@ -227,9 +236,11 @@ export const BoardCardContent = memo(function BoardCardContent({
+       {/* Chip row: status + project + labels + custom property values.
+           The status chip renders only for a CUSTOM status — the column header
+           already names the category. (MUL-6243) */}
+-      {(showCustomStatus || showProject || showLabels || cardCustomProperties.length > 0) && (
++      {(laneBoard || goal || showCustomStatus || showProject || showLabels || cardCustomProperties.length > 0) && (
+         <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+           <CustomStatusChip status={issue.status} />
++          <LaneStatusChip status={issue.status} isCustom={showCustomStatus} />
++          <GoalChip goal={goal} />
+           {showProject && (
+             <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-micro text-muted-foreground max-w-[160px]">
+               <ProjectIcon project={project} size="sm" />
+diff --git a/packages/views/issues/components/board-column.tsx b/packages/views/issues/components/board-column.tsx
+index 99c8f3cf7..98d0ca928 100644
+--- a/packages/views/issues/components/board-column.tsx
++++ b/packages/views/issues/components/board-column.tsx
+@@ -36,6 +36,7 @@ import { VirtuosoSeed } from "../../common/virtuoso-seed";
+ import { useBoardWorkflow } from "./board-workflow-context";
+ import { ColumnHandoff } from "../../workflows/column-handoff";
+ import type { IssueCreateDefaults } from "../surface/types";
++import { LaneHeading } from "./board-lanes"; // vantt board-lanes
+ 
+ // Insertion-position prediction intentionally omitted. The server's
+ // ORDER BY uses PostgreSQL's en_US.utf8 collation (glibc), which
+@@ -96,6 +97,11 @@ export interface BoardColumnGroup {
+   propertyOptionColor?: string;
+   totalCount?: number;
+   createData?: IssueCreateDefaults;
++  /** vantt board-lanes: a column holding several statuses. */
++  lane?: import("./board-lanes").Lane;
++  statuses?: IssueStatus[];
++  /** vantt board-lanes: the column's own card order (Awaiting approval: oldest first). */
++  sortIds?: (ids: string[]) => string[];
+ }
+ 
+ export const BoardColumn = memo(function BoardColumn({
+@@ -412,6 +418,8 @@ function BoardGroupHeading({
+     return <StatusHeading status={group.status} count={count} />;
+   }
+ 
++  if (group.lane) return <LaneHeading group={group} count={count} />; // vantt board-lanes
++
+   if (group.propertyId !== undefined) {
+     return (
+       <div className="flex min-w-0 items-center gap-2">
+diff --git a/packages/views/issues/components/board-lanes.test.ts b/packages/views/issues/components/board-lanes.test.ts
+new file mode 100644
+index 000000000..a8d0cbbbb
+--- /dev/null
++++ b/packages/views/issues/components/board-lanes.test.ts
+@@ -0,0 +1,84 @@
++import { describe, expect, it, vi } from "vitest";
++import { buildColumns } from "../utils/drag-utils";
++import { buildLaneGroups, lanePages, resolveLaneGroup } from "./board-lanes";
++
++vi.mock("@multica/core/issue-workflows", () => ({
++  useIssueWorkflows: () => ({ workflows: [] }),
++  useProjectWorkflow: () => null,
++  workflowAllowsStatus: (wf: { steps: { status_key: string }[] }, s: string) => wf.steps.some((x) => x.status_key === s),
++}));
++
++const category = (s: string) =>
++  (({ backlog: "unstarted", todo: "unstarted", done: "done", cancelled: "closed" }) as Record<string, string>)[s] ?? "started";
++const visible = ["backlog", "todo", "design", "spec_approval", "build", "in_review", "content_review", "blocked", "done", "cancelled"];
++const groups = buildLaneGroups(visible, category as never, ["spec_approval", "in_review"], (l) => l);
++
++describe("buildLaneGroups", () => {
++  it("folds statuses into five lanes, approvals in Awaiting approval", () => {
++    expect(groups.map((g) => [g.id, g.statuses])).toEqual([
++      ["lane:backlog", ["backlog"]],
++      ["lane:todo", ["todo"]],
++      ["lane:in_progress", ["design", "build", "content_review", "blocked"]],
++      ["lane:awaiting_approval", ["spec_approval", "in_review"]],
++      ["lane:done", ["done", "cancelled"]],
++    ]);
++  });
++  it("puts cards in the lane of their status", () => {
++    const issues = [{ id: "a", status: "in_review" }, { id: "b", status: "build" }, { id: "c", status: "spec_approval" }];
++    const cols = buildColumns(issues as never, groups, "status");
++    expect(cols["lane:awaiting_approval"]).toEqual(["a", "c"]);
++    expect(cols["lane:in_progress"]).toEqual(["b"]);
++  });
++});
++
++describe("resolveLaneGroup", () => {
++  const awaiting = groups[3]!;
++  const content = { steps: [{ status_key: "todo" }, { status_key: "content_review" }, { status_key: "in_review" }] };
++  it("keeps the card's status inside its lane", () => {
++    expect(resolveLaneGroup(awaiting, { status: "in_review" }, content as never)?.status).toBe("in_review");
++  });
++  it("takes the lane's first status the card's workflow allows", () => {
++    expect(resolveLaneGroup(awaiting, { status: "content_review" }, content as never)?.status).toBe("in_review");
++  });
++  it("refuses a lane the workflow has no step in", () => {
++    expect(resolveLaneGroup(groups[1]!, { status: "in_review" }, { steps: [{ status_key: "in_review" }] } as never)).toBeNull();
++  });
++  it("leaves ordinary columns alone", () => {
++    const g = { id: "status:todo", title: "todo", status: "todo" };
++    expect(resolveLaneGroup(g, { status: "done" }, null)).toBe(g);
++  });
++});
++
++describe("lanePages", () => {
++  it("merges the pages of a lane's statuses", () => {
++    const more = vi.fn();
++    const page = (total: number, hasMore = false) => ({ total, loaded: total, hasMore, isLoading: false, isFetching: false, isError: false, loadMore: more, retry: vi.fn() });
++    const pages = lanePages(groups, { spec_approval: page(2, true), in_review: page(3) });
++    expect(pages["lane:awaiting_approval"]?.total).toBe(5);
++    pages["lane:awaiting_approval"]!.loadMore();
++    expect(more).toHaveBeenCalledTimes(1);
++  });
++});
++
++describe("oldestFirst and the Awaiting approval lane", () => {
++  it("orders approvals by how long they have waited", async () => {
++    const { oldestFirst } = await import("./board-lanes");
++    const since = { a: { status: "in_review", since: "2026-11-09T00:00:00Z" }, b: { status: "in_review", since: "2026-11-01T00:00:00Z" } };
++    expect(oldestFirst(["a", "c", "b"], since)).toEqual(["b", "a", "c"]);
++    const g = buildLaneGroups(["in_review", "done"], category as never, ["in_review"], (l) => l, since);
++    const cols = buildColumns([{ id: "a", status: "in_review" }, { id: "b", status: "in_review" }] as never, g, "status");
++    expect(cols["lane:awaiting_approval"]).toEqual(["b", "a"]);
++  });
++});
++
++describe("issueGoal", () => {
++  it("takes the issue's goal, else its parent's, else its project's", async () => {
++    const { issueGoal } = await import("./board-lanes");
++    const goal = (id: string, type: string, target: string) => ({ id, title: id, links: [{ target_type: type, target_id: target }] });
++    const goals = [goal("G-project", "project", "p1"), goal("G-parent", "issue", "parent1"), goal("G-own", "issue", "i1")] as never;
++    expect(issueGoal(goals, { id: "i1", parent_issue_id: "parent1", project_id: "p1" })?.id).toBe("G-own");
++    expect(issueGoal(goals, { id: "i2", parent_issue_id: "parent1", project_id: "p1" })?.id).toBe("G-parent");
++    expect(issueGoal(goals, { id: "i3", parent_issue_id: null, project_id: "p1" })?.id).toBe("G-project");
++    expect(issueGoal(goals, { id: "i4", parent_issue_id: null, project_id: null })).toBeNull();
++  });
++});
+diff --git a/packages/views/issues/components/board-lanes.tsx b/packages/views/issues/components/board-lanes.tsx
+new file mode 100644
+index 000000000..caf4a3c34
+--- /dev/null
++++ b/packages/views/issues/components/board-lanes.tsx
+@@ -0,0 +1,211 @@
++"use client";
++
++import { createContext, useContext } from "react";
++import { useQuery } from "@tanstack/react-query";
++import { Lock } from "lucide-react";
++import { gateStatuses, type StatusSince } from "@multica/core/board-gates";
++import { goalListOptions, goalsForTarget, type Goal } from "@multica/core/goals";
++import { useIssueWorkflows, useProjectWorkflow, workflowAllowsStatus } from "@multica/core/issue-workflows";
++import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { workflowRulesOptions } from "@multica/core/workflow-rules";
++import type { Issue, IssueStatus, IssueStatusCategory, IssueWorkflow } from "@multica/core/types";
++import { StatusIcon } from "./status-icon";
++import { useT } from "../../i18n";
++import type { IssueGroupPageState } from "../surface/use-issue-group-branches";
++import type { BoardColumnGroup } from "./board-column";
++
++/**
++ * vantt board-lanes (designs D3, D3d "Automatic"): a project board whose Type
++ * rules use several workflows shows five columns, each holding several statuses
++ * — Backlog (not yet committed; no one picks it up), To do, In progress, Awaiting
++ * approval (every step a person approves), Done —
++ * and each card names its real status. A board of one workflow keeps one column
++ * per step. Reference: Jira board column mapping (several statuses per column).
++ */
++export type Lane = "backlog" | "todo" | "in_progress" | "awaiting_approval" | "done";
++export const LANES: readonly Lane[] = ["backlog", "todo", "in_progress", "awaiting_approval", "done"];
++export const laneGroupId = (lane: Lane) => `lane:${lane}`;
++
++export function laneOf(category: IssueStatusCategory, isGate: boolean, status = ""): Lane {
++  if (isGate) return "awaiting_approval";
++  if (status === "backlog") return "backlog"; // Multica's built-in "not committed yet" status
++  if (category === "unstarted") return "todo";
++  if (category === "started") return "in_progress";
++  return "done";
++}
++
++/** One group per lane that has a visible status, statuses kept in column order. */
++export function buildLaneGroups(
++  visibleStatuses: readonly IssueStatus[],
++  categoryOf: (status: string) => IssueStatusCategory,
++  gates: readonly string[],
++  titleOf: (lane: Lane) => string,
++  since?: Record<string, StatusSince>,
++): BoardColumnGroup[] {
++  const byLane = new Map<Lane, IssueStatus[]>();
++  for (const status of visibleStatuses) {
++    const lane = laneOf(categoryOf(status), gates.includes(status), status);
++    byLane.set(lane, [...(byLane.get(lane) ?? []), status]);
++  }
++  return LANES.filter((lane) => byLane.has(lane)).map((lane) => ({
++    id: laneGroupId(lane),
++    title: titleOf(lane),
++    lane,
++    statuses: byLane.get(lane)!,
++    createData: lane === "awaiting_approval" ? undefined : { status: byLane.get(lane)![0]! },
++    // Approvals wait oldest first (design D3): the longest wait sits on top.
++    sortIds: lane === "awaiting_approval" && since ? (ids: string[]) => oldestFirst(ids, since) : undefined,
++  }));
++}
++
++/**
++ * The status a card dropped on a lane takes: its own status when it is already
++ * in the lane, else the lane's first status its workflow allows. Null when its
++ * workflow has none of them.
++ */
++export function resolveLaneGroup(
++  group: BoardColumnGroup | undefined,
++  issue: Pick<Issue, "status"> | undefined,
++  workflow: IssueWorkflow | null | undefined,
++): BoardColumnGroup | undefined | null {
++  if (!group?.statuses) return group;
++  if (issue && group.statuses.includes(issue.status)) return { ...group, status: issue.status };
++  const status = group.statuses.find((s) => !workflow || workflowAllowsStatus(workflow, s));
++  return status ? { ...group, status } : null;
++}
++
++/** A lane's paging state: the merged pages of its statuses. */
++export function lanePages(
++  groups: readonly BoardColumnGroup[],
++  statusPagination: Partial<Record<string, IssueGroupPageState>> | undefined,
++): Record<string, IssueGroupPageState> {
++  const out: Record<string, IssueGroupPageState> = {};
++  if (!statusPagination) return out;
++  for (const group of groups) {
++    const pages = (group.statuses ?? []).flatMap((s) => (statusPagination[s] ? [statusPagination[s]!] : []));
++    if (!pages.length) continue;
++    out[group.id] = {
++      total: pages.reduce((sum, p) => sum + p.total, 0),
++      loaded: pages.reduce((sum, p) => sum + p.loaded, 0),
++      hasMore: pages.some((p) => p.hasMore),
++      isLoading: pages.some((p) => p.isLoading),
++      isFetching: pages.some((p) => p.isFetching),
++      isError: pages.some((p) => p.isError),
++      loadMore: () => pages.forEach((p) => p.hasMore && p.loadMore()),
++      retry: () => pages.forEach((p) => p.isError && p.retry()),
++    };
++  }
++  return out;
++}
++
++export interface BoardLanes {
++  gates: string[];
++  /** On a project board: the workflow an issue follows (its Type rule's, else the project's). */
++  workflowOf?: (issue: Pick<Issue, "properties"> | null | undefined) => IssueWorkflow;
++}
++
++/**
++ * Lanes when the board shows issues of several workflows: a project whose Type rules
++ * use another workflow, or the workspace board ("All issues", design D3) when the
++ * workspace has more than one workflow. Null otherwise.
++ */
++export function useBoardLanes(wsId: string, projectId: string | null | undefined): BoardLanes | null {
++  const { workflows } = useIssueWorkflows(wsId);
++  const projectWorkflow = useProjectWorkflow(wsId, projectId);
++  const { data: rules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
++  if (!projectId) return workflows.length > 1 ? { gates: gateStatuses(workflows) } : null;
++  if (!projectWorkflow || !rules?.length) return null;
++  const others = workflows.filter((w) => w.id !== projectWorkflow.id && rules.some((r) => r.workflow_id === w.id));
++  if (!others.length) return null;
++  const workflowOf = (issue: Pick<Issue, "properties"> | null | undefined) => {
++    const rule = rules.find((r) => issue?.properties?.[r.property_id] === r.option_id);
++    return (rule && workflows.find((w) => w.id === rule.workflow_id)) || projectWorkflow;
++  };
++  return { gates: gateStatuses([projectWorkflow, ...others]), workflowOf };
++}
++
++/** True inside a board whose columns are lanes: cards then name their status. */
++export const BoardLaneContext = createContext(false);
++
++/** A card's status on a lane board; custom statuses already show their own chip. */
++export function LaneStatusChip({ status, isCustom }: { status: IssueStatus; isCustom: boolean }) {
++  const lanes = useContext(BoardLaneContext);
++  const catalog = useIssueStatuses(useWorkspaceId());
++  const entry = catalog.entryOf(status);
++  if (!lanes || isCustom || !entry) return null;
++  return (
++    <span className="inline-flex max-w-[160px] items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-micro text-muted-foreground">
++      <StatusIcon status={status} category={catalog.categoryOf(status)} color={entry.color} icon={entry.icon} className="size-3" />
++      <span className="truncate">{entry.name}</span>
++    </span>
++  );
++}
++
++/** The built-in status whose Multica icon a lane wears. */
++const LANE_ICON: Record<Lane, string> = {
++  backlog: "backlog",
++  todo: "todo",
++  in_progress: "in_progress",
++  awaiting_approval: "in_review",
++  done: "done",
++};
++
++/** A lane's heading, styled like Multica's own status columns (same icon set). */
++export function LaneHeading({ group, count }: { group: BoardColumnGroup; count: number }) {
++  const { t } = useT("issues");
++  const { categoryOf, colorOf, iconOf } = useIssueStatuses(useWorkspaceId());
++  const gate = group.lane === "awaiting_approval";
++  const icon = LANE_ICON[group.lane ?? "todo"];
++  return (
++    <div className="flex min-w-0 items-center gap-2" title={(group.statuses ?? []).join(", ")}>
++      <span className="inline-flex min-w-0 items-center gap-1.5 text-caption font-semibold">
++        <StatusIcon category={categoryOf(icon)} color={colorOf(icon)} icon={iconOf(icon)} status={icon} className="h-3 w-3 shrink-0" />
++        <span className="truncate">{group.title}</span>
++        {gate && <Lock aria-label={t(($) => $.board_lanes.gate_hint)} className="size-3 shrink-0 text-muted-foreground" />}
++      </span>
++      <span className="text-caption text-muted-foreground tabular-nums">{count}</span>
++    </div>
++  );
++}
++
++/** Ids by the time they entered their status, oldest first; unknown ones last, in order. */
++export function oldestFirst(ids: readonly string[], since: Record<string, StatusSince>): string[] {
++  const at = (id: string) => {
++    const t = Date.parse(since[id]?.since ?? "");
++    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
++  };
++  return ids.map((id, i) => ({ id, i, t: at(id) })).sort((a, b) => a.t - b.t || a.i - b.i).map((x) => x.id);
++}
++
++/**
++ * The goal an issue pushes (design D3 card): one linked to the issue, else to its
++ * parent, else to its project. Reference: Jira's goal field on issues.
++ */
++export function issueGoal(goals: readonly Goal[], issue: Pick<Issue, "id" | "parent_issue_id" | "project_id">): Goal | null {
++  return (
++    goalsForTarget(goals, "issue", [issue.id])[0] ??
++    goalsForTarget(goals, "issue", [issue.parent_issue_id])[0] ??
++    goalsForTarget(goals, "project", [issue.project_id])[0] ??
++    null
++  );
++}
++
++export function useIssueGoal(issue: Pick<Issue, "id" | "parent_issue_id" | "project_id">): Goal | null {
++  const { data: goals } = useQuery({ ...goalListOptions(useWorkspaceId()), retry: false });
++  return goals ? issueGoal(goals, issue) : null;
++}
++
++export function GoalChip({ goal }: { goal: Goal | null }) {
++  if (!goal) return null;
++  const key = goal.source_ref?.split("#")[1];
++  return (
++    <span
++      title={goal.title}
++      className="inline-flex max-w-[140px] items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-micro text-emerald-800 dark:text-emerald-300"
++    >
++      <span aria-hidden>◎</span>
++      <span className="truncate">{key ?? goal.title}</span>
++    </span>
++  );
++}
+diff --git a/packages/views/issues/components/board-view.tsx b/packages/views/issues/components/board-view.tsx
+index 5e0346a92..c52d431d7 100644
+--- a/packages/views/issues/components/board-view.tsx
++++ b/packages/views/issues/components/board-view.tsx
+@@ -21,6 +21,7 @@ import type {
+   Issue,
+   IssueAssigneeType,
+   IssueStatus,
++  IssueWorkflow,
+   Project,
+   IssueProperty,
+ } from "@multica/core/types";
+@@ -33,6 +34,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
+ import { BoardColumn, BOARD_CARD_WIDTH, type BoardColumnGroup } from "./board-column";
+ import { BoardWorkflowContext, type BoardWorkflowContextValue } from "./board-workflow-context";
+ import {
++  defaultWorkflow,
+   resolveProjectWorkflow,
+   stepHandsOff,
+   useIssueWorkflows,
+@@ -75,6 +77,8 @@ import {
+   projectGroupId,
+ } from "../utils/drag-utils";
+ import { useStatusLabel } from "../utils/status-label";
++import { statusSinceOptions } from "@multica/core/board-gates"; // vantt board-lanes
++import { BoardLaneContext, buildLaneGroups, lanePages, resolveLaneGroup, useBoardLanes, type Lane } from "./board-lanes"; // vantt board-lanes
+ 
+ function isStatusGroup(
+   group: BoardColumnGroup,
+@@ -447,12 +451,59 @@ function BoardViewImpl({
+       ]),
+     ) as Record<string, IssueGroupPageState>;
+   }, [groupBranches]);
++  // vantt board-lanes (D3d Automatic): several workflows -> four lanes.
++  const boardLanes = useBoardLanes(boardWsId, projectId);
++  // Project workflows (MUL-7420): a card can only move to a status its
++  // project's workflow lists, and a project board names each step's handler.
++  const { workflows } = useIssueWorkflows(boardWsId);
++  const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
++  const workflowOfIssue = useCallback(
++    (issue: Issue | null | undefined) => {
++      if (!issue?.project_id) return null;
++      if (boardLanes?.workflowOf && issue.project_id === projectId) return boardLanes.workflowOf(issue); // vantt board-lanes
++      return resolveProjectWorkflow(
++        workflows,
++        workspaceProjects?.find((p) => p.id === issue.project_id),
++      );
++    },
++    [workflows, workspaceProjects, boardLanes, projectId],
++  );
++  // Automatic columns (D3d): the workflows of the cards on the board (after
++  // filters). Several -> four lanes; one -> that workflow's steps.
++  const inUse = useMemo(() => {
++    const ids = new Map<string, IssueWorkflow>();
++    for (const issue of issues) {
++      const wf = workflowOfIssue(issue) ?? defaultWorkflow(workflows);
++      if (wf) ids.set(wf.id, wf);
++    }
++    return [...ids.values()];
++  }, [issues, workflowOfIssue, workflows]);
++  const laneMode = grouping === "status" && boardLanes !== null && inUse.length > 1;
++  const boardStatuses = useMemo(() => {
++    if (!boardLanes || inUse.length !== 1) return visibleStatuses;
++    const keys = new Set(inUse[0]!.steps.map((step) => step.status_key));
++    return visibleStatuses.filter((status) => keys.has(status));
++  }, [boardLanes, inUse, visibleStatuses]);
++  const { data: statusSince } = useQuery({ ...statusSinceOptions(boardWsId, projectId ?? null), enabled: laneMode });
++  const laneGroups = useMemo(
++    () =>
++      laneMode
++        ? buildLaneGroups(boardStatuses, catalog.categoryOf, boardLanes!.gates, (lane: Lane) => t(($) => $.board_lanes[lane]), statusSince)
++        : null,
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++    [laneMode, boardStatuses, catalog, boardLanes?.gates.join(","), statusSince, t],
++  );
++  const pagination = useMemo(
++    () => (laneGroups ? { ...(groupPagination ?? {}), ...lanePages(laneGroups, statusPagination) } : groupPagination),
++    [laneGroups, groupPagination, statusPagination],
++  );
+   const groups = useMemo(
+     () => {
+       const built =
++        laneGroups ??
+         hydratedAssigneeGroups ??
+         hydratedProjectGroups ??
+-        buildGroups(issues, visibleStatuses, grouping, {
++        buildGroups(issues, boardStatuses, grouping, {
+           getActorName,
+           groupingProperty,
+           projectMap,
+@@ -462,10 +513,10 @@ function BoardViewImpl({
+         });
+       return built.map((group) => ({
+         ...group,
+-        totalCount: groupPagination?.[group.id]?.total ?? group.totalCount,
++        totalCount: pagination?.[group.id]?.total ?? group.totalCount,
+       }));
+     },
+-    [hydratedAssigneeGroups, hydratedProjectGroups, issues, visibleStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
++    [laneGroups, pagination, hydratedAssigneeGroups, hydratedProjectGroups, issues, boardStatuses, grouping, getActorName, groupingProperty, projectMap, projectColumnLabels, groupPagination, t],
+   );
+   const groupIds = useMemo(
+     () => new Set(groups.map((group) => group.id)),
+@@ -489,20 +540,6 @@ function BoardViewImpl({
+     anchors: ReturnType<typeof getMoveAnchors>;
+   } | null>(null);
+ 
+-  // Project workflows (MUL-7420): a card can only move to a status its
+-  // project's workflow lists, and a project board names each step's handler.
+-  const { workflows } = useIssueWorkflows(boardWsId);
+-  const { data: workspaceProjects } = useQuery(projectListOptions(boardWsId));
+-  const workflowOfIssue = useCallback(
+-    (issue: Issue | null | undefined) => {
+-      if (!issue?.project_id) return null;
+-      return resolveProjectWorkflow(
+-        workflows,
+-        workspaceProjects?.find((p) => p.id === issue.project_id),
+-      );
+-    },
+-    [workflows, workspaceProjects],
+-  );
+   const scopeProject = projectId ? workspaceProjects?.find((p) => p.id === projectId) ?? null : null;
+   const activeWorkflow = workflowOfIssue(activeIssue);
+   const activeProject = activeIssue?.project_id
+@@ -602,7 +639,11 @@ function BoardViewImpl({
+         const activeCol = findColumn(prev, activeId, groupIds);
+         const overCol = findColumn(prev, overId, groupIds);
+         if (!activeCol || !overCol || activeCol === overCol) return prev;
+-        const targetStatus = groups.find((group) => group.id === overCol)?.status;
++        const targetStatus = resolveLaneGroup(
++          groups.find((group) => group.id === overCol),
++          issueMapRef.current.get(activeId),
++          workflowOfIssue(issueMapRef.current.get(activeId)),
++        )?.status;
+         if (targetStatus && catalog.entryOf(targetStatus)?.archived_at) return prev;
+         if (targetStatus && !workflowAllowsStatus(workflowOfIssue(issueMapRef.current.get(activeId)), targetStatus)) {
+           return prev;
+@@ -667,9 +708,14 @@ function BoardViewImpl({
+         resetColumns();
+         return;
+       }
+-      const finalGroup = groupMap.get(finalCol);
++      const finalGroup = resolveLaneGroup(
++        groupMap.get(finalCol),
++        issueMapRef.current.get(activeId),
++        workflowOfIssue(issueMapRef.current.get(activeId)),
++      );
+       if (!finalGroup) {
+         resetColumns();
++        if (finalGroup === null) toast.info(t(($) => $.board_lanes.drop_blocked));
+         return;
+       }
+ 
+@@ -813,6 +859,7 @@ function BoardViewImpl({
+ 
+   return (
+     <BoardWorkflowContext.Provider value={boardWorkflow}>
++    <BoardLaneContext.Provider value={laneMode}>
+     <DndContext
+       sensors={sensors}
+       collisionDetection={collisionDetection}
+@@ -866,7 +913,7 @@ function BoardViewImpl({
+                 sortLabel={sortLabel}
+               />
+             ) : (
+-              groupPagination?.[group.id] ? (
++              pagination?.[group.id] ? (
+                 <ServerPaginatedBoardColumn
+                   key={group.id}
+                   group={group}
+@@ -874,7 +921,7 @@ function BoardViewImpl({
+                   issueMap={issueMapRef.current}
+                   childProgressMap={childProgressMap}
+                   projectMap={projectMap}
+-                  page={groupPagination[group.id]!}
++                  page={pagination[group.id]!}
+                   projectId={projectId}
+                   onCreateIssue={onCreateIssue}
+                   sortLabel={sortLabel}
+@@ -922,6 +969,7 @@ function BoardViewImpl({
+         ) : null}
+       </DragOverlay>
+     </DndContext>
++    </BoardLaneContext.Provider>
+     <WorkflowHandoffConfirmDialog
+       issue={pendingHandoff?.issue ?? null}
+       toStatus={pendingHandoff?.status ?? ""}
+diff --git a/packages/views/issues/components/child-panel-extras.test.tsx b/packages/views/issues/components/child-panel-extras.test.tsx
+new file mode 100644
+index 000000000..7eb0df65d
+--- /dev/null
++++ b/packages/views/issues/components/child-panel-extras.test.tsx
+@@ -0,0 +1,45 @@
++import { cleanup, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { renderWithI18n } from "../../test/i18n";
++import { ChildStatusBar, DaysInStatus } from "./child-panel-extras";
++
++const since = (days: number) => new Date(Date.now() - days * 86_400_000 - 60_000).toISOString();
++let entries: Record<string, { status: string; since: string }> = {};
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("@multica/core/issue-statuses/hooks", () => ({
++  useIssueStatuses: () => ({
++    categoryOf: (s: string) => (s === "done" ? "done" : s === "todo" ? "unstarted" : "started"),
++    colorOf: () => "#888888",
++  }),
++}));
++vi.mock("../utils/status-label", () => ({ useStatusLabel: () => (s: string) => s }));
++vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: entries }) }));
++
++afterEach(cleanup);
++
++describe("ChildStatusBar", () => {
++  it("summarises children by status, done first", () => {
++    renderWithI18n(<ChildStatusBar issues={[{ status: "todo" }, { status: "done" }, { status: "done" }, { status: "in_review" }]} />);
++    expect(screen.getByTitle("2 done, 1 in_review, 1 todo")).toBeTruthy();
++  });
++  it("draws nothing without children", () => {
++    const { container } = renderWithI18n(<ChildStatusBar issues={[]} />);
++    expect(container.textContent).toBe("");
++  });
++});
++
++describe("DaysInStatus", () => {
++  it("shows whole days in the current status", () => {
++    entries = { a: { status: "in_review", since: since(6) } };
++    renderWithI18n(<DaysInStatus issue={{ id: "a", status: "in_review", project_id: "p" }} />);
++    expect(screen.getByText("6d")).toBeTruthy();
++    expect(screen.getByTitle("6 days in in_review")).toBeTruthy();
++  });
++  it("hides under a day and after the issue moved", () => {
++    entries = { a: { status: "todo", since: since(0) }, b: { status: "todo", since: since(3) } };
++    renderWithI18n(<DaysInStatus issue={{ id: "a", status: "todo", project_id: "p" }} />);
++    renderWithI18n(<DaysInStatus issue={{ id: "b", status: "in_review", project_id: "p" }} />);
++    expect(screen.queryByText(/\dd$/)).toBeNull();
++  });
++});
+diff --git a/packages/views/issues/components/child-panel-extras.tsx b/packages/views/issues/components/child-panel-extras.tsx
+new file mode 100644
+index 000000000..89468f033
+--- /dev/null
++++ b/packages/views/issues/components/child-panel-extras.tsx
+@@ -0,0 +1,74 @@
++"use client";
++
++import { useQuery } from "@tanstack/react-query";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { daysInColumn, statusSinceOptions } from "@multica/core/board-gates";
++import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
++import type { Issue } from "@multica/core/types";
++import { cn } from "@multica/ui/lib/utils";
++import { useT } from "../../i18n";
++import { useStatusLabel } from "../utils/status-label";
++
++const CATEGORY_ORDER = ["done", "started", "unstarted", "backlog", "closed", "cancelled"];
++
++/**
++ * Child issues by status (vantt parent-child, design D9): one bar segment per
++ * status, coloured like the status, done first. Reference: Jira's "Child issues"
++ * progress bar.
++ */
++export function ChildStatusBar({ issues }: { issues: readonly Pick<Issue, "status">[] }) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const catalog = useIssueStatuses(wsId);
++  const labelOf = useStatusLabel(wsId);
++  if (issues.length === 0) return null;
++  const counts = new Map<string, number>();
++  for (const c of issues) counts.set(c.status, (counts.get(c.status) ?? 0) + 1);
++  const rank = (s: string) => {
++    const i = CATEGORY_ORDER.indexOf(catalog.categoryOf(s));
++    return i < 0 ? CATEGORY_ORDER.length : i;
++  };
++  const parts = [...counts].sort((a, b) => rank(a[0]) - rank(b[0]) || b[1] - a[1]);
++  const summary = parts.map(([s, n]) => `${n} ${labelOf(s)}`).join(", ");
++  return (
++    <span
++      role="img"
++      aria-label={t(($) => $.child_panel.status_bar, { summary })}
++      title={summary}
++      className="flex h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-muted sm:w-32"
++    >
++      {parts.map(([status, n]) => (
++        <span
++          key={status}
++          style={{ width: `${(n / issues.length) * 100}%`, backgroundColor: catalog.colorOf(status) ?? undefined }}
++          className="h-full"
++        />
++      ))}
++    </span>
++  );
++}
++
++/**
++ * Days a child has sat in its status (vantt parent-child, design D9); shown from
++ * one day on, red from five. Done and cancelled children show nothing.
++ */
++export function DaysInStatus({ issue, className }: { issue: Pick<Issue, "id" | "status" | "project_id">; className?: string }) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const labelOf = useStatusLabel(wsId);
++  const { data } = useQuery(statusSinceOptions(wsId, issue.project_id ?? null));
++  const days = daysInColumn(data?.[issue.id], issue.status);
++  if (days === null || days < 1) return null;
++  return (
++    <span
++      title={t(($) => $.child_panel.days_title, { count: days, status: labelOf(issue.status) })}
++      className={cn(
++        "shrink-0 text-caption tabular-nums",
++        days >= 5 ? "font-medium text-destructive" : "text-muted-foreground",
++        className,
++      )}
++    >
++      {t(($) => $.child_panel.days, { count: days })}
++    </span>
++  );
++}
+diff --git a/packages/views/issues/components/issue-detail.tsx b/packages/views/issues/components/issue-detail.tsx
+index b75d5bda6..c917dd7de 100644
+--- a/packages/views/issues/components/issue-detail.tsx
++++ b/packages/views/issues/components/issue-detail.tsx
+@@ -180,6 +180,7 @@ import { TruncatedTooltip } from "@multica/ui/components/common/truncated-toolti
+ import { PAGE_GUTTER } from "../../layout/page-header";
+ 
+ import { ProgressRing } from "./progress-ring";
++import { ChildStatusBar, DaysInStatus } from "./child-panel-extras"; // vantt parent-child
+ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+ import { MetadataSection } from "./metadata-section";
+ import { IssueSidebarSectionHeader, IssueSidebarStack, IssueSidebarPropertyGrid } from "./issue-sidebar-section";
+@@ -1015,6 +1016,7 @@ function SubIssueRow({
+               </span>
+             )}
+           </span>
++          {!isDone && <DaysInStatus issue={child} />}
+         </AppLink>
+         {rowProps.dueDate && child.due_date && (
+           <DueDatePicker
+@@ -3643,6 +3645,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
+                       {doneChildCount}/{childIssues.length}
+                     </span>
+                   </div>
++                  <ChildStatusBar issues={childIssues} />
+                   {/* issue.id, not the route param — the endpoint takes a
+                       UUID and the route may carry a human-readable id. */}
+                   <SubIssuesAgentWorkingChip parentIssueId={issue.id} />
+diff --git a/packages/views/issues/components/list-row.tsx b/packages/views/issues/components/list-row.tsx
+index 9b146c4ab..50391bf82 100644
+--- a/packages/views/issues/components/list-row.tsx
++++ b/packages/views/issues/components/list-row.tsx
+@@ -20,6 +20,7 @@ import { CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
+ import { ProjectIcon } from "../../projects/components/project-icon";
+ import { PriorityIcon } from "./priority-icon";
+ import { ProgressRing } from "./progress-ring";
++import { ParentIssueChip } from "./parent-issue-chip";
+ import { IssueActionsContextMenu } from "../actions";
+ import { LabelChip } from "../../labels/label-chip";
+ import { CustomStatusChip } from "./custom-status-chip";
+@@ -132,6 +133,7 @@ function ListRowContent({
+ 
+           <span className="flex min-w-0 flex-1 items-center gap-1.5">
+             <span className="truncate">{issue.title}</span>
++            <ParentIssueChip parentId={issue.parent_issue_id} />
+             {/* Keep custom names visible when this row appears outside a status section. */}
+             <CustomStatusChip status={issue.status} className="shrink-0" />
+             <IssueDuplicateOfMarker issue={issue} insideLink />
+diff --git a/packages/views/issues/components/parent-issue-chip.test.tsx b/packages/views/issues/components/parent-issue-chip.test.tsx
+new file mode 100644
+index 000000000..12db8b674
+--- /dev/null
++++ b/packages/views/issues/components/parent-issue-chip.test.tsx
+@@ -0,0 +1,26 @@
++import { cleanup, screen } from "@testing-library/react";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { renderWithI18n } from "../../test/i18n";
++import { ParentIssueChip } from "./parent-issue-chip";
++
++vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
++vi.mock("@multica/core/issues/queries", () => ({ issueDetailOptions: (_ws: string, id: string) => ({ queryKey: ["issue", id] }) }));
++vi.mock("@tanstack/react-query", () => ({
++  useQuery: (o: { queryKey: unknown[]; enabled?: boolean }) =>
++    o.enabled === false ? { data: undefined } : { data: { id: "p-1", identifier: "MOM-30", title: "E8 Landing v3" } },
++}));
++
++afterEach(cleanup);
++
++describe("ParentIssueChip", () => {
++  it("names the parent of a sub-issue", () => {
++    renderWithI18n(<ParentIssueChip parentId="p-1" />);
++    expect(screen.getByText("MOM-30")).toBeTruthy();
++    expect(screen.getByTitle("Sub-issue of MOM-30 · E8 Landing v3")).toBeTruthy();
++  });
++
++  it("shows nothing for a top-level issue", () => {
++    renderWithI18n(<ParentIssueChip parentId={null} />);
++    expect(screen.queryByText("MOM-30")).toBeNull();
++  });
++});
+diff --git a/packages/views/issues/components/parent-issue-chip.tsx b/packages/views/issues/components/parent-issue-chip.tsx
+new file mode 100644
+index 000000000..e27ec11d9
+--- /dev/null
++++ b/packages/views/issues/components/parent-issue-chip.tsx
+@@ -0,0 +1,34 @@
++"use client";
++
++import { useQuery } from "@tanstack/react-query";
++import { CornerDownRight } from "lucide-react";
++import { useWorkspaceId } from "@multica/core/hooks";
++import { issueDetailOptions } from "@multica/core/issues/queries";
++import { cn } from "@multica/ui/lib/utils";
++import { useT } from "../../i18n";
++
++/**
++ * Which parent a sub-issue belongs to (vantt parent-child, design D9), shown on
++ * board cards and list rows next to the identifier. Reference: Jira's epic
++ * link on cards; Linear's parent label on sub-issues. Parents already show their
++ * sub-issue progress ring.
++ */
++export function ParentIssueChip({ parentId, className }: { parentId: string | null | undefined; className?: string }) {
++  const { t } = useT("issues");
++  const wsId = useWorkspaceId();
++  const { data: parent } = useQuery({ ...issueDetailOptions(wsId, parentId ?? ""), enabled: Boolean(parentId) });
++  if (!parentId || !parent) return null;
++  return (
++    <span
++      title={t(($) => $.parent_chip.title, { identifier: parent.identifier, title: parent.title })}
++      className={cn(
++        "inline-flex min-w-0 max-w-[180px] shrink items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-micro text-muted-foreground",
++        className,
++      )}
++    >
++      <CornerDownRight aria-hidden className="size-3 shrink-0" />
++      <span className="shrink-0">{parent.identifier}</span>
++      <span className="truncate">{parent.title}</span>
++    </span>
++  );
++}
+diff --git a/packages/views/issues/utils/drag-utils.ts b/packages/views/issues/utils/drag-utils.ts
+index b8595053d..e98ae4e68 100644
+--- a/packages/views/issues/utils/drag-utils.ts
++++ b/packages/views/issues/utils/drag-utils.ts
+@@ -84,11 +84,17 @@ export function buildColumns(
+   knownOptionIds?: ReadonlySet<string>,
+ ): Record<string, string[]> {
+   const cols: Record<string, string[]> = {};
+-  for (const group of groups) cols[group.id] = [];
++  // vantt board-lanes: a column may hold several statuses.
++  const laneOf = new Map<string, string>();
++  for (const group of groups) {
++    cols[group.id] = [];
++    for (const status of group.statuses ?? []) laneOf.set(status, group.id);
++  }
+   for (const issue of issues) {
+-    const gid = getIssueGroupId(issue, grouping, knownOptionIds);
++    const gid = (grouping === "status" && laneOf.get(issue.status)) || getIssueGroupId(issue, grouping, knownOptionIds);
+     if (cols[gid]) cols[gid].push(issue.id);
+   }
++  for (const group of groups) if (group.sortIds) cols[group.id] = group.sortIds(cols[group.id]!);
+   return cols;
+ }
+ 
+diff --git a/packages/views/issues/utils/workflow-columns.ts b/packages/views/issues/utils/workflow-columns.ts
+index cbf930975..aecb60ce6 100644
+--- a/packages/views/issues/utils/workflow-columns.ts
++++ b/packages/views/issues/utils/workflow-columns.ts
+@@ -40,5 +40,13 @@ export function useColumnWorkflow(
+   const { data: rules } = useQuery({ ...workflowRulesOptions(wsId, projectId ?? ""), enabled: Boolean(projectId) });
+   if (hasStatusFilter) return { workflow: null };
+   if (projectId) return { workflow: mergeRuleWorkflows(projectWorkflow, rules ?? [], workflows) };
+-  return { workflow: defaultWorkflow(workflows) };
++  // vantt board-lanes: the workspace board ("All issues", D3) lists the steps of
++  // every workflow, so issues in any workflow's status are loaded; the board
++  // folds them into lanes.
++  const base = defaultWorkflow(workflows);
++  if (workflows.length > 1) {
++    const all = workflows.map((w) => ({ property_id: "", option_id: "", workflow_id: w.id }));
++    return { workflow: mergeRuleWorkflows(base, all, workflows) };
++  }
++  return { workflow: base };
+ }
+diff --git a/packages/views/locales/en/issues.json b/packages/views/locales/en/issues.json
+index 293e7148c..2406b02df 100644
+--- a/packages/views/locales/en/issues.json
++++ b/packages/views/locales/en/issues.json
+@@ -1797,5 +1797,22 @@
+   },
+   "hover_card": {
+     "created_updated": "created {{created}} · updated {{updated}}"
++  },
++  "parent_chip": {
++    "title": "Sub-issue of {{identifier}} · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "Children by status: {{summary}}",
++    "days": "{{count}}d",
++    "days_title": "{{count}} days in {{status}}"
++  },
++  "board_lanes": {
++    "backlog": "Backlog",
++    "todo": "To do",
++    "in_progress": "In progress",
++    "awaiting_approval": "Awaiting approval",
++    "done": "Done",
++    "gate_hint": "Only the approver moves cards out of this column",
++    "drop_blocked": "This issue's workflow has no step in that column"
+   }
+ }
+diff --git a/packages/views/locales/fr/issues.json b/packages/views/locales/fr/issues.json
+index c27c22d27..623971161 100644
+--- a/packages/views/locales/fr/issues.json
++++ b/packages/views/locales/fr/issues.json
+@@ -1796,5 +1796,22 @@
+   },
+   "hover_card": {
+     "created_updated": "a créé {{created}} · mis à jour {{updated}}"
++  },
++  "parent_chip": {
++    "title": "Sous-ticket de {{identifier}} · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "Sous-tickets par statut : {{summary}}",
++    "days": "{{count}} j",
++    "days_title": "{{count}} jours en {{status}}"
++  },
++  "board_lanes": {
++    "backlog": "Backlog",
++    "todo": "À faire",
++    "in_progress": "En cours",
++    "awaiting_approval": "En attente d'approbation",
++    "done": "Terminé",
++    "gate_hint": "Seul l'approbateur sort les cartes de cette colonne",
++    "drop_blocked": "Le workflow de ce ticket n'a aucune étape dans cette colonne"
+   }
+ }
+diff --git a/packages/views/locales/ja/issues.json b/packages/views/locales/ja/issues.json
+index 925c387c9..0f2f14940 100644
+--- a/packages/views/locales/ja/issues.json
++++ b/packages/views/locales/ja/issues.json
+@@ -1731,5 +1731,22 @@
+   },
+   "hover_card": {
+     "created_updated": "{{created}}に作成 · {{updated}}に更新"
++  },
++  "parent_chip": {
++    "title": "{{identifier}} のサブ課題 · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "ステータス別のサブ課題: {{summary}}",
++    "days": "{{count}}日",
++    "days_title": "{{status}} に {{count}} 日"
++  },
++  "board_lanes": {
++    "backlog": "バックログ",
++    "todo": "未着手",
++    "in_progress": "進行中",
++    "awaiting_approval": "承認待ち",
++    "done": "完了",
++    "gate_hint": "この列から動かせるのは承認者だけです",
++    "drop_blocked": "この課題のワークフローにはこの列のステップがありません"
+   }
+ }
+diff --git a/packages/views/locales/ko/issues.json b/packages/views/locales/ko/issues.json
+index 5539e8524..efc9b98b5 100644
+--- a/packages/views/locales/ko/issues.json
++++ b/packages/views/locales/ko/issues.json
+@@ -1731,5 +1731,22 @@
+   },
+   "hover_card": {
+     "created_updated": "{{created}} 생성 · {{updated}} 수정됨"
++  },
++  "parent_chip": {
++    "title": "{{identifier}}의 하위 이슈 · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "상태별 하위 이슈: {{summary}}",
++    "days": "{{count}}일",
++    "days_title": "{{status}} 상태로 {{count}}일"
++  },
++  "board_lanes": {
++    "backlog": "백로그",
++    "todo": "할 일",
++    "in_progress": "진행 중",
++    "awaiting_approval": "승인 대기",
++    "done": "완료",
++    "gate_hint": "이 열에서는 승인자만 카드를 옮길 수 있습니다",
++    "drop_blocked": "이 이슈의 워크플로에는 이 열의 단계가 없습니다"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hans/issues.json b/packages/views/locales/zh-Hans/issues.json
+index 011b8e1ba..0555c279c 100644
+--- a/packages/views/locales/zh-Hans/issues.json
++++ b/packages/views/locales/zh-Hans/issues.json
+@@ -1731,5 +1731,22 @@
+   },
+   "hover_card": {
+     "created_updated": "创建于 {{created}} · 更新于 {{updated}}"
++  },
++  "parent_chip": {
++    "title": "{{identifier}} 的子事项 · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "按状态的子任务：{{summary}}",
++    "days": "{{count}}天",
++    "days_title": "处于 {{status}} {{count}} 天"
++  },
++  "board_lanes": {
++    "backlog": "待规划",
++    "todo": "待办",
++    "in_progress": "进行中",
++    "awaiting_approval": "待审批",
++    "done": "已完成",
++    "gate_hint": "只有审批人能把卡片移出此列",
++    "drop_blocked": "此任务的工作流在该列没有步骤"
+   }
+ }
+diff --git a/packages/views/locales/zh-Hant/issues.json b/packages/views/locales/zh-Hant/issues.json
+index af389d2b4..3fc562716 100644
+--- a/packages/views/locales/zh-Hant/issues.json
++++ b/packages/views/locales/zh-Hant/issues.json
+@@ -1730,5 +1730,22 @@
+   },
+   "hover_card": {
+     "created_updated": "建立於 {{created}} · 更新於 {{updated}}"
++  },
++  "parent_chip": {
++    "title": "{{identifier}} 的子事項 · {{title}}"
++  },
++  "child_panel": {
++    "status_bar": "依狀態的子任務：{{summary}}",
++    "days": "{{count}}天",
++    "days_title": "處於 {{status}} {{count}} 天"
++  },
++  "board_lanes": {
++    "backlog": "待規劃",
++    "todo": "待辦",
++    "in_progress": "進行中",
++    "awaiting_approval": "待審批",
++    "done": "已完成",
++    "gate_hint": "只有審批人能把卡片移出此欄",
++    "drop_blocked": "此任務的工作流程在該欄沒有步驟"
+   }
+ }
+diff --git a/server/cmd/server/router.go b/server/cmd/server/router.go
+index 35ac493db..bd13a0835 100644
+--- a/server/cmd/server/router.go
++++ b/server/cmd/server/router.go
+@@ -2034,6 +2034,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
+ 				r.Get("/search", h.SearchIssues)
+ 				r.Get("/child-progress", h.ChildIssueProgress)
+ 				r.Get("/children", h.ListChildrenByParents)
++				r.Get("/status-since", h.ListIssueStatusSince) // vantt board-age
+ 				r.Get("/grouped", h.ListGroupedIssues)
+ 				r.Get("/", h.ListIssues)
+ 				// POST twin of GET /api/issues for oversized filter sets
+diff --git a/server/internal/handler/vantt_status_since.go b/server/internal/handler/vantt_status_since.go
+new file mode 100644
+index 000000000..71efe997a
+--- /dev/null
++++ b/server/internal/handler/vantt_status_since.go
+@@ -0,0 +1,67 @@
++package handler
++
++import (
++	"net/http"
++	"time"
++
++	"github.com/jackc/pgx/v5/pgtype"
++)
++
++// vantt board-age (design D3): when each open issue entered its current status,
++// for the board's "days in column" badge. Taken from the activity log's last
++// status_changed entry, else the issue's creation. Reference: Jira's
++// "days in column" on board cards.
++
++type StatusSinceEntry struct {
++	Status string `json:"status"`
++	Since  string `json:"since"`
++}
++
++// ListIssueStatusSince serves GET /api/issues/status-since[?project_id=].
++// Only issues whose status is not done or cancelled are listed.
++func (h *Handler) ListIssueStatusSince(w http.ResponseWriter, r *http.Request) {
++	wsID := h.resolveWorkspaceID(r)
++	if _, ok := h.requireWorkspaceMember(w, r, wsID, "workspace not found"); !ok {
++		return
++	}
++	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace id")
++	if !ok {
++		return
++	}
++	var project pgtype.UUID
++	if p := r.URL.Query().Get("project_id"); p != "" {
++		id, ok := parseUUIDOrBadRequest(w, p, "project_id")
++		if !ok {
++			return
++		}
++		project = id
++	}
++	rows, err := h.DB.Query(r.Context(), `
++		SELECT i.id::text, i.status, COALESCE(MAX(a.created_at), i.created_at)
++		FROM issue i
++		LEFT JOIN activity_log a ON a.issue_id = i.id AND a.action = 'status_changed'
++		WHERE i.workspace_id = $1
++		  AND ($2::uuid IS NULL OR i.project_id = $2)
++		  AND i.status NOT IN ('done', 'cancelled')
++		GROUP BY i.id, i.status, i.created_at`, wsUUID, project)
++	if err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to list status times")
++		return
++	}
++	defer rows.Close()
++	out := map[string]StatusSinceEntry{}
++	for rows.Next() {
++		var id, status string
++		var since time.Time
++		if err := rows.Scan(&id, &status, &since); err != nil {
++			writeError(w, http.StatusInternalServerError, "failed to read status times")
++			return
++		}
++		out[id] = StatusSinceEntry{Status: status, Since: since.UTC().Format(time.RFC3339)}
++	}
++	if err := rows.Err(); err != nil {
++		writeError(w, http.StatusInternalServerError, "failed to read status times")
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]any{"issues": out})
++}
+diff --git a/server/internal/handler/vantt_status_since_test.go b/server/internal/handler/vantt_status_since_test.go
+new file mode 100644
+index 000000000..756b514f7
+--- /dev/null
++++ b/server/internal/handler/vantt_status_since_test.go
+@@ -0,0 +1,39 @@
++package handler
++
++import (
++	"context"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/multica-ai/multica/server/internal/testutil"
++)
++
++func TestIssueStatusSince(t *testing.T) {
++	moved := dbfx.Issue(t, "moved to review", testutil.Cols{"status": "in_review"})
++	fresh := dbfx.Issue(t, "never moved", testutil.Cols{"status": "todo"})
++	closed := dbfx.Issue(t, "closed", testutil.Cols{"status": "done"})
++	at := time.Now().Add(-72 * time.Hour).UTC().Truncate(time.Second)
++	if _, err := testPool.Exec(context.Background(),
++		`INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, created_at) VALUES ($1, $2, 'member', 'status_changed', $3)`,
++		testWorkspaceID, moved, at); err != nil {
++		t.Fatal(err)
++	}
++
++	var res struct {
++		Issues map[string]StatusSinceEntry `json:"issues"`
++	}
++	testutil.Call(t, testHandler.ListIssueStatusSince, newRequest("GET", "/api/issues/status-since?workspace_id="+testWorkspaceID, nil)).
++		Want(http.StatusOK).JSON(&res)
++	if got := res.Issues[moved]; got.Status != "in_review" || got.Since != at.Format(time.RFC3339) {
++		t.Fatalf("moved = %+v, want in_review at %s", got, at.Format(time.RFC3339))
++	}
++	if got, ok := res.Issues[fresh]; !ok || got.Since == "" {
++		t.Fatalf("fresh issue falls back to created_at, got %+v", got)
++	}
++	if _, ok := res.Issues[closed]; ok {
++		t.Fatal("done issues are not listed")
++	}
++	testutil.Call(t, testHandler.ListIssueStatusSince, newRequest("GET", "/api/issues/status-since?workspace_id="+testWorkspaceID+"&project_id=nope", nil)).
++		Want(http.StatusBadRequest)
++}
+-- 
+2.53.0
+
