@@ -17,7 +17,7 @@ inventing; every patch has a spec and aims upstream (proposals upstream need the
 **2026-11-11: patches merged per feature (owner decision).** 21 patches became 7:
 0001 workflow (old 0001, 0002, 0005, 0006, 0007, 0015–0018), 0002 goals (0003, 0004),
 0003 boards (0010, 0012–0014), 0004 decisions (0008, 0009, + CLI `multica issue ask`),
-0005 artifact-reader (0011), 0006 inbox (0019, 0020), 0007 triage-suggest (0021).
+0005 artifact-reader (0011), 0006 inbox (0019, 0020), 0007 triage-suggest (0021), 0008 email-log-domains (new).
 The numbers below are the old ones; `series.toml` maps them.
 
 | Phase | Patch | What | Status |

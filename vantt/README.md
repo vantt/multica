@@ -15,7 +15,7 @@ Layout copied from [vantt/herdr](https://github.com/vantt/herdr) and
 - `vantt/upstream.pin`: upstream tag the fork builds on.
 - `vantt/patches/series.toml`: the patch series, in order; each patch has a spec.
   One patch per feature (workflow, goals, boards, decisions, artifact-reader, inbox,
-  triage-suggest): a change to a feature goes into its patch and its spec gets a part.
+  triage-suggest, email-log-domains): a change to a feature goes into its patch and its spec gets a part.
 - `node vantt/scripts/catchup.mjs`: branch `vantt/<tag>` = upstream tag + fork files +
   patches; tag `v<tag>-vantt.N`.
 - `bash vantt/scripts/release.sh`: a release on the host: catchup in a throwaway

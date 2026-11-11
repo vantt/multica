@@ -115,3 +115,13 @@ upstream_ref = ""
 replaces = ["triage-suggest"]
 touches = ["server/internal/triage/", "server/internal/handler/vantt_triage.go", "server/cmd/server/router.go"]
 test_command = "cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/triage/ -count=1 && go test ./internal/handler/ -run 'TriageSuggest' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts && cd packages/views && npx vitest run modals locales"
+
+[[patches]]
+id = "email-log-domains"
+name = "feat(email): log-only recipient domains for internal bot accounts"
+patch_file = "0008-email-log-domains.patch"
+metadata_file = "0008-email-log-domains.spec.md"
+upstream_status = "unsubmitted"
+upstream_ref = ""
+touches = ["server/internal/service/email.go", "server/internal/service/vantt_email.go"]
+test_command = "cd server && go test ./internal/service/ -count=1"
