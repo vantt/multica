@@ -33,6 +33,8 @@ type EmailService struct {
 	smtpTLSInsecure bool
 	smtpTLSImplicit bool
 	smtpEHLOName    string
+	// vantt 0008: recipients on these domains get the [DEV] log line, never a send.
+	logDomains []string
 }
 
 type smtpAuthClient interface {
@@ -237,7 +239,13 @@ func NewEmailService() *EmailService {
 		fmt.Println("EmailService: DEV mode — codes printed to stdout (set MULTICA_DEV_VERIFICATION_CODE in .env for a fixed local code)")
 	}
 
+	logDomains := parseLogDomains(os.Getenv("MULTICA_EMAIL_LOG_DOMAINS"))
+	if len(logDomains) > 0 {
+		fmt.Printf("EmailService: log-only domains %s\n", strings.Join(logDomains, ","))
+	}
+
 	return &EmailService{
+		logDomains:      logDomains,
 		client:          client,
 		fromEmail:       from,
 		smtpHost:        smtpHost,
@@ -346,10 +354,10 @@ func (s *EmailService) SendVerificationCode(to, code string) error {
 			<p style="color: #666; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
 		</div>`, code)
 
-	if s.smtpHost != "" {
+	if s.smtpHost != "" && !s.logOnly(to) {
 		return s.sendSMTP(to, "Your Multica verification code", body)
 	}
-	if s.client == nil {
+	if s.client == nil || s.logOnly(to) {
 		fmt.Printf("[DEV] Verification code for %s: %s\n", to, code)
 		return nil
 	}
@@ -372,11 +380,11 @@ func (s *EmailService) SendInvitationEmail(to, inviterName, workspaceName, invit
 	}
 	inviteURL := fmt.Sprintf("%s/invite/%s", appURL, invitationID)
 
-	if s.smtpHost != "" {
+	if s.smtpHost != "" && !s.logOnly(to) {
 		params := buildInvitationParams(s.fromEmail, to, inviterName, workspaceName, inviteURL)
 		return s.sendSMTP(to, params.Subject, params.Html)
 	}
-	if s.client == nil {
+	if s.client == nil || s.logOnly(to) {
 		fmt.Printf("[DEV] Invitation email to %s: %s invited you to %s — %s\n", to, inviterName, workspaceName, inviteURL)
 		return nil
 	}
