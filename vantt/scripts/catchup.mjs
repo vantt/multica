@@ -24,7 +24,8 @@ import { parseSeries } from './lib/series.mjs';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const UPSTREAM_URL = 'https://github.com/multica-ai/multica.git';
-const STATE = path.join(ROOT, '.git', 'vantt-catchup-state.json');
+// --absolute-git-dir: in a worktree .git is a file, the state lives in its git dir.
+const STATE = path.join(execFileSync('git', ['rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim(), 'vantt-catchup-state.json');
 const SERIES = 'vantt/patches/series.toml';
 const EXIT = { ok: 0, usage: 2, conflict: 3, tests: 5, error: 7 };
 // Fork-owned paths copied onto the release branch. Workflows stay on main only: the
