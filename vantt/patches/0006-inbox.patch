@@ -1,4 +1,4 @@
-From 449cc196e8a96c45d287a90c63ea42f1d3ababa4 Mon Sep 17 00:00:00 2001
+From 1889824097144540cff92623d7c44d05b4e316a7 Mon Sep 17 00:00:00 2001
 From: Van Tran <trantoanvan@outlook.com>
 Date: Tue, 10 Nov 2026 22:03:16 +0700
 Subject: [PATCH] feat(inbox): Telegram push with decision buttons; Needs you /
@@ -50,13 +50,13 @@ Patch-Id: inbox
  packages/views/locales/zh-Hant/inbox.json     |   6 +
  server/cmd/server/router.go                   |   6 +
  server/internal/handler/vantt_decision.go     |   1 +
- .../internal/handler/vantt_decision_notify.go | 170 ++++++++
- .../handler/vantt_decision_notify_test.go     |  58 +++
+ .../internal/handler/vantt_decision_notify.go | 186 +++++++++
+ .../handler/vantt_decision_notify_test.go     |  60 +++
  server/internal/integrations/telegram/api.go  |   5 +-
  .../integrations/telegram/telegram_channel.go |  18 +-
  .../integrations/telegram/vantt_push.go       | 386 ++++++++++++++++++
  .../integrations/telegram/vantt_push_test.go  | 143 +++++++
- 20 files changed, 1020 insertions(+), 5 deletions(-)
+ 20 files changed, 1038 insertions(+), 5 deletions(-)
  create mode 100644 packages/views/inbox/components/inbox-tabs.test.tsx
  create mode 100644 packages/views/inbox/components/inbox-tabs.tsx
  create mode 100644 server/internal/handler/vantt_decision_notify.go
@@ -539,10 +539,10 @@ index ca6dd1342..cc98c26b1 100644
  
 diff --git a/server/internal/handler/vantt_decision_notify.go b/server/internal/handler/vantt_decision_notify.go
 new file mode 100644
-index 000000000..d967cb36a
+index 000000000..0ae8ee6cf
 --- /dev/null
 +++ b/server/internal/handler/vantt_decision_notify.go
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,186 @@
 +package handler
 +
 +// vantt patch 0019 (telegram-push): a new decision reaches the people who must
@@ -708,17 +708,33 @@ index 000000000..d967cb36a
 +		return "", fmt.Errorf("answer decision: status %d", code)
 +	}
 +	if code := call(h.CreateComment, "/api/issues/"+issueID+"/comments",
-+		map[string]string{"content": "**" + d.Question + "** → " + option.Label}, map[string]string{"id": issueID}); code != http.StatusCreated && code != http.StatusOK {
++		map[string]string{"content": h.decisionAnswerComment(ctx, d, option.Label)}, map[string]string{"id": issueID}); code != http.StatusCreated && code != http.StatusOK {
 +		return option.Label, fmt.Errorf("post answer comment: status %d", code)
 +	}
 +	return option.Label, nil
 +}
++
++// decisionAnswerComment is the answer as the web panel posts it (core
++// decisionAnswerComment): `**question** → option`, then a mention of the agent
++// that asked, which wakes it even when the issue is no longer assigned to it.
++func (h *Handler) decisionAnswerComment(ctx context.Context, d db.IssueDecision, label string) string {
++	text := "**" + d.Question + "** → " + label
++	if d.AskedByType != "agent" || !d.AskedByID.Valid {
++		return text
++	}
++	name := "agent"
++	if a, err := h.Queries.GetAgent(ctx, d.AskedByID); err == nil && a.Name != "" {
++		name = a.Name
++	}
++	name = strings.NewReplacer(`\`, `\\`, `[`, `\[`, `]`, `\]`).Replace(name)
++	return text + "\n\n[@" + name + "](mention://agent/" + util.UUIDToString(d.AskedByID) + ")"
++}
 diff --git a/server/internal/handler/vantt_decision_notify_test.go b/server/internal/handler/vantt_decision_notify_test.go
 new file mode 100644
-index 000000000..af1c76c48
+index 000000000..b1d5f7190
 --- /dev/null
 +++ b/server/internal/handler/vantt_decision_notify_test.go
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,60 @@
 +package handler
 +
 +import (
@@ -768,8 +784,10 @@ index 000000000..af1c76c48
 +	if status != "answered" || option != d.Options[1].ID {
 +		t.Fatalf("decision = %s %s", status, option)
 +	}
++	// An agent asked, so the answer mentions it: that wakes it even when the
++	// issue is no longer assigned to it.
 +	dbfx.QueryRow(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'member' AND author_id = $2
-+		AND content = '**Polar or Dodo?** → Dodo'`, issueID, testUserID).Scan(&n)
++		AND content LIKE '**Polar or Dodo?** → Dodo' || E'\n\n' || '[@%](mention://agent/' || $3 || ')'`, issueID, testUserID, agentID).Scan(&n)
 +	if n != 1 {
 +		t.Fatalf("answer comments = %d", n)
 +	}

@@ -5,7 +5,7 @@ feat(decisions): structured decisions on issues: API, issue panel, CLI
 One patch per feature since 2026-11-11 (owner decision). Made from the old patches 0008 decisions, 0009 decisions-ui; each part below is that patch's spec, unchanged. Code comments still name the old numbers (`vantt 0019`, `patch 0020`): the table in `series.toml` maps them.
 
 ## Tests (whole patch)
-`cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Decision|WorkspaceDeletion' -count=1 && go test ./cmd/multica/ -run 'Decision|IssueAsk' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && cd packages/views && npx vitest run workflows locales`
+`cd server && go run ./cmd/migrate up >/dev/null && go test ./internal/handler/ -run 'Decision|WorkspaceDeletion' -count=1 && go test ./cmd/multica/ -run 'Decision|IssueAsk' -count=1 && cd .. && pnpm install --frozen-lockfile --ignore-scripts >/dev/null && (cd packages/core && npx vitest run decisions) && (cd packages/views && npx vitest run workflows locales)`
 
 ## Part: old patch 0008 — decisions (F5, server) · design D4
 
@@ -61,3 +61,18 @@ Re-register `issueAskCmd` and `issueDecisionCmd` under `issueCmd`; helpers used:
 
 ### Tests
 `cd server && go test ./cmd/multica/ -run 'Decision|IssueAsk' -count=1`
+
+## Part: the answer wakes the agent that asked (added 2026-11-11)
+
+### Requirement
+An agent that asks usually moves the issue to `blocked` and hands it to the person, so a
+plain answer comment on an issue assigned to a member woke nobody (seen on STU-47).
+The answer comment now ends with a mention of the asking agent,
+`[@<name>](mention://agent/<asked_by_id>)` (brackets in the name escaped); a mention
+enqueues that agent whoever the issue is assigned to. Built by
+`decisionAnswerComment` in `@multica/core/decisions` (web panel); the Telegram button
+builds the same text server side (patch 0006, `Handler.decisionAnswerComment`).
+A person's question gets no mention.
+
+### Tests
+`cd packages/core && npx vitest run decisions`

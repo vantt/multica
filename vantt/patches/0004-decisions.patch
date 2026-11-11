@@ -1,4 +1,4 @@
-From d7d50e518e94c977840c7e2e0d8562dd8a544cff Mon Sep 17 00:00:00 2001
+From 1db039c78bec62b8b29e13da9fe900881e29420c Mon Sep 17 00:00:00 2001
 From: Van Tran <tetcu@fgorg.vn>
 Date: Tue, 10 Nov 2026 15:50:37 +0700
 Subject: [PATCH] feat(decisions): structured decisions on issues: API, issue
@@ -31,7 +31,8 @@ Subject: [PATCH] feat(decisions): structured decisions on issues: API, issue
 Patch-Id: decisions
 ---
  packages/core/api/client.ts                   |  17 ++
- packages/core/decisions/index.ts              |  58 ++++
+ packages/core/decisions/index.test.ts         |  26 ++
+ packages/core/decisions/index.ts              |  83 ++++++
  packages/core/package.json                    |   1 +
  .../views/issues/components/issue-detail.tsx  |   2 +
  packages/views/locales/en/issues.json         |   7 +
@@ -57,7 +58,8 @@ Patch-Id: decisions
  .../pkg/db/generated/workspace_delete.sql.go  |   3 +
  server/pkg/db/queries/issue_decision.sql      |  35 +++
  server/pkg/db/queries/workspace_delete.sql    |   3 +
- 27 files changed, 1309 insertions(+)
+ 28 files changed, 1360 insertions(+)
+ create mode 100644 packages/core/decisions/index.test.ts
  create mode 100644 packages/core/decisions/index.ts
  create mode 100644 packages/views/workflows/decision-panel.test.tsx
  create mode 100644 packages/views/workflows/decision-panel.tsx
@@ -100,15 +102,48 @@ index 732291cfc..1eef04c11 100644
  
    // vantt board-gates (design D3): when each open issue entered its status.
    async listIssueStatusSince(projectId: string | null): Promise<{ issues: Record<string, import("../board-gates").StatusSince> }> {
+diff --git a/packages/core/decisions/index.test.ts b/packages/core/decisions/index.test.ts
+new file mode 100644
+index 000000000..37334295b
+--- /dev/null
++++ b/packages/core/decisions/index.test.ts
+@@ -0,0 +1,26 @@
++import { describe, expect, it } from "vitest";
++import { decisionAnswerComment } from "./index";
++
++describe("decisionAnswerComment", () => {
++  const base = { question: "Ship it?", asked_by_type: "member", asked_by_id: "u-1" };
++
++  it("is the question and the option when a person asked", () => {
++    expect(decisionAnswerComment(base, "Yes", "")).toBe("**Ship it?** → Yes");
++  });
++
++  it("keeps the note", () => {
++    expect(decisionAnswerComment(base, "No", "next week")).toBe("**Ship it?** → No\n\nnext week");
++  });
++
++  it("mentions the agent that asked, so it wakes", () => {
++    const d = { ...base, asked_by_type: "agent", asked_by_id: "a-1" };
++    expect(decisionAnswerComment(d, "Yes", "", "Phương (PM)")).toBe(
++      "**Ship it?** → Yes\n\n[@Phương (PM)](mention://agent/a-1)",
++    );
++  });
++
++  it("escapes brackets in the agent name", () => {
++    const d = { ...base, asked_by_type: "agent", asked_by_id: "a-1" };
++    expect(decisionAnswerComment(d, "Yes", "", "Bot [x]")).toBe("**Ship it?** → Yes\n\n[@Bot \\[x\\]](mention://agent/a-1)");
++  });
++});
 diff --git a/packages/core/decisions/index.ts b/packages/core/decisions/index.ts
 new file mode 100644
-index 000000000..ab2bfcbbc
+index 000000000..099cd7850
 --- /dev/null
 +++ b/packages/core/decisions/index.ts
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,83 @@
 +import { useMutation, useQueryClient } from "@tanstack/react-query";
 +import { api } from "../api";
 +import { useWorkspaceId } from "../hooks";
++import { agentListOptions } from "../workspace/queries";
 +
 +/**
 + * vantt decisions (patch decisions-ui, F5): a question on an issue with options
@@ -150,7 +185,26 @@ index 000000000..ab2bfcbbc
 +  };
 +}
 +
-+/** Records the answer, then posts it as a comment so the issue's agent wakes up. */
++/**
++ * The answer as a comment: `**question** → option`, the note, and a mention of
++ * the agent that asked. The mention wakes that agent even when the issue is no
++ * longer assigned to it (an agent that asks usually hands the issue to the person).
++ */
++export function decisionAnswerComment(
++  decision: Pick<IssueDecision, "question" | "asked_by_type" | "asked_by_id">,
++  label: string,
++  note: string,
++  askerName?: string,
++): string {
++  let text = `**${decision.question}** → ${label}${note ? `\n\n${note}` : ""}`;
++  if (decision.asked_by_type === "agent" && decision.asked_by_id) {
++    const name = (askerName || "agent").replace(/[[\]\\]/g, (c) => `\\${c}`);
++    text += `\n\n[@${name}](mention://agent/${decision.asked_by_id})`;
++  }
++  return text;
++}
++
++/** Records the answer, then posts it as a comment that wakes the agent that asked. */
 +export function useAnswerDecision(issueId: string) {
 +  const qc = useQueryClient();
 +  const wsId = useWorkspaceId();
@@ -158,7 +212,12 @@ index 000000000..ab2bfcbbc
 +    mutationFn: async ({ decision, optionId, note }: { decision: IssueDecision; optionId: string; note: string }) => {
 +      const answered = await api.answerIssueDecision(issueId, decision.id, optionId, note);
 +      const label = decision.options.find((o) => o.id === optionId)?.label ?? optionId;
-+      await api.createComment(issueId, `**${decision.question}** → ${label}${note ? `\n\n${note}` : ""}`);
++      let askerName: string | undefined;
++      if (decision.asked_by_type === "agent" && decision.asked_by_id) {
++        const agents = await qc.fetchQuery(agentListOptions(wsId)).catch(() => []);
++        askerName = agents.find((a) => a.id === decision.asked_by_id)?.name;
++      }
++      await api.createComment(issueId, decisionAnswerComment(decision, label, note, askerName));
 +      return answered;
 +    },
 +    onSuccess: () => qc.invalidateQueries({ queryKey: decisionKeys.issue(wsId, issueId) }),

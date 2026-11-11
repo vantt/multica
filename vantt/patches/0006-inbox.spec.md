@@ -75,3 +75,10 @@ New `views/inbox/components/inbox-tabs.tsx` (+test); in `inbox-page.tsx` the tab
 
 ### Tests
 See series.toml.
+
+## Part: the button's answer wakes the agent that asked (added 2026-11-11)
+
+`AnswerDecisionAs` posts the same comment as the web panel (`decisionAnswerComment`,
+patch 0004): `**question** → option`, then `[@<agent>](mention://agent/<id>)` when an
+agent asked, so the agent wakes even when the issue is assigned to the person.
+Test: `TestDecisionNotifyAndAnswerAs` checks the mention.
